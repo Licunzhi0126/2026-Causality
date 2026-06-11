@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+
+DEFAULT_DATA_ROOT = Path(
+    os.environ.get(
+        "MOUSE_EMBRYO_DATA_ROOT",
+        "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory",
+    )
+)
+DEFAULT_WORK_ROOT = Path(os.environ.get("CAUSALITY_WORK_ROOT", "/home/jovyan/work/2026 Causality"))
+DEFAULT_OUTPUT_ROOT = DEFAULT_WORK_ROOT / "output" / "mignet_vertical"
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    name: str
+    sample_prefix: str
+    unit_kind: str = "domain"
+
+    def sample_stem(self, organ: str, stage: str) -> str:
+        return f"{self.sample_prefix}_{organ}_{stage}"
+
+
+@dataclass(frozen=True)
+class VerticalPairSpec:
+    lower_layer: str
+    upper_layer: str
+
+    @classmethod
+    def parse(cls, value: str) -> "VerticalPairSpec":
+        if ":" in value:
+            lower, upper = value.split(":", 1)
+        elif "->" in value:
+            lower, upper = value.split("->", 1)
+        else:
+            raise ValueError(f"Cannot parse level pair {value!r}; use lower:upper.")
+        return cls(lower.strip(), upper.strip())
+
+    def label(self) -> str:
+        return f"{self.lower_layer}_to_{self.upper_layer}"
+
+
+LAYER_SPECS: Dict[str, LayerSpec] = {
+    "spot": LayerSpec(name="spot", sample_prefix="spot", unit_kind="spot"),
+    "seurat_k40": LayerSpec(name="seurat_k40", sample_prefix="seurat"),
+    "louvain_k150": LayerSpec(name="louvain_k150", sample_prefix="louvain150"),
+    "louvain_less_than5": LayerSpec(name="louvain_less_than5", sample_prefix="louvainLessThan5"),
+}
+
+DEFAULT_LEVEL_ORDER: Tuple[str, ...] = ("spot", "louvain_less_than5", "louvain_k150", "seurat_k40")
+DEFAULT_LEVEL_PAIRS: Tuple[VerticalPairSpec, ...] = (
+    VerticalPairSpec("spot", "louvain_less_than5"),
+    VerticalPairSpec("louvain_less_than5", "louvain_k150"),
+    VerticalPairSpec("louvain_k150", "seurat_k40"),
+)
+
+
+@dataclass
+class TemporalRunConfig:
+    data_root: Path = DEFAULT_DATA_ROOT
+    output_root: Path = DEFAULT_OUTPUT_ROOT
+    organs: Sequence[str] = ("heart", "brain", "lung")
+    time_points: Sequence[str] = ("11.5", "12.5")
+    level_pairs: Sequence[VerticalPairSpec] = field(default_factory=lambda: list(DEFAULT_LEVEL_PAIRS))
+    expr_threshold: float = 0.0
+    cci_min: float = 0.0
+    top_k_targets_per_regulator: int = 20
+    require_target_expression_for_inter: bool = True
+    nmf_components: int = 5
+    nmf_max_iter: int = 300
+    nmf_seed: int = 42
+    embedding_method: str = "joint_nmf"
+    laplacian_components: int = 5
+    laplacian_normalized: bool = True
+    kraskov_k: int = 3
+    feature_log1p: bool = True
+    export_features: bool = True
+    export_graphs: bool = False
+
+    def normalized_pairs(self) -> List[VerticalPairSpec]:
+        return [pair if isinstance(pair, VerticalPairSpec) else VerticalPairSpec.parse(str(pair)) for pair in self.level_pairs]
+
+    def validate(self) -> None:
+        if self.embedding_method not in {"joint_nmf", "laplacian"}:
+            raise ValueError("embedding_method must be one of {'joint_nmf', 'laplacian'}.")
+        if self.laplacian_components <= 0:
+            raise ValueError("laplacian_components must be positive.")
+        for layer in DEFAULT_LEVEL_ORDER:
+            if layer not in LAYER_SPECS:
+                raise ValueError(f"Missing LayerSpec for {layer}.")
+        for pair in self.normalized_pairs():
+            for layer in (pair.lower_layer, pair.upper_layer):
+                if layer not in LAYER_SPECS:
+                    raise ValueError(f"Unsupported layer {layer!r}. Expected one of {sorted(LAYER_SPECS)}.")

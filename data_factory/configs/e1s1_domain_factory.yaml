@@ -1,0 +1,52 @@
+raw_input_root: /home/jovyan/public/datasets/Mouse-embryo/E1S1
+output_root: /home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory
+commot_reference_dir: /home/jovyan/work/2026 Causality/COMMOT/reference/COMMOT
+
+stages:
+  - "11.5"
+  - "12.5"
+  - "13.5"
+  - "14.5"
+
+organs:
+  heart:
+    annotations:
+      - Heart
+  brain:
+    annotations:
+      - Brain
+  lung:
+    annotations:
+      - Lung
+      - Lung primordium
+
+domain_levels:
+  organ:
+    description: one organ at one time point is aggregated into one domain
+  seurat_k40:
+    k: 40
+    source_script: scripts/03_run_seurat_k40.R
+  louvain_k150:
+    k: 150
+    source_script: scripts/05_run_louvain_k150.py
+  louvain_k1100:
+    k: 1100
+    source_script: scripts/06_run_louvain_k1100.py
+    skip_when_n_spots_less_than_k: true
+
+commot:
+  lr_database: CellPhoneDB_v4.0
+  species: mouse
+  database_name: cellphonedb_v4_mouse
+  dis_thr: 200.0
+  min_cell_pct: 0.05
+  workers: 64
+  lr_chunk_size: 1
+  heartbeat_seconds: 300
+
+grn:
+  method: GENIE3-style ExtraTrees
+  n_threads: 32
+  n_trees: 500
+  top_hvg: 2000
+  top_edge_count: 500000
