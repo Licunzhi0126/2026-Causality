@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.special import digamma
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
+
+from mignet_ce.pij.base import PairFeatures
+from mignet_ce.pij.cosine import build_cosine_transition_kernel
 
 
 def effective_information(P, eps: float = 1e-12) -> float:
@@ -80,11 +82,8 @@ class TemporalMetricsEngine:
         return list(combinations(range(len(time_points)), 2))
 
     @staticmethod
-    def build_transition_kernel(source_embedding: np.ndarray, target_embedding: np.ndarray) -> np.ndarray:
-        sim_matrix = cosine_similarity(source_embedding, target_embedding)
-        P = np.exp(sim_matrix)
-        P = P / P.sum(axis=1, keepdims=True)
-        return P
+    def build_transition_kernel(source_embedding: np.ndarray, target_embedding: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+        return build_cosine_transition_kernel(source_embedding, target_embedding, temperature=temperature)
 
     def calculate_metrics_for_pairs(
         self,
@@ -95,24 +94,47 @@ class TemporalMetricsEngine:
         organ: str,
         lower_layer: str,
         upper_layer: str,
+        pij_method: str = "joint_nmf",
+        pij_temperature: float = 1.0,
         kraskov_k: int = 3,
+        precomputed_p_lower: Dict[Tuple[int, int], np.ndarray] | None = None,
+        precomputed_p_upper: Dict[Tuple[int, int], np.ndarray] | None = None,
+        pairwise_lower_features: PairFeatures | None = None,
+        pairwise_upper_features: PairFeatures | None = None,
     ) -> pd.DataFrame:
         rows = []
         for t0, t1 in pairs:
-            y_t = lower_feat[t0]
-            y_t1 = lower_feat[t1]
-            x_t = upper_feat[t0]
-            x_t1 = upper_feat[t1]
+            if pairwise_lower_features is not None and (t0, t1) in pairwise_lower_features:
+                y_t, y_t1 = pairwise_lower_features[(t0, t1)]
+            else:
+                y_t = lower_feat[t0]
+                y_t1 = lower_feat[t1]
+            if pairwise_upper_features is not None and (t0, t1) in pairwise_upper_features:
+                x_t, x_t1 = pairwise_upper_features[(t0, t1)]
+            else:
+                x_t = upper_feat[t0]
+                x_t1 = upper_feat[t1]
 
             h_base = self.kraskov_conditional_entropy(y_t1, y_t, k=kraskov_k)
             h_full = self.kraskov_conditional_entropy(y_t1, np.hstack([y_t, x_t]), k=kraskov_k)
             h_macro = self.kraskov_conditional_entropy(y_t1, x_t, k=kraskov_k)
-            p_lower = self.build_transition_kernel(y_t, y_t1)
-            p_upper = self.build_transition_kernel(x_t, x_t1)
+            p_lower = (
+                precomputed_p_lower[(t0, t1)]
+                if precomputed_p_lower is not None and (t0, t1) in precomputed_p_lower
+                else self.build_transition_kernel(y_t, y_t1, temperature=pij_temperature)
+            )
+            p_upper = (
+                precomputed_p_upper[(t0, t1)]
+                if precomputed_p_upper is not None and (t0, t1) in precomputed_p_upper
+                else self.build_transition_kernel(x_t, x_t1, temperature=pij_temperature)
+            )
+            ei_lower = effective_information(p_lower)
+            ei_upper = effective_information(p_upper)
             te_raw = h_base - h_full
             di_raw = h_macro - h_full
             rows.append(
                 {
+                    "pij_method": pij_method,
                     "organ": organ,
                     "lower_layer": lower_layer,
                     "upper_layer": upper_layer,
@@ -121,8 +143,9 @@ class TemporalMetricsEngine:
                     "H_base": h_base,
                     "H_full": h_full,
                     "H_macro": h_macro,
-                    "EI_lower": effective_information(p_lower),
-                    "EI_upper": effective_information(p_upper),
+                    "EI_lower": ei_lower,
+                    "EI_upper": ei_upper,
+                    "EI_gain": ei_upper - ei_lower,
                     "TE_raw": te_raw,
                     "TE": max(0.0, te_raw),
                     "DI_raw": di_raw,

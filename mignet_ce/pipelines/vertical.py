@@ -10,10 +10,7 @@ import numpy as np
 import pandas as pd
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
-from mignet_ce.embeddings import layer_graph_laplacian_features
 from mignet_ce.features import (
-    aggregate_lower_features_to_upper,
-    align_upper_features,
     build_lower_graph_matrix,
     build_upper_graph_matrix,
     coverage_table,
@@ -30,6 +27,11 @@ from mignet_ce.io.loaders import (
 )
 from mignet_ce.mapping import build_overlap_mapping, load_unit_assignments
 from mignet_ce.metrics import TemporalMetricsEngine
+from mignet_ce.pij.base import MethodResult, TransitionKernels
+from mignet_ce.pij.registry import build_method_result_and_kernels
+from mignet_ce.pipelines.vertical_context import VerticalPairContext
+from mignet_ce.utils.coords import align_coords
+from mignet_ce.utils.matrix import save_transition_npz, serialize_metadata
 
 
 def _ensure_dir(path: Path) -> None:
@@ -69,6 +71,7 @@ class VerticalMIGNetPipeline:
                             "organ": organ,
                             "lower_layer": pair.lower_layer,
                             "upper_layer": pair.upper_layer,
+                            "pij_method": self.cfg.effective_pij_method(),
                             "status": "written",
                             "metrics_rows": int(len(metrics)),
                         }
@@ -79,6 +82,7 @@ class VerticalMIGNetPipeline:
                             "organ": organ,
                             "lower_layer": pair.lower_layer,
                             "upper_layer": pair.upper_layer,
+                            "pij_method": self.cfg.effective_pij_method(),
                             "status": "error",
                             "reason": f"{type(exc).__name__}: {exc}",
                             "traceback": traceback.format_exc(limit=8),
@@ -96,6 +100,7 @@ class VerticalMIGNetPipeline:
     def _empty_metrics() -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
+                "pij_method",
                 "organ",
                 "lower_layer",
                 "upper_layer",
@@ -106,6 +111,7 @@ class VerticalMIGNetPipeline:
                 "H_macro",
                 "EI_lower",
                 "EI_upper",
+                "EI_gain",
                 "TE_raw",
                 "TE",
                 "DI_raw",
@@ -161,7 +167,7 @@ class VerticalMIGNetPipeline:
             raise ValueError(f"No upper units found for {upper_layer}.")
         return stable
 
-    def run_pair(self, organ: str, pair: VerticalPairSpec) -> pd.DataFrame:
+    def _build_pair_context(self, organ: str, pair: VerticalPairSpec) -> VerticalPairContext:
         all_paths = self._check_pair_paths(organ, pair)
         shared_genes = self._compute_shared_genes(all_paths, pair)
         stable_upper_units = self._stable_upper_units(all_paths, pair.upper_layer)
@@ -174,6 +180,7 @@ class VerticalMIGNetPipeline:
         graph_summaries: List[Dict[str, object]] = []
         lower_graphs: List[LayerGraph] = []
         upper_graphs: List[LayerGraph] = []
+        upper_coords_by_time: List[np.ndarray] = []
 
         for stage in map(str, self.cfg.time_points):
             lower_paths = all_paths[(stage, pair.lower_layer)]
@@ -221,71 +228,59 @@ class VerticalMIGNetPipeline:
             upper_units_by_time.append(upper_graph.units)
             lower_graphs.append(lower_graph)
             upper_graphs.append(upper_graph)
+            upper_coords_by_time.append(align_coords(upper_expr.coords, stable_upper_units))
             coverage_tables.append(coverage_table(stage, stable_upper_units, overlap.coverage_counts(), upper_graph.units))
             graph_summaries.append(self._graph_summary(stage, lower_graph, upper_graph, lower_mat, upper_mat))
 
-        lower_feat_raw: List[np.ndarray] = []
-        upper_feat_raw: List[np.ndarray] = []
-        if self.cfg.embedding_method == "joint_nmf":
-            W_lower_cells, _ = self.metrics_engine.temporal_joint_nmf(
-                lower_mats,
-                n_components=self.cfg.nmf_components,
-                max_iter=self.cfg.nmf_max_iter,
-                seed=self.cfg.nmf_seed,
-            )
-            W_upper_current, _ = self.metrics_engine.temporal_joint_nmf(
-                upper_mats,
-                n_components=self.cfg.nmf_components,
-                max_iter=self.cfg.nmf_max_iter,
-                seed=self.cfg.nmf_seed,
-            )
-
-            for t in range(len(self.cfg.time_points)):
-                lower_feat, _ = aggregate_lower_features_to_upper(W_lower_cells[t], overlaps[t])
-                upper_feat = align_upper_features(W_upper_current[t], upper_units_by_time[t], stable_upper_units)
-                lower_feat_raw.append(lower_feat)
-                upper_feat_raw.append(upper_feat)
-        elif self.cfg.embedding_method == "laplacian":
-            for t in range(len(self.cfg.time_points)):
-                lower_embedding = layer_graph_laplacian_features(
-                    lower_graphs[t],
-                    n_components=self.cfg.laplacian_components,
-                    normalized=self.cfg.laplacian_normalized,
-                )
-                upper_embedding = layer_graph_laplacian_features(
-                    upper_graphs[t],
-                    n_components=self.cfg.laplacian_components,
-                    normalized=self.cfg.laplacian_normalized,
-                )
-                lower_feat, _ = aggregate_lower_features_to_upper(lower_embedding, overlaps[t])
-                upper_feat = align_upper_features(upper_embedding, upper_units_by_time[t], stable_upper_units)
-                lower_feat_raw.append(lower_feat)
-                upper_feat_raw.append(upper_feat)
-        else:
-            raise ValueError(f"Unsupported embedding method {self.cfg.embedding_method!r}.")
-
-        lower_feat_scaled, upper_feat_scaled = self.metrics_engine.global_scale_features(lower_feat_raw, upper_feat_raw)
-        metrics = self.metrics_engine.calculate_metrics_for_pairs(
-            lower_feat=lower_feat_scaled,
-            upper_feat=upper_feat_scaled,
+        return VerticalPairContext(
+            organ=organ,
+            pair=pair,
             time_points=list(map(str, self.cfg.time_points)),
-            pairs=self.metrics_engine.build_time_pairs_all(list(map(str, self.cfg.time_points))),
+            stable_upper_units=stable_upper_units,
+            shared_genes=shared_genes,
+            lower_mats=lower_mats,
+            upper_mats=upper_mats,
+            overlaps=overlaps,
+            upper_units_by_time=upper_units_by_time,
+            lower_graphs=lower_graphs,
+            upper_graphs=upper_graphs,
+            upper_coords_by_time=upper_coords_by_time,
+            coverage_tables=coverage_tables,
+            graph_summaries=graph_summaries,
+        )
+
+    def run_pair(self, organ: str, pair: VerticalPairSpec) -> pd.DataFrame:
+        context = self._build_pair_context(organ, pair)
+        time_points = list(map(str, self.cfg.time_points))
+        pairs = self.metrics_engine.build_time_pairs_all(time_points)
+        method_result, kernels = build_method_result_and_kernels(context, self.cfg, pairs)
+        metrics = self.metrics_engine.calculate_metrics_for_pairs(
+            lower_feat=method_result.lower_features,
+            upper_feat=method_result.upper_features,
+            time_points=time_points,
+            pairs=pairs,
             organ=organ,
             lower_layer=pair.lower_layer,
             upper_layer=pair.upper_layer,
+            pij_method=self.cfg.effective_pij_method(),
+            pij_temperature=self.cfg.pij_temperature,
             kraskov_k=self.cfg.kraskov_k,
+            precomputed_p_lower=kernels.p_lower if kernels is not None else None,
+            precomputed_p_upper=kernels.p_upper if kernels is not None else None,
+            pairwise_lower_features=method_result.pairwise_lower_features,
+            pairwise_upper_features=method_result.pairwise_upper_features,
         )
 
         self._export_pair_outputs(
             organ=organ,
             pair=pair,
-            stable_upper_units=stable_upper_units,
-            shared_genes=shared_genes,
+            stable_upper_units=context.stable_upper_units,
+            shared_genes=context.shared_genes,
             metrics=metrics,
-            coverage_tables=coverage_tables,
-            graph_summaries=graph_summaries,
-            lower_feat=lower_feat_scaled,
-            upper_feat=upper_feat_scaled,
+            coverage_tables=context.coverage_tables,
+            graph_summaries=context.graph_summaries,
+            method_result=method_result,
+            kernels=kernels,
         )
         return metrics
 
@@ -313,8 +308,8 @@ class VerticalMIGNetPipeline:
         metrics: pd.DataFrame,
         coverage_tables: Sequence[pd.DataFrame],
         graph_summaries: Sequence[Dict[str, object]],
-        lower_feat: Sequence[np.ndarray],
-        upper_feat: Sequence[np.ndarray],
+        method_result: MethodResult,
+        kernels: TransitionKernels | None,
     ) -> None:
         pair_dir = self.cfg.output_root / "features" / organ / pair.label()
         _ensure_dir(pair_dir)
@@ -328,7 +323,9 @@ class VerticalMIGNetPipeline:
                     "lower_layer": pair.lower_layer,
                     "upper_layer": pair.upper_layer,
                     "time_points": list(map(str, self.cfg.time_points)),
+                    "pij_method": self.cfg.effective_pij_method(),
                     "embedding_method": self.cfg.embedding_method,
+                    "method_metadata": method_result.method_metadata,
                     "laplacian_components": self.cfg.laplacian_components,
                     "laplacian_normalized": self.cfg.laplacian_normalized,
                     "stable_upper_unit_count": len(stable_upper_units),
@@ -340,7 +337,19 @@ class VerticalMIGNetPipeline:
                 default=_json_default,
             )
 
+        if self.cfg.export_pij and kernels is not None:
+            pij_dir = pair_dir / "pij"
+            _ensure_dir(pij_dir)
+            for (t0, t1), matrix in kernels.p_lower.items():
+                label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
+                save_transition_npz(pij_dir / f"{label}_lower_P.npz", matrix)
+            for (t0, t1), matrix in kernels.p_upper.items():
+                label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
+                save_transition_npz(pij_dir / f"{label}_upper_P.npz", matrix)
+            with (pij_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
+                json.dump(serialize_metadata(kernels.kernel_metadata), handle, ensure_ascii=False, indent=2, default=_json_default)
+
         if self.cfg.export_features:
-            for stage, low, up in zip(map(str, self.cfg.time_points), lower_feat, upper_feat):
+            for stage, low, up in zip(map(str, self.cfg.time_points), method_result.lower_features, method_result.upper_features):
                 pd.DataFrame(low, index=stable_upper_units).to_csv(pair_dir / f"{stage}_lower_features_scaled.csv")
                 pd.DataFrame(up, index=stable_upper_units).to_csv(pair_dir / f"{stage}_upper_features_scaled.csv")
