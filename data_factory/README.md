@@ -24,21 +24,30 @@ $OUT/
   manifests/
   spot/
   organ/
+  seurat_less_than5/
+  seurat_k150/
   seurat_k40/
+  louvain_k40/
   louvain_k150/
   louvain_less_than5/
   louvain_k1100/
   cci/
     spot/
     organ/
+    seurat_less_than5/
+    seurat_k150/
     seurat_k40/
+    louvain_k40/
     louvain_k150/
     louvain_less_than5/
     louvain_k1100/
   grn/
     spot/
     organ/
+    seurat_less_than5/
+    seurat_k150/
     seurat_k40/
+    louvain_k40/
     louvain_k150/
     louvain_less_than5/
     louvain_k1100/
@@ -64,6 +73,14 @@ python scripts/04_run_cci_spot_commot.py
 python scripts/07_run_grn_spot.py
 ```
 
+The Seurat domain entry point is now generic while keeping the original K40 defaults:
+
+```bash
+Rscript scripts/03_run_seurat_domains.R --mode exact_k --k 40
+Rscript scripts/03_run_seurat_domains.R --mode exact_k --k 150 --output-prefix seurat150
+Rscript scripts/03_run_seurat_domains.R --mode less_than_5 --output-prefix seuratLessThan5 --max-spots-per-domain 4
+```
+
 `05`, `06_run_louvain_less_than5.py`, and the legacy fixed-K `06_run_louvain_k1100.py`
 must wait for `04_run_cci_spot_commot.py`, because Louvain uses the spot-level
 COMMOT total matrix:
@@ -73,6 +90,11 @@ python scripts/05_run_louvain_k150.py \
   --spot-root "$OUT/spot" \
   --spot-cci-root "$OUT/cci/spot" \
   --output-root "$OUT/louvain_k150"
+
+python scripts/06_run_louvain_k40.py \
+  --spot-root "$OUT/spot" \
+  --spot-cci-root "$OUT/cci/spot" \
+  --output-root "$OUT/louvain_k40"
 
 python scripts/06_run_louvain_less_than5.py \
   --spot-root "$OUT/spot" \
@@ -99,6 +121,15 @@ python scripts/12_run_cci_organ_commot.py
 python scripts/09_run_grn_seurat_k40.py
 python scripts/13_run_cci_seurat_k40_commot.py
 
+python scripts/09_run_grn_seurat_k150.py
+python scripts/13_run_cci_seurat_k150_commot.py
+
+python scripts/09_run_grn_seurat_less_than5.py
+python scripts/13_run_cci_seurat_less_than5_commot.py
+
+python scripts/10_run_grn_louvain_k40.py
+python scripts/14_run_cci_louvain_k40_commot.py
+
 python scripts/10_run_grn_louvain_k150.py
 python scripts/14_run_cci_louvain_k150_commot.py
 
@@ -109,10 +140,20 @@ python scripts/11_run_grn_louvain_k1100.py
 python scripts/15_run_cci_louvain_k1100_commot.py
 ```
 
+The new generic runners can replace the fixed wrappers when you want one command shape:
+
+```bash
+python scripts/run_grn_layer.py --layer louvain_k40
+python scripts/run_cci_layer_commot.py --layer louvain_k40
+python scripts/run_grn_layer.py --layer seurat_k150
+python scripts/run_cci_layer_commot.py --layer seurat_k150
+```
+
 ## Skip Policy
 
 - Louvain less-than-5 writes domains where each output domain has at most 4 spots (`<5`) and records `max_domain_spots` in `manifests/domain_manifest_louvain_less_than5.csv`.
 - Louvain less-than-5 still requires the spot-level COMMOT files from `04_run_cci_spot_commot.py`; missing `{sample}_CCI_total.npz` files are recorded as errors.
+- Seurat less-than-5 writes domains where each output domain has at most `--max-spots-per-domain` spots and records min/max domain sizes in `manifests/domain_manifest_seurat_less_than5.csv`.
 - Legacy Louvain K1100 skips samples with fewer than 1100 spots and writes them to `manifests/skipped_jobs.csv`.
 - CCI and GRN skip inputs with fewer than `--min-units` rows. The default is `2`, so one-organ-one-domain files are recorded as skipped unless you override this.
 

@@ -19,11 +19,20 @@ DEFAULT_OUTPUT_ROOT = DEFAULT_WORK_ROOT / "output" / "mignet_vertical"
 @dataclass(frozen=True)
 class LayerSpec:
     name: str
-    sample_prefix: str
+    sample_prefix: str | Tuple[str, ...]
     unit_kind: str = "domain"
 
+    @property
+    def sample_prefixes(self) -> Tuple[str, ...]:
+        if isinstance(self.sample_prefix, tuple):
+            return self.sample_prefix
+        return (self.sample_prefix,)
+
     def sample_stem(self, organ: str, stage: str) -> str:
-        return f"{self.sample_prefix}_{organ}_{stage}"
+        return f"{self.sample_prefixes[0]}_{organ}_{stage}"
+
+    def candidate_sample_stems(self, organ: str, stage: str) -> Tuple[str, ...]:
+        return tuple(f"{prefix}_{organ}_{stage}" for prefix in self.sample_prefixes)
 
 
 @dataclass(frozen=True)
@@ -47,7 +56,10 @@ class VerticalPairSpec:
 
 LAYER_SPECS: Dict[str, LayerSpec] = {
     "spot": LayerSpec(name="spot", sample_prefix="spot", unit_kind="spot"),
-    "seurat_k40": LayerSpec(name="seurat_k40", sample_prefix="seurat"),
+    "seurat_less_than5": LayerSpec(name="seurat_less_than5", sample_prefix="seuratLessThan5"),
+    "seurat_k150": LayerSpec(name="seurat_k150", sample_prefix="seurat150"),
+    "seurat_k40": LayerSpec(name="seurat_k40", sample_prefix=("seurat", "seurat40")),
+    "louvain_k40": LayerSpec(name="louvain_k40", sample_prefix="louvain40"),
     "louvain_k150": LayerSpec(name="louvain_k150", sample_prefix="louvain150"),
     "louvain_less_than5": LayerSpec(name="louvain_less_than5", sample_prefix="louvainLessThan5"),
 }
@@ -58,6 +70,35 @@ DEFAULT_LEVEL_PAIRS: Tuple[VerticalPairSpec, ...] = (
     VerticalPairSpec("louvain_less_than5", "louvain_k150"),
     VerticalPairSpec("louvain_k150", "seurat_k40"),
 )
+PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
+    "legacy_mixed_adjacent": DEFAULT_LEVEL_PAIRS,
+    "louvain_adjacent": (
+        VerticalPairSpec("spot", "louvain_less_than5"),
+        VerticalPairSpec("louvain_less_than5", "louvain_k150"),
+        VerticalPairSpec("louvain_k150", "louvain_k40"),
+    ),
+    "louvain_all": (
+        VerticalPairSpec("spot", "louvain_less_than5"),
+        VerticalPairSpec("louvain_less_than5", "louvain_k150"),
+        VerticalPairSpec("louvain_k150", "louvain_k40"),
+        VerticalPairSpec("spot", "louvain_k150"),
+        VerticalPairSpec("spot", "louvain_k40"),
+        VerticalPairSpec("louvain_less_than5", "louvain_k40"),
+    ),
+    "seurat_adjacent": (
+        VerticalPairSpec("spot", "seurat_less_than5"),
+        VerticalPairSpec("seurat_less_than5", "seurat_k150"),
+        VerticalPairSpec("seurat_k150", "seurat_k40"),
+    ),
+    "seurat_all": (
+        VerticalPairSpec("spot", "seurat_less_than5"),
+        VerticalPairSpec("seurat_less_than5", "seurat_k150"),
+        VerticalPairSpec("seurat_k150", "seurat_k40"),
+        VerticalPairSpec("spot", "seurat_k150"),
+        VerticalPairSpec("spot", "seurat_k40"),
+        VerticalPairSpec("seurat_less_than5", "seurat_k40"),
+    ),
+}
 
 PIJ_METHODS = {"joint_nmf", "laplacian", "3dot", "slat"}
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
@@ -101,6 +142,7 @@ class TemporalRunConfig:
     feature_log1p: bool = True
     export_features: bool = True
     export_graphs: bool = False
+    export_pij_topk: int = 10
 
     def normalized_pairs(self) -> List[VerticalPairSpec]:
         return [pair if isinstance(pair, VerticalPairSpec) else VerticalPairSpec.parse(str(pair)) for pair in self.level_pairs]
@@ -124,9 +166,6 @@ class TemporalRunConfig:
             raise ValueError("slat_temperature must be positive.")
         if self.laplacian_components <= 0:
             raise ValueError("laplacian_components must be positive.")
-        for layer in DEFAULT_LEVEL_ORDER:
-            if layer not in LAYER_SPECS:
-                raise ValueError(f"Missing LayerSpec for {layer}.")
         for pair in self.normalized_pairs():
             for layer in (pair.lower_layer, pair.upper_layer):
                 if layer not in LAYER_SPECS:

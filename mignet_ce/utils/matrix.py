@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
+import pandas as pd
 import scipy.sparse as sp
 
 
@@ -59,3 +60,39 @@ def serialize_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
         else:
             out[key] = value
     return out
+
+
+def transition_topk_table(
+    matrix: np.ndarray,
+    source_units: Sequence[str],
+    target_units: Sequence[str],
+    time_pair: str,
+    space: str,
+    top_k: int = 10,
+) -> pd.DataFrame:
+    arr = np.asarray(matrix, dtype=float)
+    source_units = list(map(str, source_units))
+    target_units = list(map(str, target_units))
+    if arr.shape != (len(source_units), len(target_units)):
+        raise ValueError(
+            f"Matrix shape {arr.shape} does not match {len(source_units)} source and {len(target_units)} target units."
+        )
+    k = max(1, min(int(top_k), arr.shape[1])) if arr.shape[1] else 0
+    rows: list[dict[str, object]] = []
+    for i, source in enumerate(source_units):
+        if k == 0:
+            continue
+        values = arr[i]
+        order = np.argsort(-values)[:k]
+        for rank, j in enumerate(order, start=1):
+            rows.append(
+                {
+                    "time_pair": time_pair,
+                    "space": space,
+                    "source_unit": source,
+                    "target_unit": target_units[j],
+                    "pij": float(values[j]),
+                    "rank": rank,
+                }
+            )
+    return pd.DataFrame(rows)

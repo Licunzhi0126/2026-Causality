@@ -15,16 +15,37 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from mignet_ce.config import PAIR_PRESETS
 
-CANONICAL_LEVEL_ORDER = ["spot", "louvain_less_than5", "louvain_k150", "seurat_k40"]
-PAIR_ORDER = [
-    ("spot", "louvain_less_than5"),
-    ("louvain_less_than5", "louvain_k150"),
-    ("louvain_k150", "seurat_k40"),
-]
+PAIR_ORDER_BY_FAMILY: Dict[str, Dict[str, List[str]]] = {
+    "legacy_mixed": {
+        "adjacent": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["legacy_mixed_adjacent"]],
+        "all": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["legacy_mixed_adjacent"]],
+        "cross_level": [],
+    },
+    "louvain": {
+        "adjacent": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["louvain_adjacent"]],
+        "all": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["louvain_all"]],
+        "cross_level": [],
+    },
+    "seurat": {
+        "adjacent": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["seurat_adjacent"]],
+        "all": [f"{pair.lower_layer}->{pair.upper_layer}" for pair in PAIR_PRESETS["seurat_all"]],
+        "cross_level": [],
+    },
+}
+for _family in ("louvain", "seurat"):
+    _adjacent = set(PAIR_ORDER_BY_FAMILY[_family]["adjacent"])
+    PAIR_ORDER_BY_FAMILY[_family]["cross_level"] = [
+        key for key in PAIR_ORDER_BY_FAMILY[_family]["all"] if key not in _adjacent
+    ]
+
 LEVEL_LABELS: Dict[str, str] = {
     "spot": "Spot",
+    "seurat_less_than5": "Seurat <5",
+    "seurat_k150": "Seurat k150",
     "seurat_k40": "Seurat k40",
+    "louvain_k40": "Louvain k40",
     "louvain_k150": "Louvain k150",
     "louvain_less_than5": "Louvain <5",
 }
@@ -71,15 +92,50 @@ def _ordered_values(values: Iterable[str], preferred: Sequence[str]) -> List[str
     return preferred_present + extras
 
 
-def plot_delta_heatmap(df: pd.DataFrame, output: Path, time_pair: str | None = None) -> None:
+def _dedupe(values: Iterable[str]) -> List[str]:
+    return list(dict.fromkeys(map(str, values)))
+
+
+def _pair_order_for(family: str, pair_category: str) -> List[str]:
+    if family == "all":
+        ordered: List[str] = []
+        for name in ("legacy_mixed", "louvain", "seurat"):
+            ordered.extend(PAIR_ORDER_BY_FAMILY[name][pair_category])
+        return _dedupe(ordered)
+    return list(PAIR_ORDER_BY_FAMILY[family][pair_category])
+
+
+def _filter_metrics(df: pd.DataFrame, family: str, pair_category: str) -> pd.DataFrame:
+    if family == "all" and pair_category == "all":
+        return df
+    pair_order = set(_pair_order_for(family, pair_category))
+    if not pair_order:
+        return df.iloc[0:0].copy()
+    return df[df["pair_key"].isin(pair_order)].copy()
+
+
+def _ordered_pair_keys(work: pd.DataFrame, family: str, pair_category: str) -> List[str]:
+    preferred = _pair_order_for(family, pair_category)
+    pair_order = [key for key in preferred if key in set(work["pair_key"])]
+    pair_order += sorted([key for key in work["pair_key"].unique() if key not in pair_order])
+    return pair_order
+
+
+def plot_delta_heatmap(
+    df: pd.DataFrame,
+    output: Path,
+    time_pair: str | None = None,
+    family: str = "all",
+    pair_category: str = "all",
+) -> None:
     work = df.copy()
     if time_pair is not None:
         work = work[work["time_pair"].astype(str) == str(time_pair)]
+    work = _filter_metrics(work, family=family, pair_category=pair_category)
     if work.empty:
         raise ValueError("No rows available for heatmap after filtering.")
 
-    pair_order = [f"{lower}->{upper}" for lower, upper in PAIR_ORDER if f"{lower}->{upper}" in set(work["pair_key"])]
-    pair_order += sorted([key for key in work["pair_key"].unique() if key not in pair_order])
+    pair_order = _ordered_pair_keys(work, family=family, pair_category=pair_category)
     organ_order = _ordered_values(work["organ"], ORGAN_ORDER)
 
     pivot = (
@@ -111,7 +167,8 @@ def plot_delta_heatmap(df: pd.DataFrame, output: Path, time_pair: str | None = N
         cbar_kws={"label": "EI gain (upper - lower)", "shrink": 0.82},
     )
     title_suffix = f" ({time_pair})" if time_pair else ""
-    ax.set_title(f"Adjacent Coarse-Graining EI Gain Heatmap{title_suffix}", fontsize=14, weight="semibold", pad=14)
+    family_suffix = f" {family.replace('_', ' ').title()} {pair_category.replace('_', '-')}"
+    ax.set_title(f"Vertical EI Gain Heatmap -{family_suffix}{title_suffix}", fontsize=14, weight="semibold", pad=14)
     ax.set_xlabel("")
     ax.set_ylabel("")
     ax.tick_params(axis="x", rotation=25)
@@ -121,16 +178,22 @@ def plot_delta_heatmap(df: pd.DataFrame, output: Path, time_pair: str | None = N
     plt.close(fig)
 
 
-def plot_adjacent_pairs(df: pd.DataFrame, output: Path, time_pair: str | None = None) -> None:
+def plot_adjacent_pairs(
+    df: pd.DataFrame,
+    output: Path,
+    time_pair: str | None = None,
+    family: str = "all",
+    pair_category: str = "all",
+) -> None:
     work = df.copy()
     if time_pair is not None:
         work = work[work["time_pair"].astype(str) == str(time_pair)]
+    work = _filter_metrics(work, family=family, pair_category=pair_category)
     if work.empty:
         raise ValueError("No rows available for adjacent-pair plot after filtering.")
 
     work = work.groupby(["organ", "pair_key", "pair_label"], as_index=False)[["EI_lower", "EI_upper"]].mean()
-    pair_order = [f"{lower}->{upper}" for lower, upper in PAIR_ORDER if f"{lower}->{upper}" in set(work["pair_key"])]
-    pair_order += sorted([key for key in work["pair_key"].unique() if key not in pair_order])
+    pair_order = _ordered_pair_keys(work, family=family, pair_category=pair_category)
     organ_order = _ordered_values(work["organ"], ORGAN_ORDER)
     pair_to_y = {pair: idx for idx, pair in enumerate(pair_order)}
 
@@ -183,7 +246,8 @@ def plot_adjacent_pairs(df: pd.DataFrame, output: Path, time_pair: str | None = 
         plt.Line2D([0], [0], marker="o", color="none", markerfacecolor=upper_color, markeredgecolor="white", markersize=8, label="Upper EI"),
     ]
     title_suffix = f" ({time_pair})" if time_pair else ""
-    fig.suptitle(f"Adjacent Coarse-Graining EI Pairs by Organ{title_suffix}", fontsize=14, weight="semibold", y=0.98)
+    family_suffix = f"{family.replace('_', ' ').title()} {pair_category.replace('_', '-')}"
+    fig.suptitle(f"Vertical EI Pairs by Organ - {family_suffix}{title_suffix}", fontsize=14, weight="semibold", y=0.98)
     fig.legend(handles=handles, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.01))
     fig.tight_layout(rect=(0, 0.04, 1, 0.94))
     fig.savefig(output, bbox_inches="tight")
@@ -195,6 +259,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--metrics", type=Path, required=True, help="Path to mignet_vertical metrics.csv.")
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--time-pair", default=None, help="Optional filter like 12.5->13.5.")
+    parser.add_argument("--family", choices=["all", "legacy_mixed", "louvain", "seurat"], default="all")
+    parser.add_argument("--pair-category", choices=["all", "adjacent", "cross_level"], default="all")
     return parser
 
 
@@ -204,10 +270,11 @@ def main() -> None:
     output_dir = args.output_dir or args.metrics.parent / "figures"
     _ensure_dir(output_dir)
     suffix = f"_{str(args.time_pair).replace('->', '_to_')}" if args.time_pair else ""
-    heatmap = output_dir / f"adjacent_ei_gain_heatmap{suffix}.png"
-    pairs = output_dir / f"adjacent_coarse_graining_ei_pairs_by_organ{suffix}.png"
-    plot_delta_heatmap(metrics, heatmap, time_pair=args.time_pair)
-    plot_adjacent_pairs(metrics, pairs, time_pair=args.time_pair)
+    family_suffix = f"{args.family}_{args.pair_category}"
+    heatmap = output_dir / f"{family_suffix}_ei_gain_heatmap{suffix}.png"
+    pairs = output_dir / f"{family_suffix}_coarse_graining_ei_pairs_by_organ{suffix}.png"
+    plot_delta_heatmap(metrics, heatmap, time_pair=args.time_pair, family=args.family, pair_category=args.pair_category)
+    plot_adjacent_pairs(metrics, pairs, time_pair=args.time_pair, family=args.family, pair_category=args.pair_category)
     print(f"Wrote {heatmap}")
     print(f"Wrote {pairs}")
 

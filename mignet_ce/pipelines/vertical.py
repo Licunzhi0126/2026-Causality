@@ -25,13 +25,19 @@ from mignet_ce.io.loaders import (
     read_expression_h5ad,
     read_grn_edges,
 )
-from mignet_ce.mapping import build_overlap_mapping, load_unit_assignments
+from mignet_ce.mapping import (
+    build_overlap_edge_table,
+    build_overlap_mapping,
+    build_spot_correspondence_table,
+    load_unit_assignments,
+    summarize_overlap_quality,
+)
 from mignet_ce.metrics import TemporalMetricsEngine
 from mignet_ce.pij.base import MethodResult, TransitionKernels
 from mignet_ce.pij.registry import build_method_result_and_kernels
 from mignet_ce.pipelines.vertical_context import VerticalPairContext
 from mignet_ce.utils.coords import align_coords
-from mignet_ce.utils.matrix import save_transition_npz, serialize_metadata
+from mignet_ce.utils.matrix import save_transition_npz, serialize_metadata, transition_topk_table
 
 
 def _ensure_dir(path: Path) -> None:
@@ -175,8 +181,14 @@ class VerticalMIGNetPipeline:
         lower_mats: List[np.ndarray] = []
         upper_mats: List[np.ndarray] = []
         overlaps = []
+        lower_units_by_time: List[List[str]] = []
         upper_units_by_time: List[List[str]] = []
+        lower_assignments_by_time: List[pd.DataFrame] = []
+        upper_assignments_by_time: List[pd.DataFrame] = []
         coverage_tables: List[pd.DataFrame] = []
+        spot_correspondence_tables: List[pd.DataFrame] = []
+        overlap_edge_tables: List[pd.DataFrame] = []
+        overlap_quality_summaries: List[Dict[str, object]] = []
         graph_summaries: List[Dict[str, object]] = []
         lower_graphs: List[LayerGraph] = []
         upper_graphs: List[LayerGraph] = []
@@ -196,6 +208,21 @@ class VerticalMIGNetPipeline:
                 lower_units=lower_expr.units,
                 upper_units=stable_upper_units,
             )
+            spot_correspondence = build_spot_correspondence_table(
+                lower=lower_assignments,
+                upper=upper_assignments,
+                stage=stage,
+                lower_layer=pair.lower_layer,
+                upper_layer=pair.upper_layer,
+            )
+            overlap_edges = build_overlap_edge_table(
+                overlap=overlap,
+                stage=stage,
+                lower_layer=pair.lower_layer,
+                upper_layer=pair.upper_layer,
+            )
+            overlap_quality = summarize_overlap_quality(overlap_edges)
+            overlap_quality["stage"] = stage
 
             lower_graph = build_layer_graph(
                 layer_name=pair.lower_layer,
@@ -225,11 +252,17 @@ class VerticalMIGNetPipeline:
             lower_mats.append(lower_mat)
             upper_mats.append(upper_mat)
             overlaps.append(overlap)
+            lower_units_by_time.append(lower_graph.units)
             upper_units_by_time.append(upper_graph.units)
+            lower_assignments_by_time.append(lower_assignments.rows.copy())
+            upper_assignments_by_time.append(upper_assignments.rows.copy())
             lower_graphs.append(lower_graph)
             upper_graphs.append(upper_graph)
             upper_coords_by_time.append(align_coords(upper_expr.coords, stable_upper_units))
             coverage_tables.append(coverage_table(stage, stable_upper_units, overlap.coverage_counts(), upper_graph.units))
+            spot_correspondence_tables.append(spot_correspondence)
+            overlap_edge_tables.append(overlap_edges)
+            overlap_quality_summaries.append(overlap_quality)
             graph_summaries.append(self._graph_summary(stage, lower_graph, upper_graph, lower_mat, upper_mat))
 
         return VerticalPairContext(
@@ -241,11 +274,17 @@ class VerticalMIGNetPipeline:
             lower_mats=lower_mats,
             upper_mats=upper_mats,
             overlaps=overlaps,
+            lower_units_by_time=lower_units_by_time,
             upper_units_by_time=upper_units_by_time,
+            lower_assignments_by_time=lower_assignments_by_time,
+            upper_assignments_by_time=upper_assignments_by_time,
             lower_graphs=lower_graphs,
             upper_graphs=upper_graphs,
             upper_coords_by_time=upper_coords_by_time,
             coverage_tables=coverage_tables,
+            spot_correspondence_tables=spot_correspondence_tables,
+            overlap_edge_tables=overlap_edge_tables,
+            overlap_quality_summaries=overlap_quality_summaries,
             graph_summaries=graph_summaries,
         )
 
@@ -281,6 +320,10 @@ class VerticalMIGNetPipeline:
             graph_summaries=context.graph_summaries,
             method_result=method_result,
             kernels=kernels,
+            spot_correspondence_tables=context.spot_correspondence_tables,
+            overlap_edge_tables=context.overlap_edge_tables,
+            overlap_quality_summaries=context.overlap_quality_summaries,
+            upper_units_by_time=context.upper_units_by_time,
         )
         return metrics
 
@@ -310,6 +353,10 @@ class VerticalMIGNetPipeline:
         graph_summaries: Sequence[Dict[str, object]],
         method_result: MethodResult,
         kernels: TransitionKernels | None,
+        spot_correspondence_tables: Sequence[pd.DataFrame],
+        overlap_edge_tables: Sequence[pd.DataFrame],
+        overlap_quality_summaries: Sequence[Dict[str, object]],
+        upper_units_by_time: Sequence[Sequence[str]],
     ) -> None:
         pair_dir = self.cfg.output_root / "features" / organ / pair.label()
         _ensure_dir(pair_dir)
@@ -326,6 +373,9 @@ class VerticalMIGNetPipeline:
                     "pij_method": self.cfg.effective_pij_method(),
                     "embedding_method": self.cfg.embedding_method,
                     "method_metadata": method_result.method_metadata,
+                    "feature_alignment_space": "stable_upper_units",
+                    "lower_feature_meaning": "lower layer features aggregated to upper units by spot overlap",
+                    "matching_diagnostics_available": True,
                     "laplacian_components": self.cfg.laplacian_components,
                     "laplacian_normalized": self.cfg.laplacian_normalized,
                     "stable_upper_unit_count": len(stable_upper_units),
@@ -337,15 +387,58 @@ class VerticalMIGNetPipeline:
                 default=_json_default,
             )
 
+        correspondence_dir = pair_dir / "correspondence"
+        _ensure_dir(correspondence_dir)
+        pd.DataFrame({"upper_unit": list(stable_upper_units)}).to_csv(correspondence_dir / "stable_upper_units.csv", index=False)
+        unit_presence_rows = []
+        for stage, units in zip(map(str, self.cfg.time_points), upper_units_by_time):
+            present = set(map(str, units))
+            for unit in stable_upper_units:
+                unit_presence_rows.append(
+                    {
+                        "stage": stage,
+                        "upper_unit": unit,
+                        "upper_unit_present": unit in present,
+                    }
+                )
+        pd.DataFrame(unit_presence_rows).to_csv(correspondence_dir / "unit_presence.csv", index=False)
+        for stage, spot_table, edge_table, quality in zip(
+            map(str, self.cfg.time_points),
+            spot_correspondence_tables,
+            overlap_edge_tables,
+            overlap_quality_summaries,
+        ):
+            spot_table.to_csv(correspondence_dir / f"{stage}_spot_correspondence.csv", index=False)
+            edge_table.to_csv(correspondence_dir / f"{stage}_overlap_edges.csv", index=False)
+            with (correspondence_dir / f"{stage}_overlap_quality.json").open("w", encoding="utf-8") as handle:
+                json.dump(quality, handle, ensure_ascii=False, indent=2, default=_json_default)
+        pd.DataFrame(overlap_quality_summaries).to_csv(correspondence_dir / "overlap_quality_summary.csv", index=False)
+
         if self.cfg.export_pij and kernels is not None:
             pij_dir = pair_dir / "pij"
             _ensure_dir(pij_dir)
             for (t0, t1), matrix in kernels.p_lower.items():
                 label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
                 save_transition_npz(pij_dir / f"{label}_lower_P.npz", matrix)
+                transition_topk_table(
+                    matrix,
+                    source_units=stable_upper_units,
+                    target_units=stable_upper_units,
+                    time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
+                    space="lower",
+                    top_k=self.cfg.export_pij_topk,
+                ).to_csv(pij_dir / f"{label}_lower_P_topk.csv", index=False)
             for (t0, t1), matrix in kernels.p_upper.items():
                 label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
                 save_transition_npz(pij_dir / f"{label}_upper_P.npz", matrix)
+                transition_topk_table(
+                    matrix,
+                    source_units=stable_upper_units,
+                    target_units=stable_upper_units,
+                    time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
+                    space="upper",
+                    top_k=self.cfg.export_pij_topk,
+                ).to_csv(pij_dir / f"{label}_upper_P_topk.csv", index=False)
             with (pij_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
                 json.dump(serialize_metadata(kernels.kernel_metadata), handle, ensure_ascii=False, indent=2, default=_json_default)
 

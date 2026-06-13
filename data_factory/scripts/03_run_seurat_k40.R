@@ -15,7 +15,7 @@ get_script_dir <- function() {
   }
 }
 .script_dir <- get_script_dir()
-.log_path <- file.path(.script_dir, sprintf("seurat_k40_factory_%s.log", format(Sys.time(), "%Y%m%d_%H%M%S")))
+.log_path <- file.path(.script_dir, sprintf("seurat_domains_factory_%s.log", format(Sys.time(), "%Y%m%d_%H%M%S")))
 zz <- file(.log_path, open = "wt")
 sink(zz, type = "output", split = TRUE)
 .msg_split <- TRUE
@@ -93,12 +93,19 @@ arg_values <- function(name, default = character()) {
 }
 
 SPOT_ROOT <- arg_value("spot-root", "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/spot")
-OUT_DIR_BASE <- arg_value("output-root", "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/seurat_k40")
-DOMAIN_K <- as.integer(arg_value("k", "40"))
+OUT_DIR_BASE_RAW <- arg_value("output-root", NULL)
+MODE <- arg_value("mode", "exact_k")
+if (!MODE %in% c("exact_k", "less_than_5")) stop("--mode must be exact_k or less_than_5")
+DOMAIN_K_RAW <- arg_value("k", if (MODE == "exact_k") "40" else NA)
+DOMAIN_K <- if (is.na(DOMAIN_K_RAW)) NA_integer_ else as.integer(DOMAIN_K_RAW)
+MAX_SPOTS_PER_DOMAIN <- as.integer(arg_value("max-spots-per-domain", "4"))
 PCA_DIMENSIONS <- as.integer(arg_value("pca-dimensions", "30"))
 VARIABLE_FEATURES <- as.integer(arg_value("variable-features", "3000"))
 SAMPLE_NAMES <- arg_values("sample-names", character())
-MANIFEST_NAME <- arg_value("manifest-name", "domain_manifest_seurat_k40.csv")
+OUTPUT_PREFIX <- arg_value("output-prefix", if (MODE == "less_than_5") "seuratLessThan5" else if (!is.na(DOMAIN_K) && DOMAIN_K == 40) "seurat" else paste0("seurat", DOMAIN_K))
+DEFAULT_OUTPUT_NAME <- if (MODE == "less_than_5") "seurat_less_than5" else paste0("seurat_k", DOMAIN_K)
+OUT_DIR_BASE <- if (is.null(OUT_DIR_BASE_RAW)) file.path("/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory", DEFAULT_OUTPUT_NAME) else OUT_DIR_BASE_RAW
+MANIFEST_NAME <- arg_value("manifest-name", paste0("domain_manifest_", DEFAULT_OUTPUT_NAME, ".csv"))
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
@@ -339,6 +346,91 @@ ensure_exact_k_by_merge <- function(seu, K, dims_use = 1:30,
   list(seu = seu, info = list(res_star = res_star, algo = algo, final_k = nlevels(Idents(seu))))
 }
 
+ensure_max_spots_per_domain <- function(seu, max_size = 4, dims_use = 1:30,
+                                        algo = 3L,
+                                        allow_singletons = FALSE) {
+  stopifnot(max_size >= 1)
+  set.seed(42)
+  n_cells <- ncol(seu)
+  if (n_cells <= max_size) {
+    Idents(seu) <- factor(rep("d001", n_cells))
+    return(list(seu = seu, info = list(mode = "less_than_5", max_size = max_size, final_k = 1L)))
+  }
+
+  if (is.null(seu@graphs$SCT_snn) && is.null(seu@graphs$RNA_snn)) {
+    seu <- FindNeighbors(seu, dims = dims_use, verbose = FALSE)
+  }
+
+  seed_k <- min(n_cells, max(2L, ceiling(n_cells / max_size)))
+  seed <- ensure_exact_k_by_merge(
+    seu, K = seed_k, dims_use = dims_use,
+    algo = algo, allow_singletons = allow_singletons
+  )
+  seu <- seed$seu
+
+  while (TRUE) {
+    cur_ids <- Idents(seu)
+    tab <- sort(table(cur_ids), decreasing = TRUE)
+    if (!length(tab) || max(tab) <= max_size) break
+
+    prev_max <- max(tab)
+    prev_k <- nlevels(cur_ids)
+    split_done <- FALSE
+    for (cl_big in names(tab)) {
+      parent_cells <- colnames(seu)[as.character(cur_ids) == cl_big]
+      if (length(parent_cells) <= max_size) next
+
+      target_groups <- min(length(parent_cells), ceiling(length(parent_cells) / max_size))
+      split_labels <- NULL
+      split_method <- "seurat"
+      seurat_split <- tryCatch({
+        sub <- subset(seu, cells = parent_cells)
+        sub <- FindNeighbors(sub, dims = dims_use, verbose = FALSE)
+        out <- NULL
+        for (r in c(seq(0.4, 6, by = 0.4), seq(7, 20, by = 1))) {
+          sub <- FindClusters(sub, resolution = r, algorithm = algo,
+                              group.singletons = allow_singletons, verbose = FALSE)
+          if (nlevels(Idents(sub)) >= target_groups) {
+            out <- list(cells = colnames(sub), labels = as.character(Idents(sub)))
+            break
+          }
+        }
+        out
+      }, error = function(e) {
+        logi("[EnsureMax] Seurat split failed for ", cl_big, ": ", conditionMessage(e))
+        NULL
+      })
+      if (!is.null(seurat_split)) {
+        parent_cells <- seurat_split$cells
+        split_labels <- seurat_split$labels
+      }
+
+      if (is.null(split_labels)) {
+        split_method <- "pca_kmeans_fallback"
+        split_labels <- fallback_split_labels(seu, parent_cells, target_groups, dims_use)
+      }
+      if (is.null(split_labels) || length(unique(split_labels)) < 2) next
+
+      seu <- assign_split_labels(seu, parent_cells, cl_big, split_labels)
+      new_max <- max(table(Idents(seu)))
+      if (nlevels(Idents(seu)) > prev_k || new_max < prev_max) {
+        logi(sprintf(
+          "[EnsureMax] split %s via %s: max_size %d -> %d, k %d -> %d",
+          cl_big, split_method, prev_max, new_max, prev_k, nlevels(Idents(seu))
+        ))
+        split_done <- TRUE
+        break
+      }
+    }
+
+    if (!split_done) {
+      stop(sprintf("Unable to split clusters to max_size=%d; current max=%d", max_size, prev_max))
+    }
+  }
+
+  list(seu = seu, info = list(mode = "less_than_5", max_size = max_size, final_k = nlevels(Idents(seu))))
+}
+
 parse_sample <- function(path) {
   stem <- sub("\\.h5ad$", "", basename(path))
   m <- regexec("^spot_([A-Za-z]+)_([0-9.]+)$", stem)
@@ -383,10 +475,17 @@ run_one <- function(in_path, out_path, target_clusters) {
   seu <- RunPCA(seu, features = hvgs, npcs = PCA_DIMENSIONS, verbose = FALSE)
   seu <- FindNeighbors(seu, dims = 1:PCA_DIMENSIONS, verbose = FALSE)
 
-  ensure_out <- ensure_exact_k_by_merge(
-    seu, K = as.integer(target_clusters), dims_use = 1:PCA_DIMENSIONS,
-    algo = 3L, allow_singletons = FALSE
-  )
+  if (MODE == "less_than_5") {
+    ensure_out <- ensure_max_spots_per_domain(
+      seu, max_size = MAX_SPOTS_PER_DOMAIN, dims_use = 1:PCA_DIMENSIONS,
+      algo = 3L, allow_singletons = FALSE
+    )
+  } else {
+    ensure_out <- ensure_exact_k_by_merge(
+      seu, K = as.integer(target_clusters), dims_use = 1:PCA_DIMENSIONS,
+      algo = 3L, allow_singletons = FALSE
+    )
+  }
   seu <- ensure_out$seu
   clusters <- as.character(Idents(seu))
 
@@ -433,14 +532,25 @@ run_one <- function(in_path, out_path, target_clusters) {
   plot_spot_clusters(spatial, anno, png_path2, title = paste0(basename(in_path), " organs"))
 
   write_h5ad(dom_sce, out_path)
-  list(file = out_path, n_spots = ncol(seu), n_domains = ncol(dom_sce), target = target_clusters)
+  sizes <- as.integer(table(clusters))
+  list(
+    file = out_path,
+    n_spots = ncol(seu),
+    n_domains = ncol(dom_sce),
+    target = target_clusters,
+    min_domain_spots = min(sizes),
+    max_domain_spots = max(sizes)
+  )
 }
 
 main <- function() {
   logi("R.version: ", as.character(getRversion()))
   logi("[Config] spot-root=", SPOT_ROOT)
   logi("[Config] output-root=", OUT_DIR_BASE)
-  logi("[Config] k=", DOMAIN_K)
+  logi("[Config] mode=", MODE)
+  logi("[Config] k=", ifelse(is.na(DOMAIN_K), "", DOMAIN_K))
+  logi("[Config] output-prefix=", OUTPUT_PREFIX)
+  logi("[Config] max-spots-per-domain=", MAX_SPOTS_PER_DOMAIN)
   if (length(SAMPLE_NAMES)) logi("[Config] sample-names=", paste(SAMPLE_NAMES, collapse = ","))
   logi("[Config] manifest-name=", MANIFEST_NAME)
 
@@ -457,15 +567,19 @@ main <- function() {
     sample <- parse_sample(in_path)
     out_dir <- file.path(OUT_DIR_BASE, sample$organ)
     dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-    out_path <- file.path(out_dir, sprintf("seurat_%s_%s.h5ad", sample$organ, sample$stage))
+    out_path <- file.path(out_dir, sprintf("%s_%s_%s.h5ad", OUTPUT_PREFIX, sample$organ, sample$stage))
     row <- data.frame(
       input_file = in_path,
       output_file = out_path,
       organ = sample$organ,
       stage = sample$stage,
+      mode = MODE,
       k = DOMAIN_K,
+      max_spots_per_domain = ifelse(MODE == "less_than_5", MAX_SPOTS_PER_DOMAIN, NA_integer_),
       n_spots = NA_integer_,
       n_domains = NA_integer_,
+      min_domain_spots = NA_integer_,
+      max_domain_spots = NA_integer_,
       status = "planned",
       reason = "",
       stringsAsFactors = FALSE
@@ -475,6 +589,8 @@ main <- function() {
       row$status <- "written"
       row$n_spots <- result$n_spots
       row$n_domains <- result$n_domains
+      row$min_domain_spots <- result$min_domain_spots
+      row$max_domain_spots <- result$max_domain_spots
       row
     }, error = function(e) {
       row$status <- "error"

@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.config import DEFAULT_DATA_ROOT, DEFAULT_LEVEL_PAIRS, PIJ_METHODS, TemporalRunConfig, VerticalPairSpec
+from mignet_ce.config import DEFAULT_DATA_ROOT, PAIR_PRESETS, PIJ_METHODS, TemporalRunConfig, VerticalPairSpec
 from mignet_ce.pipelines.vertical import VerticalMIGNetPipeline
 
 
@@ -24,11 +24,18 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--organs", nargs="+", default=["heart", "brain", "lung"])
     parser.add_argument("--time-points", nargs="+", default=["11.5", "12.5"])
     parser.add_argument(
+        "--pair-preset",
+        choices=sorted(PAIR_PRESETS),
+        default="legacy_mixed_adjacent",
+        help="Named vertical pair set. Ignored when --level-pairs is provided.",
+    )
+    parser.add_argument(
         "--level-pairs",
         nargs="+",
-        default=[pair.label().replace("_to_", ":") for pair in DEFAULT_LEVEL_PAIRS],
+        default=None,
     )
     parser.add_argument("--export-pij", action="store_true")
+    parser.add_argument("--export-pij-topk", type=int, default=10)
     parser.add_argument("--pij-feature-components", type=int, default=30)
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
     parser.add_argument("--ot-gamma", type=float, default=1.0)
@@ -43,13 +50,19 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_argparser().parse_args()
+    level_pairs = (
+        [VerticalPairSpec.parse(value) for value in args.level_pairs]
+        if args.level_pairs is not None
+        else list(PAIR_PRESETS[args.pair_preset])
+    )
     base_cfg = TemporalRunConfig(
         data_root=args.data_root,
         output_root=args.output_root,
         organs=args.organs,
         time_points=args.time_points,
-        level_pairs=[VerticalPairSpec.parse(value) for value in args.level_pairs],
+        level_pairs=level_pairs,
         export_pij=args.export_pij,
+        export_pij_topk=args.export_pij_topk,
         pij_feature_components=args.pij_feature_components,
         ot_epsilon=args.ot_epsilon,
         ot_gamma=args.ot_gamma,

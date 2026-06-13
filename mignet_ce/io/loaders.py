@@ -23,6 +23,7 @@ class LayerPaths:
     organ: str
     stage: str
     sample_stem: str
+    candidate_sample_stems: List[str]
     h5ad: Path
     grn_edges: Path
     cci_manifest: Path
@@ -46,7 +47,8 @@ class LayerDataResolver:
 
     def paths(self, layer: str, organ: str, stage: str) -> LayerPaths:
         spec = self.layer_spec(layer)
-        sample = spec.sample_stem(organ, stage)
+        candidates = list(spec.candidate_sample_stems(organ, stage))
+        sample = self._select_sample_stem(layer, organ, stage, candidates)
         spot_map = None
         if layer != "spot":
             spot_map = self.data_root / layer / organ / f"{sample}_spot_domain_map.csv"
@@ -55,6 +57,7 @@ class LayerDataResolver:
             organ=organ,
             stage=stage,
             sample_stem=sample,
+            candidate_sample_stems=candidates,
             h5ad=self.data_root / layer / organ / f"{sample}.h5ad",
             grn_edges=self.data_root / "grn" / layer / sample / "grn_edges.csv",
             cci_manifest=self.data_root / "cci" / layer / f"{sample}_COMMOT_lr_pairs.tsv",
@@ -62,6 +65,12 @@ class LayerDataResolver:
             cci_lr_dir=self.data_root / "cci" / layer / f"{sample}_COMMOT_by_LR",
             spot_domain_map=spot_map,
         )
+
+    def _select_sample_stem(self, layer: str, organ: str, stage: str, candidates: Sequence[str]) -> str:
+        for sample in candidates:
+            if (self.data_root / layer / organ / f"{sample}.h5ad").exists():
+                return sample
+        return candidates[0]
 
     @staticmethod
     def layer_spec(layer: str) -> LayerSpec:

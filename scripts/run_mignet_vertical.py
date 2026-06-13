@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.config import DEFAULT_DATA_ROOT, DEFAULT_OUTPUT_ROOT, DEFAULT_LEVEL_PAIRS, PIJ_METHODS, TemporalRunConfig, VerticalPairSpec
+from mignet_ce.config import DEFAULT_DATA_ROOT, DEFAULT_OUTPUT_ROOT, PAIR_PRESETS, PIJ_METHODS, TemporalRunConfig, VerticalPairSpec
 from mignet_ce.pipelines.vertical import VerticalMIGNetPipeline
 
 
@@ -20,9 +20,15 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--organs", nargs="+", default=["heart", "brain", "lung"])
     parser.add_argument("--time-points", nargs="+", default=["11.5", "12.5"])
     parser.add_argument(
+        "--pair-preset",
+        choices=sorted(PAIR_PRESETS),
+        default="legacy_mixed_adjacent",
+        help="Named vertical pair set. Ignored when --level-pairs is provided.",
+    )
+    parser.add_argument(
         "--level-pairs",
         nargs="+",
-        default=[pair.label().replace("_to_", ":") for pair in DEFAULT_LEVEL_PAIRS],
+        default=None,
         help="Pairs like spot:louvain_less_than5 louvain_less_than5:louvain_k150 louvain_k150:seurat_k40.",
     )
     parser.add_argument("--expr-threshold", type=float, default=0.0)
@@ -34,6 +40,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-method", choices=sorted(PIJ_METHODS), default=None)
     parser.add_argument("--embedding-method", choices=["joint_nmf", "laplacian"], default=None, help="Deprecated alias for --pij-method.")
     parser.add_argument("--export-pij", action="store_true")
+    parser.add_argument("--export-pij-topk", type=int, default=10)
     parser.add_argument("--pij-feature-components", type=int, default=30)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
@@ -64,12 +71,17 @@ def main() -> None:
         parser.error("--pij-method and --embedding-method were both provided with different values.")
     pij_method = args.pij_method or args.embedding_method or "joint_nmf"
     embedding_method = pij_method if pij_method in {"joint_nmf", "laplacian"} else "joint_nmf"
+    level_pairs = (
+        [VerticalPairSpec.parse(value) for value in args.level_pairs]
+        if args.level_pairs is not None
+        else list(PAIR_PRESETS[args.pair_preset])
+    )
     cfg = TemporalRunConfig(
         data_root=args.data_root,
         output_root=args.output_root,
         organs=args.organs,
         time_points=args.time_points,
-        level_pairs=[VerticalPairSpec.parse(value) for value in args.level_pairs],
+        level_pairs=level_pairs,
         expr_threshold=args.expr_threshold,
         cci_min=args.cci_min,
         top_k_targets_per_regulator=args.top_k_targets_per_regulator,
@@ -79,6 +91,7 @@ def main() -> None:
         embedding_method=embedding_method,
         pij_method=pij_method,
         export_pij=args.export_pij,
+        export_pij_topk=args.export_pij_topk,
         pij_feature_components=args.pij_feature_components,
         pij_temperature=args.pij_temperature,
         ot_epsilon=args.ot_epsilon,
