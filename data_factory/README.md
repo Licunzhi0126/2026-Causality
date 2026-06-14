@@ -31,6 +31,9 @@ $OUT/
   louvain_k150/
   louvain_less_than5/
   louvain_k1100/
+  spatial_domain_k40/
+  spatial_domain_k150/
+  spatial_domain_less_than5/
   cci/
     spot/
     organ/
@@ -41,6 +44,9 @@ $OUT/
     louvain_k150/
     louvain_less_than5/
     louvain_k1100/
+    spatial_domain_k40/
+    spatial_domain_k150/
+    spatial_domain_less_than5/
   grn/
     spot/
     organ/
@@ -51,6 +57,9 @@ $OUT/
     louvain_k150/
     louvain_less_than5/
     louvain_k1100/
+    spatial_domain_k40/
+    spatial_domain_k150/
+    spatial_domain_less_than5/
 ```
 
 ## Required Order
@@ -69,6 +78,9 @@ After `01_extract_organ_spots.py` finishes, these can run in different terminals
 ```bash
 python scripts/02_build_organ_domain.py
 Rscript scripts/03_run_seurat_k40.R
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_k40
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_k150
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_less_than5
 python scripts/04_run_cci_spot_commot.py
 python scripts/07_run_grn_spot.py
 ```
@@ -79,6 +91,25 @@ The Seurat domain entry point is now generic while keeping the original K40 defa
 Rscript scripts/03_run_seurat_domains.R --mode exact_k --k 40
 Rscript scripts/03_run_seurat_domains.R --mode exact_k --k 150 --output-prefix seurat150
 Rscript scripts/03_run_seurat_domains.R --mode less_than_5 --output-prefix seuratLessThan5 --max-spots-per-domain 4
+```
+
+The spatial-domain family is the third domain family. It builds domain-level units from
+spot expression and `obsm["spatial"]` only, using expression connectivity plus a spatial
+coordinate graph and spatial-neighborhood smoothing. It does not read spot-level COMMOT,
+so it can run immediately after `01_extract_organ_spots.py`:
+
+```bash
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_k40
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_k150
+python scripts/run_spatial_domain_layer.py --layer spatial_domain_less_than5
+```
+
+Equivalent fixed wrappers are also available:
+
+```bash
+python scripts/20_run_spatial_domain_k40.py
+python scripts/21_run_spatial_domain_k150.py
+python scripts/22_run_spatial_domain_less_than5.py
 ```
 
 `05`, `06_run_louvain_less_than5.py`, and the legacy fixed-K `06_run_louvain_k1100.py`
@@ -138,6 +169,15 @@ python scripts/15_run_cci_louvain_less_than5_commot.py
 
 python scripts/11_run_grn_louvain_k1100.py
 python scripts/15_run_cci_louvain_k1100_commot.py
+
+python scripts/run_grn_layer.py --layer spatial_domain_k40
+python scripts/run_cci_layer_commot.py --layer spatial_domain_k40
+
+python scripts/run_grn_layer.py --layer spatial_domain_k150
+python scripts/run_cci_layer_commot.py --layer spatial_domain_k150
+
+python scripts/run_grn_layer.py --layer spatial_domain_less_than5
+python scripts/run_cci_layer_commot.py --layer spatial_domain_less_than5
 ```
 
 The new generic runners can replace the fixed wrappers when you want one command shape:
@@ -147,12 +187,16 @@ python scripts/run_grn_layer.py --layer louvain_k40
 python scripts/run_cci_layer_commot.py --layer louvain_k40
 python scripts/run_grn_layer.py --layer seurat_k150
 python scripts/run_cci_layer_commot.py --layer seurat_k150
+python scripts/run_grn_layer.py --layer spatial_domain_k40
+python scripts/run_cci_layer_commot.py --layer spatial_domain_k40
 ```
 
 ## Skip Policy
 
 - Louvain less-than-5 writes domains where each output domain has at most 4 spots (`<5`) and records `max_domain_spots` in `manifests/domain_manifest_louvain_less_than5.csv`.
 - Louvain less-than-5 still requires the spot-level COMMOT files from `04_run_cci_spot_commot.py`; missing `{sample}_CCI_total.npz` files are recorded as errors.
+- Spatial-domain fixed-K layers skip samples with fewer spots than K and record them in `manifests/skipped_jobs.csv`.
+- Spatial-domain less-than-5 writes domains where each output domain has at most `--less-than-5-max-size` spots and records min/max domain sizes in `manifests/domain_manifest_spatial_domain_less_than5.csv`.
 - Seurat less-than-5 writes domains where each output domain has at most `--max-spots-per-domain` spots and records min/max domain sizes in `manifests/domain_manifest_seurat_less_than5.csv`.
 - Legacy Louvain K1100 skips samples with fewer than 1100 spots and writes them to `manifests/skipped_jobs.csv`.
 - CCI and GRN skip inputs with fewer than `--min-units` rows. The default is `2`, so one-organ-one-domain files are recorded as skipped unless you override this.
@@ -162,6 +206,8 @@ python scripts/run_cci_layer_commot.py --layer seurat_k150
 - `Lung primordium` is extracted as `lung`, while the original `annotation` column is preserved.
 - The scripts use absolute server defaults but accept CLI overrides.
 - The copied core method files are local to this factory so the folder can be uploaded and run as a self-contained experimental code bundle.
+- `reference/stLearn` and `reference/DeepST` are development references only. The spatial-domain code does not import, read, or require those local folders at runtime.
+- The spatial-domain builder uses regular Python package dependencies already used in this factory, such as numpy, scipy, scanpy, anndata, scikit-learn, and networkx.
 
 ## Parallelism And GPU Boundary
 
