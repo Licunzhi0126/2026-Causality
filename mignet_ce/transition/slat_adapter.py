@@ -4,7 +4,7 @@ from typing import Tuple
 
 import numpy as np
 
-from mignet_ce.pij.cosine import build_cosine_transition_kernel
+from mignet_ce.transition.cosine import build_cosine_transition_kernel
 
 
 def _missing_slat_error(exc: Exception) -> ImportError:

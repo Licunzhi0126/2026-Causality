@@ -4,11 +4,11 @@ from typing import Dict, Sequence, Type
 
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
-from mignet_ce.pij.base import MethodResult, PijMethod, TimePair, TransitionKernels
 from mignet_ce.pij.joint_nmf import JointNMFPijMethod
 from mignet_ce.pij.laplacian import LaplacianPijMethod
 from mignet_ce.pij.slat import SLATPijMethod
 from mignet_ce.pij.three_dot import ThreeDotPijMethod
+from mignet_ce.pij.base import MethodResult, PijMethod, TimePair, TransitionKernels
 
 
 PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {

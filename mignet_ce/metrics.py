@@ -10,7 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
 
 from mignet_ce.pij.base import PairFeatures
-from mignet_ce.pij.cosine import build_cosine_transition_kernel
+from mignet_ce.transition.cosine import build_cosine_transition_kernel
 
 
 def effective_information(P, eps: float = 1e-12) -> float:

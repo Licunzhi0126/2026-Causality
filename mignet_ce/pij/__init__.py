@@ -1,10 +1,17 @@
-from .base import MethodResult, TransitionKernels
-from .cosine import build_cosine_transition_kernel
-from .sinkhorn_3dot import build_3dot_transition_kernel
+from .base import MethodResult, PairFeatures, PijMethod, TimePair, TransitionKernels
+from .joint_nmf import JointNMFPijMethod
+from .laplacian import LaplacianPijMethod
+from .slat import SLATPijMethod
+from .three_dot import ThreeDotPijMethod
 
 __all__ = [
+    "JointNMFPijMethod",
+    "LaplacianPijMethod",
     "MethodResult",
+    "PairFeatures",
+    "PijMethod",
+    "SLATPijMethod",
+    "TimePair",
+    "ThreeDotPijMethod",
     "TransitionKernels",
-    "build_cosine_transition_kernel",
-    "build_3dot_transition_kernel",
 ]

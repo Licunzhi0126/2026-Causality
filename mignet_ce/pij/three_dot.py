@@ -16,7 +16,7 @@ class ThreeDotPijMethod:
         cfg: TemporalRunConfig,
         pairs: Sequence[TimePair],
     ) -> tuple[MethodResult, TransitionKernels | None]:
-        from mignet_ce.pij.sinkhorn_3dot import build_3dot_transition_kernel
+        from mignet_ce.transition.sinkhorn_3dot import build_3dot_transition_kernel
         from mignet_ce.representations.graph_features import build_graph_feature_result
 
         result = build_graph_feature_result(

@@ -6,13 +6,13 @@ import numpy as np
 
 from mignet_ce.features import aggregate_lower_features_to_upper, align_upper_features
 from mignet_ce.metrics import TemporalMetricsEngine
-from mignet_ce.pij.base import MethodResult
-from mignet_ce.pipelines.vertical_context import VerticalPairContext
+from mignet_ce.networks.base import NetworkContext
 from mignet_ce.representations.common import global_scale_feature_lists
+from mignet_ce.pij.base import MethodResult
 
 
 def build_joint_nmf_result(
-    context: VerticalPairContext,
+    context: NetworkContext,
     n_components: int,
     max_iter: int,
     seed: int,

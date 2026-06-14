@@ -18,7 +18,7 @@ class SLATPijMethod:
         cfg: TemporalRunConfig,
         pairs: Sequence[TimePair],
     ) -> tuple[MethodResult, TransitionKernels | None]:
-        from mignet_ce.pij.slat_adapter import build_slat_transition_kernel
+        from mignet_ce.transition.slat_adapter import build_slat_transition_kernel
         from mignet_ce.representations.graph_features import build_graph_feature_result
 
         result = build_graph_feature_result(

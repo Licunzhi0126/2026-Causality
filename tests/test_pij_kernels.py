@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from mignet_ce.metrics import TemporalMetricsEngine
-from mignet_ce.pij.cosine import build_cosine_transition_kernel
-from mignet_ce.pij.sinkhorn_3dot import build_3dot_transition_kernel
-from mignet_ce.pij.slat_adapter import build_slat_transition_kernel
+from mignet_ce.transition.cosine import build_cosine_transition_kernel
+from mignet_ce.transition.sinkhorn_3dot import build_3dot_transition_kernel
+from mignet_ce.transition.slat_adapter import build_slat_transition_kernel
 
 
 def assert_row_stochastic(p: np.ndarray) -> None:
