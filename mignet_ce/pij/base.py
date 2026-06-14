@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
 
 TimePair = Tuple[int, int]
 PairFeatures = Dict[TimePair, Tuple[np.ndarray, np.ndarray]]
+
+if TYPE_CHECKING:
+    from mignet_ce.config import TemporalRunConfig
+    from mignet_ce.networks.base import NetworkContext
 
 
 @dataclass
@@ -26,3 +30,15 @@ class TransitionKernels:
     p_lower: Dict[TimePair, np.ndarray] = field(default_factory=dict)
     p_upper: Dict[TimePair, np.ndarray] = field(default_factory=dict)
     kernel_metadata: dict[str, object] = field(default_factory=dict)
+
+
+class PijMethod(Protocol):
+    name: str
+
+    def run(
+        self,
+        context: "NetworkContext",
+        cfg: "TemporalRunConfig",
+        pairs: Sequence[TimePair],
+    ) -> tuple[MethodResult, TransitionKernels | None]:
+        ...

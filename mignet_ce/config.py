@@ -14,6 +14,7 @@ DEFAULT_DATA_ROOT = Path(
 )
 DEFAULT_WORK_ROOT = Path(os.environ.get("CAUSALITY_WORK_ROOT", "/home/jovyan/work/2026 Causality"))
 DEFAULT_OUTPUT_ROOT = DEFAULT_WORK_ROOT / "output" / "mignet_vertical"
+DEFAULT_ABLATION_OUTPUT_ROOT = DEFAULT_WORK_ROOT / "output" / "mignet_vertical_ablation"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,8 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
 
 PIJ_METHODS = {"joint_nmf", "laplacian", "3dot", "slat"}
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
+NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
+CROSS_CELL_DDI_SOURCES = {"direct", "coarse_grained"}
 
 
 @dataclass
@@ -120,6 +123,10 @@ class TemporalRunConfig:
     nmf_seed: int = 42
     embedding_method: str = "joint_nmf"
     pij_method: str | None = None
+    network_method: str = "legacy_mixed_grn_cci"
+    cross_cell_ddi_source: str = "coarse_grained"
+    cross_cell_top_k_edges: int = 1000
+    cross_cell_top_k_edges_per_unit: int = 5
     export_pij: bool = False
     pij_feature_components: int | None = 30
     pij_temperature: float = 1.0
@@ -156,6 +163,14 @@ class TemporalRunConfig:
         method = self.effective_pij_method()
         if method not in PIJ_METHODS:
             raise ValueError(f"pij_method must be one of {sorted(PIJ_METHODS)}.")
+        if self.network_method not in NETWORK_METHODS:
+            raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
+        if self.cross_cell_ddi_source not in CROSS_CELL_DDI_SOURCES:
+            raise ValueError(f"cross_cell_ddi_source must be one of {sorted(CROSS_CELL_DDI_SOURCES)}.")
+        if self.cross_cell_top_k_edges <= 0:
+            raise ValueError("cross_cell_top_k_edges must be positive.")
+        if self.cross_cell_top_k_edges_per_unit <= 0:
+            raise ValueError("cross_cell_top_k_edges_per_unit must be positive.")
         if self.pij_temperature <= 0:
             raise ValueError("pij_temperature must be positive.")
         if self.ot_epsilon <= 0:

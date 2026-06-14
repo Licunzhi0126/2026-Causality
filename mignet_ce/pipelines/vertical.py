@@ -33,6 +33,8 @@ from mignet_ce.mapping import (
     summarize_overlap_quality,
 )
 from mignet_ce.metrics import TemporalMetricsEngine
+from mignet_ce.networks.base import NetworkContext
+from mignet_ce.networks.registry import get_network_builder
 from mignet_ce.pij.base import MethodResult, TransitionKernels
 from mignet_ce.pij.registry import build_method_result_and_kernels
 from mignet_ce.pipelines.vertical_context import VerticalPairContext
@@ -77,6 +79,7 @@ class VerticalMIGNetPipeline:
                             "organ": organ,
                             "lower_layer": pair.lower_layer,
                             "upper_layer": pair.upper_layer,
+                            "network_method": self.cfg.network_method,
                             "pij_method": self.cfg.effective_pij_method(),
                             "status": "written",
                             "metrics_rows": int(len(metrics)),
@@ -88,6 +91,7 @@ class VerticalMIGNetPipeline:
                             "organ": organ,
                             "lower_layer": pair.lower_layer,
                             "upper_layer": pair.upper_layer,
+                            "network_method": self.cfg.network_method,
                             "pij_method": self.cfg.effective_pij_method(),
                             "status": "error",
                             "reason": f"{type(exc).__name__}: {exc}",
@@ -106,6 +110,7 @@ class VerticalMIGNetPipeline:
     def _empty_metrics() -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
+                "network_method",
                 "pij_method",
                 "organ",
                 "lower_layer",
@@ -173,7 +178,14 @@ class VerticalMIGNetPipeline:
             raise ValueError(f"No upper units found for {upper_layer}.")
         return stable
 
-    def _build_pair_context(self, organ: str, pair: VerticalPairSpec) -> VerticalPairContext:
+    def _build_pair_context(self, organ: str, pair: VerticalPairSpec) -> NetworkContext:
+        return get_network_builder(self.cfg.network_method).build_pair_context(
+            organ=organ,
+            pair=pair,
+            cfg=self.cfg,
+            resolver=self.resolver,
+        )
+
         all_paths = self._check_pair_paths(organ, pair)
         shared_genes = self._compute_shared_genes(all_paths, pair)
         stable_upper_units = self._stable_upper_units(all_paths, pair.upper_layer)
@@ -309,10 +321,13 @@ class VerticalMIGNetPipeline:
             pairwise_lower_features=method_result.pairwise_lower_features,
             pairwise_upper_features=method_result.pairwise_upper_features,
         )
+        if "network_method" not in metrics.columns:
+            metrics.insert(0, "network_method", context.network_method)
 
         self._export_pair_outputs(
             organ=organ,
             pair=pair,
+            network_context=context,
             stable_upper_units=context.stable_upper_units,
             shared_genes=context.shared_genes,
             metrics=metrics,
@@ -346,6 +361,7 @@ class VerticalMIGNetPipeline:
         self,
         organ: str,
         pair: VerticalPairSpec,
+        network_context: NetworkContext,
         stable_upper_units: Sequence[str],
         shared_genes: Sequence[str],
         metrics: pd.DataFrame,
@@ -370,9 +386,12 @@ class VerticalMIGNetPipeline:
                     "lower_layer": pair.lower_layer,
                     "upper_layer": pair.upper_layer,
                     "time_points": list(map(str, self.cfg.time_points)),
+                    "network_method": network_context.network_method,
                     "pij_method": self.cfg.effective_pij_method(),
                     "embedding_method": self.cfg.embedding_method,
                     "method_metadata": method_result.method_metadata,
+                    "network_metadata": network_context.metadata,
+                    "feature_blocks": network_context.feature_blocks,
                     "feature_alignment_space": "stable_upper_units",
                     "lower_feature_meaning": "lower layer features aggregated to upper units by spot overlap",
                     "matching_diagnostics_available": True,
@@ -386,6 +405,25 @@ class VerticalMIGNetPipeline:
                 indent=2,
                 default=_json_default,
             )
+
+        with (pair_dir / "feature_schema.json").open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "network_method": network_context.network_method,
+                    "feature_names": network_context.feature_names,
+                    "feature_blocks": network_context.feature_blocks,
+                    "metadata": network_context.metadata,
+                },
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            )
+
+        for relative_path, table in network_context.exports.items():
+            export_path = pair_dir / relative_path
+            _ensure_dir(export_path.parent)
+            table.to_csv(export_path, index=False)
 
         correspondence_dir = pair_dir / "correspondence"
         _ensure_dir(correspondence_dir)

@@ -26,6 +26,7 @@ class LayerPaths:
     candidate_sample_stems: List[str]
     h5ad: Path
     grn_edges: Path
+    cci_total: Path
     cci_manifest: Path
     cci_index: Path
     cci_lr_dir: Path
@@ -60,6 +61,7 @@ class LayerDataResolver:
             candidate_sample_stems=candidates,
             h5ad=self.data_root / layer / organ / f"{sample}.h5ad",
             grn_edges=self.data_root / "grn" / layer / sample / "grn_edges.csv",
+            cci_total=self.data_root / "cci" / layer / f"{sample}_CCI_total.npz",
             cci_manifest=self.data_root / "cci" / layer / f"{sample}_COMMOT_lr_pairs.tsv",
             cci_index=self.data_root / "cci" / layer / f"{sample}_index.tsv",
             cci_lr_dir=self.data_root / "cci" / layer / f"{sample}_COMMOT_by_LR",
