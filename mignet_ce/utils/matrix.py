@@ -69,6 +69,7 @@ def transition_topk_table(
     time_pair: str,
     space: str,
     top_k: int = 10,
+    pij_method: str | None = None,
 ) -> pd.DataFrame:
     arr = np.asarray(matrix, dtype=float)
     source_units = list(map(str, source_units))
@@ -89,8 +90,10 @@ def transition_topk_table(
                 {
                     "time_pair": time_pair,
                     "space": space,
+                    "pij_method": pij_method,
                     "source_unit": source,
                     "target_unit": target_units[j],
+                    "probability": float(values[j]),
                     "pij": float(values[j]),
                     "rank": rank,
                 }

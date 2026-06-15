@@ -9,7 +9,7 @@ from typing import Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
-from mignet_ce.config import DEFAULT_ABLATION_OUTPUT_ROOT, NETWORK_METHODS, PIJ_METHODS, TemporalRunConfig
+from mignet_ce.config import DEFAULT_ABLATION_OUTPUT_ROOT, NETWORK_METHODS, PIJ_METHODS, PIJ_METHOD_PRESETS, TemporalRunConfig
 from mignet_ce.pipelines.vertical import VerticalMIGNetPipeline, _json_default
 
 
@@ -24,7 +24,7 @@ class VerticalAblationPipeline:
     ):
         self.base_cfg = base_cfg
         self.network_methods = list(network_methods or sorted(NETWORK_METHODS))
-        self.pij_methods = list(pij_methods or ["joint_nmf", "laplacian", "3dot", "slat"])
+        self.pij_methods = list(pij_methods or PIJ_METHOD_PRESETS["core"])
         self.output_root = Path(output_root or DEFAULT_ABLATION_OUTPUT_ROOT)
         self.fail_fast = bool(fail_fast)
         self._validate_methods()

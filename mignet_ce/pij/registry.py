@@ -4,6 +4,8 @@ from typing import Dict, Sequence, Type
 
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.pij.energy_entropy_ot import EnergyEntropyOTPijMethod
+from mignet_ce.pij.expr_ot import ExprOTPijMethod
 from mignet_ce.pij.joint_nmf import JointNMFPijMethod
 from mignet_ce.pij.laplacian import LaplacianPijMethod
 from mignet_ce.pij.slat import SLATPijMethod
@@ -16,6 +18,8 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "laplacian": LaplacianPijMethod,
     "3dot": ThreeDotPijMethod,
     "slat": SLATPijMethod,
+    "expr_ot": ExprOTPijMethod,
+    "energy_entropy_ot": EnergyEntropyOTPijMethod,
 }
 
 

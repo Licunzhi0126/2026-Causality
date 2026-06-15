@@ -15,6 +15,7 @@ from mignet_ce.config import (
     NETWORK_METHODS,
     PAIR_PRESETS,
     PIJ_METHODS,
+    PIJ_METHOD_PRESETS,
     TemporalRunConfig,
     VerticalPairSpec,
 )
@@ -26,7 +27,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_ABLATION_OUTPUT_ROOT)
     parser.add_argument("--network-methods", nargs="+", choices=sorted(NETWORK_METHODS), default=["legacy_mixed_grn_cci", "cross_cell_multilayer"])
-    parser.add_argument("--pij-methods", nargs="+", choices=sorted(PIJ_METHODS), default=["joint_nmf", "laplacian", "3dot", "slat"])
+    parser.add_argument("--pij-methods", nargs="+", choices=sorted(PIJ_METHODS), default=None)
+    parser.add_argument("--pij-method-preset", choices=sorted(PIJ_METHOD_PRESETS), default=None)
     parser.add_argument("--organs", nargs="+", default=["heart", "brain", "lung"])
     parser.add_argument("--time-points", nargs="+", default=["11.5", "12.5"])
     parser.add_argument("--pair-preset", choices=sorted(PAIR_PRESETS), default="legacy_mixed_adjacent")
@@ -44,6 +46,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--export-pij-topk", type=int, default=10)
     parser.add_argument("--pij-feature-components", type=int, default=30)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
+    parser.add_argument("--pij-expr-weight", type=float, default=1.0)
+    parser.add_argument("--pij-spatial-weight", type=float, default=0.2)
+    parser.add_argument("--pij-graph-energy-weight", type=float, default=0.2)
+    parser.add_argument("--pij-entropy-epsilon", type=float, default=0.05)
+    parser.add_argument("--pij-use-unbalanced-ot", action="store_true")
+    parser.add_argument("--pij-unbalanced-mass", type=float, default=1.0)
+    parser.add_argument("--pij-cost-metric", choices=["cosine", "euclidean"], default="cosine")
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
     parser.add_argument("--ot-gamma", type=float, default=1.0)
     parser.add_argument("--ot-max-iter", type=int, default=100)
@@ -74,6 +83,12 @@ def main() -> None:
         if args.level_pairs is not None
         else list(PAIR_PRESETS[args.pair_preset])
     )
+    if args.pij_methods is not None:
+        pij_methods = args.pij_methods
+    elif args.pij_method_preset is not None:
+        pij_methods = list(PIJ_METHOD_PRESETS[args.pij_method_preset])
+    else:
+        pij_methods = list(PIJ_METHOD_PRESETS["core"])
     base_cfg = TemporalRunConfig(
         data_root=args.data_root,
         output_root=args.output_root,
@@ -93,6 +108,13 @@ def main() -> None:
         export_pij_topk=args.export_pij_topk,
         pij_feature_components=args.pij_feature_components,
         pij_temperature=args.pij_temperature,
+        pij_expr_weight=args.pij_expr_weight,
+        pij_spatial_weight=args.pij_spatial_weight,
+        pij_graph_energy_weight=args.pij_graph_energy_weight,
+        pij_entropy_epsilon=args.pij_entropy_epsilon,
+        pij_use_unbalanced_ot=args.pij_use_unbalanced_ot,
+        pij_unbalanced_mass=args.pij_unbalanced_mass,
+        pij_cost_metric=args.pij_cost_metric,
         ot_epsilon=args.ot_epsilon,
         ot_gamma=args.ot_gamma,
         ot_max_iter=args.ot_max_iter,
@@ -115,7 +137,7 @@ def main() -> None:
     metrics = VerticalAblationPipeline(
         base_cfg=base_cfg,
         network_methods=args.network_methods,
-        pij_methods=args.pij_methods,
+        pij_methods=pij_methods,
         output_root=args.output_root,
         fail_fast=args.fail_fast,
     ).run()

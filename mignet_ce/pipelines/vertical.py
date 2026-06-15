@@ -265,6 +265,7 @@ class VerticalMIGNetPipeline:
                     time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
                     space="lower",
                     top_k=self.cfg.export_pij_topk,
+                    pij_method=self.cfg.effective_pij_method(),
                 ).to_csv(pij_dir / f"{label}_lower_P_topk.csv", index=False)
             for (t0, t1), matrix in kernels.p_upper.items():
                 label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
@@ -276,6 +277,7 @@ class VerticalMIGNetPipeline:
                     time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
                     space="upper",
                     top_k=self.cfg.export_pij_topk,
+                    pij_method=self.cfg.effective_pij_method(),
                 ).to_csv(pij_dir / f"{label}_upper_P_topk.csv", index=False)
             with (pij_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
                 json.dump(serialize_metadata(kernels.kernel_metadata), handle, ensure_ascii=False, indent=2, default=_json_default)

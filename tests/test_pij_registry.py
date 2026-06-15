@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from mignet_ce.config import PIJ_METHODS
+from mignet_ce.config import PIJ_METHODS, PIJ_METHOD_PRESETS
 from mignet_ce.pij.registry import PIJ_METHOD_REGISTRY, get_pij_method
 
 
-def test_pij_registry_contains_all_four_methods() -> None:
+def test_pij_registry_matches_configured_methods() -> None:
     assert set(PIJ_METHOD_REGISTRY) == PIJ_METHODS
     assert {get_pij_method(name).name for name in PIJ_METHODS} == PIJ_METHODS
+    assert {"joint_nmf", "laplacian", "3dot", "slat"}.issubset(PIJ_METHODS)
+    assert {"expr_ot", "energy_entropy_ot"}.issubset(PIJ_METHODS)
+    assert set(PIJ_METHOD_PRESETS["all"]) == PIJ_METHODS

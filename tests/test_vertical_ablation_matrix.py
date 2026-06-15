@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from mignet_ce.config import TemporalRunConfig
+from mignet_ce.config import PIJ_METHOD_PRESETS, TemporalRunConfig
 from mignet_ce.pipelines.vertical_ablation import VerticalAblationPipeline
 
 
@@ -46,7 +46,6 @@ def test_vertical_ablation_writes_two_by_four_manifest(tmp_path, monkeypatch) ->
     pipeline = VerticalAblationPipeline(
         base_cfg=base_cfg,
         network_methods=["legacy_mixed_grn_cci", "cross_cell_multilayer"],
-        pij_methods=["joint_nmf", "laplacian", "3dot", "slat"],
         output_root=tmp_path / "ablation",
     )
 
@@ -58,4 +57,4 @@ def test_vertical_ablation_writes_two_by_four_manifest(tmp_path, monkeypatch) ->
     assert len(metrics) == 8
     assert len(all_metrics) == 8
     assert set(all_metrics["network_method"]) == {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
-    assert set(all_metrics["pij_method"]) == {"joint_nmf", "laplacian", "3dot", "slat"}
+    assert set(all_metrics["pij_method"]) == set(PIJ_METHOD_PRESETS["core"])

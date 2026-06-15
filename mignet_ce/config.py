@@ -101,7 +101,12 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
     ),
 }
 
-PIJ_METHODS = {"joint_nmf", "laplacian", "3dot", "slat"}
+PIJ_METHODS = {"joint_nmf", "laplacian", "3dot", "slat", "expr_ot", "energy_entropy_ot"}
+PIJ_METHOD_PRESETS = {
+    "core": ("joint_nmf", "laplacian", "3dot", "slat"),
+    "ot_basic": ("expr_ot", "energy_entropy_ot"),
+    "all": ("joint_nmf", "laplacian", "3dot", "slat", "expr_ot", "energy_entropy_ot"),
+}
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
 CROSS_CELL_DDI_SOURCES = {"direct", "coarse_grained"}
@@ -130,6 +135,13 @@ class TemporalRunConfig:
     export_pij: bool = False
     pij_feature_components: int | None = 30
     pij_temperature: float = 1.0
+    pij_expr_weight: float = 1.0
+    pij_spatial_weight: float = 0.2
+    pij_graph_energy_weight: float = 0.2
+    pij_entropy_epsilon: float = 0.05
+    pij_use_unbalanced_ot: bool = False
+    pij_unbalanced_mass: float = 1.0
+    pij_cost_metric: str = "cosine"
     ot_epsilon: float = 0.05
     ot_gamma: float = 1.0
     ot_max_iter: int = 100
@@ -173,6 +185,15 @@ class TemporalRunConfig:
             raise ValueError("cross_cell_top_k_edges_per_unit must be positive.")
         if self.pij_temperature <= 0:
             raise ValueError("pij_temperature must be positive.")
+        if self.pij_entropy_epsilon <= 0:
+            raise ValueError("pij_entropy_epsilon must be positive.")
+        if self.pij_unbalanced_mass <= 0:
+            raise ValueError("pij_unbalanced_mass must be positive.")
+        if self.pij_cost_metric not in {"cosine", "euclidean"}:
+            raise ValueError("pij_cost_metric must be one of ['cosine', 'euclidean'].")
+        for field_name in ("pij_expr_weight", "pij_spatial_weight", "pij_graph_energy_weight"):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"{field_name} must be nonnegative.")
         if self.ot_epsilon <= 0:
             raise ValueError("ot_epsilon must be positive.")
         if self.ot_gamma <= 0:
