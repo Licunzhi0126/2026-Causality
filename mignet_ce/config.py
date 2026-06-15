@@ -63,6 +63,9 @@ LAYER_SPECS: Dict[str, LayerSpec] = {
     "louvain_k40": LayerSpec(name="louvain_k40", sample_prefix="louvain40"),
     "louvain_k150": LayerSpec(name="louvain_k150", sample_prefix="louvain150"),
     "louvain_less_than5": LayerSpec(name="louvain_less_than5", sample_prefix="louvainLessThan5"),
+    "spatial_domain_less_than5": LayerSpec(name="spatial_domain_less_than5", sample_prefix="spatialDomainLessThan5"),
+    "spatial_domain_k150": LayerSpec(name="spatial_domain_k150", sample_prefix="spatialDomain150"),
+    "spatial_domain_k40": LayerSpec(name="spatial_domain_k40", sample_prefix="spatialDomain40"),
 }
 
 DEFAULT_LEVEL_ORDER: Tuple[str, ...] = ("spot", "louvain_less_than5", "louvain_k150", "seurat_k40")
@@ -98,6 +101,19 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
         VerticalPairSpec("spot", "seurat_k150"),
         VerticalPairSpec("spot", "seurat_k40"),
         VerticalPairSpec("seurat_less_than5", "seurat_k40"),
+    ),
+    "spatial_domain_adjacent": (
+        VerticalPairSpec("spot", "spatial_domain_less_than5"),
+        VerticalPairSpec("spatial_domain_less_than5", "spatial_domain_k150"),
+        VerticalPairSpec("spatial_domain_k150", "spatial_domain_k40"),
+    ),
+    "spatial_domain_all": (
+        VerticalPairSpec("spot", "spatial_domain_less_than5"),
+        VerticalPairSpec("spatial_domain_less_than5", "spatial_domain_k150"),
+        VerticalPairSpec("spatial_domain_k150", "spatial_domain_k40"),
+        VerticalPairSpec("spot", "spatial_domain_k150"),
+        VerticalPairSpec("spot", "spatial_domain_k40"),
+        VerticalPairSpec("spatial_domain_less_than5", "spatial_domain_k40"),
     ),
 }
 

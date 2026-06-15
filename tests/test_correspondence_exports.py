@@ -16,14 +16,27 @@ def test_pair_presets_include_seurat_and_louvain_cross_level_pairs() -> None:
     assert "louvain_k40" in LAYER_SPECS
     assert "seurat_k150" in LAYER_SPECS
     assert "seurat_less_than5" in LAYER_SPECS
+    assert "spatial_domain_less_than5" in LAYER_SPECS
+    assert "spatial_domain_k150" in LAYER_SPECS
+    assert "spatial_domain_k40" in LAYER_SPECS
     assert ("seurat", "seurat40") == LAYER_SPECS["seurat_k40"].sample_prefixes
+    assert ("spatialDomainLessThan5",) == LAYER_SPECS["spatial_domain_less_than5"].sample_prefixes
+    assert ("spatialDomain150",) == LAYER_SPECS["spatial_domain_k150"].sample_prefixes
+    assert ("spatialDomain40",) == LAYER_SPECS["spatial_domain_k40"].sample_prefixes
 
     louvain_all = {(pair.lower_layer, pair.upper_layer) for pair in PAIR_PRESETS["louvain_all"]}
     seurat_all = {(pair.lower_layer, pair.upper_layer) for pair in PAIR_PRESETS["seurat_all"]}
+    spatial_domain_all = {(pair.lower_layer, pair.upper_layer) for pair in PAIR_PRESETS["spatial_domain_all"]}
     assert ("spot", "louvain_k40") in louvain_all
     assert ("louvain_less_than5", "louvain_k40") in louvain_all
     assert ("spot", "seurat_k40") in seurat_all
     assert ("seurat_less_than5", "seurat_k40") in seurat_all
+    assert ("spot", "spatial_domain_less_than5") in spatial_domain_all
+    assert ("spatial_domain_less_than5", "spatial_domain_k150") in spatial_domain_all
+    assert ("spatial_domain_k150", "spatial_domain_k40") in spatial_domain_all
+    assert ("spot", "spatial_domain_k150") in spatial_domain_all
+    assert ("spot", "spatial_domain_k40") in spatial_domain_all
+    assert ("spatial_domain_less_than5", "spatial_domain_k40") in spatial_domain_all
 
 
 def test_overlap_tables_report_spot_correspondence_and_quality() -> None:
