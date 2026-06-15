@@ -5,9 +5,16 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import ArpackNoConvergence, eigsh
 
 from mignet_ce.graph.builder import LayerGraph
+
+
+_LAPLACIAN_DENSE_EIGEN_THRESHOLD = 512
+_LAPLACIAN_DENSE_FALLBACK_THRESHOLD = 2048
+_LAPLACIAN_ARPACK_TOL = 1e-6
+_LAPLACIAN_ARPACK_MIN_MAXITER = 5000
+_LAPLACIAN_ARPACK_MAXITER_FACTOR = 20
 
 
 def graph_to_adjacency(
@@ -48,6 +55,39 @@ def graph_to_adjacency(
     return sp.coo_matrix((data, (rows, cols)), shape=shape, dtype=float).tocsr()
 
 
+def _dense_laplacian_eigh(laplacian: sp.spmatrix) -> tuple[np.ndarray, np.ndarray]:
+    return np.linalg.eigh(laplacian.toarray())
+
+
+def _solve_laplacian_eigenvectors(laplacian: sp.spmatrix, eig_count: int) -> tuple[np.ndarray, np.ndarray]:
+    n_units = laplacian.shape[0]
+    if eig_count >= n_units or n_units <= _LAPLACIAN_DENSE_EIGEN_THRESHOLD:
+        return _dense_laplacian_eigh(laplacian)
+
+    try:
+        return eigsh(
+            laplacian,
+            k=eig_count,
+            which="SM",
+            tol=_LAPLACIAN_ARPACK_TOL,
+            maxiter=max(_LAPLACIAN_ARPACK_MIN_MAXITER, _LAPLACIAN_ARPACK_MAXITER_FACTOR * n_units),
+        )
+    except ArpackNoConvergence as exc:
+        eigvals = getattr(exc, "eigenvalues", None)
+        eigvecs = getattr(exc, "eigenvectors", None)
+        if eigvals is not None and eigvecs is not None:
+            eigvals = np.asarray(eigvals, dtype=float)
+            eigvecs = np.asarray(eigvecs, dtype=float)
+            if eigvecs.ndim == 1:
+                eigvecs = eigvecs[:, None]
+            if eigvals.size > 0 and eigvecs.shape[0] == n_units and eigvecs.shape[1] > 0:
+                keep = min(eigvals.size, eigvecs.shape[1])
+                return eigvals[:keep], eigvecs[:, :keep]
+        if n_units <= _LAPLACIAN_DENSE_FALLBACK_THRESHOLD:
+            return _dense_laplacian_eigh(laplacian)
+        raise
+
+
 def laplacian_embedding(
     adjacency: sp.spmatrix | np.ndarray,
     n_components: int = 5,
@@ -75,10 +115,7 @@ def laplacian_embedding(
         laplacian = sp.diags(degree) - adjacency
 
     eig_count = min(n_units, n_components + 1)
-    if eig_count >= n_units:
-        eigvals, eigvecs = np.linalg.eigh(laplacian.toarray())
-    else:
-        eigvals, eigvecs = eigsh(laplacian, k=eig_count, which="SM")
+    eigvals, eigvecs = _solve_laplacian_eigenvectors(laplacian, eig_count)
 
     order = np.argsort(eigvals)
     eigvecs = np.asarray(eigvecs[:, order], dtype=float)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -74,6 +77,83 @@ def test_metrics_accept_precomputed_pij() -> None:
     )
     assert metrics.loc[0, "pij_method"] == "test"
     assert metrics.loc[0, "EI_gain"] == pytest.approx(0.0)
+
+
+def test_slat_adapter_uses_slat_edges_features_return(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    def module(name: str) -> types.ModuleType:
+        mod = types.ModuleType(name)
+        mod.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+        monkeypatch.setitem(sys.modules, name, mod)
+        return mod
+
+    torch_mod = module("torch")
+    torch_mod.manual_seed = lambda seed: calls.setdefault("manual_seed", seed)
+    torch_mod.cuda = types.SimpleNamespace(
+        is_available=lambda: False,
+        manual_seed_all=lambda seed: calls.setdefault("cuda_seed", seed),
+    )
+
+    scslat_mod = module("scSLAT")
+    model_mod = module("scSLAT.model")
+    loaddata_mod = module("scSLAT.model.loaddata")
+    preprocess_mod = module("scSLAT.model.preprocess")
+    utils_mod = module("scSLAT.model.utils")
+    scslat_mod.model = model_mod
+    model_mod.loaddata = loaddata_mod
+    model_mod.preprocess = preprocess_mod
+    model_mod.utils = utils_mod
+
+    def fake_cal_spatial_net(adata, **kwargs) -> None:
+        adata.uns["cal_spatial_net_kwargs"] = kwargs
+
+    def fake_load_anndatas(adatas, **kwargs):
+        calls["load_kwargs"] = kwargs
+        assert all("cal_spatial_net_kwargs" in adata.uns for adata in adatas)
+        return ["source_edges", "target_edges"], ["source_features", "target_features"]
+
+    class FakeTensor:
+        def __init__(self, values: np.ndarray) -> None:
+            self.values = np.asarray(values, dtype=float)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return self.values
+
+    def fake_run_slat(features, edges, **kwargs):
+        calls["features"] = features
+        calls["edges"] = edges
+        calls["run_kwargs"] = kwargs
+        return (
+            FakeTensor(np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])),
+            FakeTensor(np.array([[1.0, 0.0], [0.0, 1.0]])),
+            0.25,
+        )
+
+    preprocess_mod.Cal_Spatial_Net = fake_cal_spatial_net
+    loaddata_mod.load_anndatas = fake_load_anndatas
+    utils_mod.run_SLAT = fake_run_slat
+
+    p, metadata = build_slat_transition_kernel(
+        np.ones((3, 2)),
+        np.ones((2, 2)),
+        np.zeros((3, 2)),
+        np.zeros((2, 2)),
+        epochs=1,
+    )
+
+    assert p.shape == (3, 2)
+    assert_row_stochastic(p)
+    assert calls["features"] == ["source_features", "target_features"]
+    assert calls["edges"] == ["source_edges", "target_edges"]
+    assert calls["load_kwargs"] == {"feature": "raw", "self_loop": True, "check_order": False}
+    assert metadata["run_time_seconds"] == pytest.approx(0.25)
 
 
 def test_slat_requires_real_dependencies() -> None:

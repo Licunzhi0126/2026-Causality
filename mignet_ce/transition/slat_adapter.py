@@ -76,14 +76,12 @@ def build_slat_transition_kernel(
     Cal_Spatial_Net(source_adata, k_cutoff=source_k, model="KNN", verbose=False)
     Cal_Spatial_Net(target_adata, k_cutoff=target_k, model="KNN", verbose=False)
 
-    graph_data = load_anndatas(
+    edges, features = load_anndatas(
         [source_adata, target_adata],
         feature="raw",
         self_loop=True,
         check_order=False,
     )
-    features = [graph_data[0].x, graph_data[1].x]
-    edges = [graph_data[0].edge_index, graph_data[1].edge_index]
     embd0, embd1, run_time = run_SLAT(
         features=features,
         edges=edges,
