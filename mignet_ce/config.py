@@ -117,15 +117,40 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
     ),
 }
 
-PIJ_METHODS = {"joint_nmf", "laplacian", "3dot", "slat", "expr_ot", "energy_entropy_ot"}
+PIJ_METHODS = {
+    "joint_nmf",
+    "laplacian",
+    "3dot",
+    "slat",
+    "expr_ot",
+    "energy_entropy_ot",
+    "pseudotime_ot",
+    "sr_ot",
+    "velocity_ot",
+    "development_ot",
+}
 PIJ_METHOD_PRESETS = {
     "core": ("joint_nmf", "laplacian", "3dot", "slat"),
     "ot_basic": ("expr_ot", "energy_entropy_ot"),
-    "all": ("joint_nmf", "laplacian", "3dot", "slat", "expr_ot", "energy_entropy_ot"),
+    "development_scalar": ("pseudotime_ot", "sr_ot"),
+    "development_all": ("pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"),
+    "all": (
+        "joint_nmf",
+        "laplacian",
+        "3dot",
+        "slat",
+        "expr_ot",
+        "energy_entropy_ot",
+        "pseudotime_ot",
+        "sr_ot",
+        "velocity_ot",
+        "development_ot",
+    ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
 CROSS_CELL_DDI_SOURCES = {"direct", "coarse_grained"}
+DEVELOPMENT_PIJ_METHODS = {"pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"}
 
 
 @dataclass
@@ -149,11 +174,20 @@ class TemporalRunConfig:
     cross_cell_top_k_edges: int = 1000
     cross_cell_top_k_edges_per_unit: int = 5
     export_pij: bool = False
+    development_feature_root: Path | None = None
+    pij_feature_aggregation: str = "mean"
+    pij_missing_feature_policy: str = "error"
     pij_feature_components: int | None = 30
     pij_temperature: float = 1.0
     pij_expr_weight: float = 1.0
     pij_spatial_weight: float = 0.2
     pij_graph_energy_weight: float = 0.2
+    pij_pseudotime_weight: float = 0.5
+    pij_sr_weight: float = 0.5
+    pij_potency_weight: float = 0.5
+    pij_velocity_weight: float = 0.5
+    pij_backward_pseudotime_weight: float = 0.0
+    pij_reverse_potency_weight: float = 0.0
     pij_entropy_epsilon: float = 0.05
     pij_use_unbalanced_ot: bool = False
     pij_unbalanced_mass: float = 1.0
@@ -191,6 +225,8 @@ class TemporalRunConfig:
         method = self.effective_pij_method()
         if method not in PIJ_METHODS:
             raise ValueError(f"pij_method must be one of {sorted(PIJ_METHODS)}.")
+        if method in DEVELOPMENT_PIJ_METHODS and self.development_feature_root is None:
+            raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
         if self.cross_cell_ddi_source not in CROSS_CELL_DDI_SOURCES:
@@ -207,7 +243,21 @@ class TemporalRunConfig:
             raise ValueError("pij_unbalanced_mass must be positive.")
         if self.pij_cost_metric not in {"cosine", "euclidean"}:
             raise ValueError("pij_cost_metric must be one of ['cosine', 'euclidean'].")
-        for field_name in ("pij_expr_weight", "pij_spatial_weight", "pij_graph_energy_weight"):
+        if self.pij_feature_aggregation not in {"mean", "median"}:
+            raise ValueError("pij_feature_aggregation must be one of ['mean', 'median'].")
+        if self.pij_missing_feature_policy not in {"error", "impute_mean", "ignore"}:
+            raise ValueError("pij_missing_feature_policy must be one of ['error', 'impute_mean', 'ignore'].")
+        for field_name in (
+            "pij_expr_weight",
+            "pij_spatial_weight",
+            "pij_graph_energy_weight",
+            "pij_pseudotime_weight",
+            "pij_sr_weight",
+            "pij_potency_weight",
+            "pij_velocity_weight",
+            "pij_backward_pseudotime_weight",
+            "pij_reverse_potency_weight",
+        ):
             if getattr(self, field_name) < 0:
                 raise ValueError(f"{field_name} must be nonnegative.")
         if self.ot_epsilon <= 0:

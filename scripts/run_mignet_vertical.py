@@ -45,8 +45,24 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--cross-cell-top-k-edges-per-unit", type=int, default=5)
     parser.add_argument("--export-pij", action="store_true")
     parser.add_argument("--export-pij-topk", type=int, default=10)
+    parser.add_argument("--development-feature-root", type=Path, default=None)
+    parser.add_argument("--pij-feature-aggregation", choices=["mean", "median"], default="mean")
+    parser.add_argument("--pij-missing-feature-policy", choices=["error", "impute_mean", "ignore"], default="error")
     parser.add_argument("--pij-feature-components", type=int, default=30)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
+    parser.add_argument("--pij-expr-weight", type=float, default=1.0)
+    parser.add_argument("--pij-spatial-weight", type=float, default=0.2)
+    parser.add_argument("--pij-graph-energy-weight", type=float, default=0.2)
+    parser.add_argument("--pij-pseudotime-weight", type=float, default=0.5)
+    parser.add_argument("--pij-sr-weight", type=float, default=0.5)
+    parser.add_argument("--pij-potency-weight", type=float, default=0.5)
+    parser.add_argument("--pij-velocity-weight", type=float, default=0.5)
+    parser.add_argument("--pij-backward-pseudotime-weight", type=float, default=0.0)
+    parser.add_argument("--pij-reverse-potency-weight", type=float, default=0.0)
+    parser.add_argument("--pij-entropy-epsilon", type=float, default=0.05)
+    parser.add_argument("--pij-use-unbalanced-ot", action="store_true")
+    parser.add_argument("--pij-unbalanced-mass", type=float, default=1.0)
+    parser.add_argument("--pij-cost-metric", choices=["cosine", "euclidean"], default="cosine")
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
     parser.add_argument("--ot-gamma", type=float, default=1.0)
     parser.add_argument("--ot-max-iter", type=int, default=100)
@@ -100,8 +116,24 @@ def main() -> None:
         cross_cell_top_k_edges_per_unit=args.cross_cell_top_k_edges_per_unit,
         export_pij=args.export_pij,
         export_pij_topk=args.export_pij_topk,
+        development_feature_root=args.development_feature_root,
+        pij_feature_aggregation=args.pij_feature_aggregation,
+        pij_missing_feature_policy=args.pij_missing_feature_policy,
         pij_feature_components=args.pij_feature_components,
         pij_temperature=args.pij_temperature,
+        pij_expr_weight=args.pij_expr_weight,
+        pij_spatial_weight=args.pij_spatial_weight,
+        pij_graph_energy_weight=args.pij_graph_energy_weight,
+        pij_pseudotime_weight=args.pij_pseudotime_weight,
+        pij_sr_weight=args.pij_sr_weight,
+        pij_potency_weight=args.pij_potency_weight,
+        pij_velocity_weight=args.pij_velocity_weight,
+        pij_backward_pseudotime_weight=args.pij_backward_pseudotime_weight,
+        pij_reverse_potency_weight=args.pij_reverse_potency_weight,
+        pij_entropy_epsilon=args.pij_entropy_epsilon,
+        pij_use_unbalanced_ot=args.pij_use_unbalanced_ot,
+        pij_unbalanced_mass=args.pij_unbalanced_mass,
+        pij_cost_metric=args.pij_cost_metric,
         ot_epsilon=args.ot_epsilon,
         ot_gamma=args.ot_gamma,
         ot_max_iter=args.ot_max_iter,

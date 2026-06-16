@@ -258,6 +258,7 @@ class VerticalMIGNetPipeline:
             for (t0, t1), matrix in kernels.p_lower.items():
                 label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
                 save_transition_npz(pij_dir / f"{label}_lower_P.npz", matrix)
+                lower_diagnostics = kernels.kernel_diagnostics.get("lower", {}).get((t0, t1))
                 transition_topk_table(
                     matrix,
                     source_units=stable_upper_units,
@@ -266,10 +267,12 @@ class VerticalMIGNetPipeline:
                     space="lower",
                     top_k=self.cfg.export_pij_topk,
                     pij_method=self.cfg.effective_pij_method(),
+                    diagnostic_costs=lower_diagnostics,
                 ).to_csv(pij_dir / f"{label}_lower_P_topk.csv", index=False)
             for (t0, t1), matrix in kernels.p_upper.items():
                 label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
                 save_transition_npz(pij_dir / f"{label}_upper_P.npz", matrix)
+                upper_diagnostics = kernels.kernel_diagnostics.get("upper", {}).get((t0, t1))
                 transition_topk_table(
                     matrix,
                     source_units=stable_upper_units,
@@ -278,6 +281,7 @@ class VerticalMIGNetPipeline:
                     space="upper",
                     top_k=self.cfg.export_pij_topk,
                     pij_method=self.cfg.effective_pij_method(),
+                    diagnostic_costs=upper_diagnostics,
                 ).to_csv(pij_dir / f"{label}_upper_P_topk.csv", index=False)
             with (pij_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
                 json.dump(serialize_metadata(kernels.kernel_metadata), handle, ensure_ascii=False, indent=2, default=_json_default)

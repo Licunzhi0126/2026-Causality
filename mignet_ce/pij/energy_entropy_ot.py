@@ -30,6 +30,8 @@ class EnergyEntropyOTPijMethod:
             source_coords: np.ndarray | None,
             target_coords: np.ndarray | None,
             space: str,
+            t0: int,
+            t1: int,
         ):
             components = {
                 "expression": pairwise_feature_cost(

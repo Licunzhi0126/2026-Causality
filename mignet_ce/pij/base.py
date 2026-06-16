@@ -30,6 +30,9 @@ class TransitionKernels:
     p_lower: Dict[TimePair, np.ndarray] = field(default_factory=dict)
     p_upper: Dict[TimePair, np.ndarray] = field(default_factory=dict)
     kernel_metadata: dict[str, object] = field(default_factory=dict)
+    kernel_diagnostics: dict[str, Dict[TimePair, dict[str, np.ndarray]]] = field(
+        default_factory=lambda: {"lower": {}, "upper": {}}
+    )
 
 
 class PijMethod(Protocol):

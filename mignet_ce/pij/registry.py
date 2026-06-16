@@ -4,12 +4,16 @@ from typing import Dict, Sequence, Type
 
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.pij.development_ot import DevelopmentOTPijMethod
 from mignet_ce.pij.energy_entropy_ot import EnergyEntropyOTPijMethod
 from mignet_ce.pij.expr_ot import ExprOTPijMethod
 from mignet_ce.pij.joint_nmf import JointNMFPijMethod
 from mignet_ce.pij.laplacian import LaplacianPijMethod
+from mignet_ce.pij.pseudotime_ot import PseudotimeOTPijMethod
 from mignet_ce.pij.slat import SLATPijMethod
+from mignet_ce.pij.sr_ot import SROTPijMethod
 from mignet_ce.pij.three_dot import ThreeDotPijMethod
+from mignet_ce.pij.velocity_ot import VelocityOTPijMethod
 from mignet_ce.pij.base import MethodResult, PijMethod, TimePair, TransitionKernels
 
 
@@ -20,6 +24,10 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "slat": SLATPijMethod,
     "expr_ot": ExprOTPijMethod,
     "energy_entropy_ot": EnergyEntropyOTPijMethod,
+    "pseudotime_ot": PseudotimeOTPijMethod,
+    "sr_ot": SROTPijMethod,
+    "velocity_ot": VelocityOTPijMethod,
+    "development_ot": DevelopmentOTPijMethod,
 }
 
 

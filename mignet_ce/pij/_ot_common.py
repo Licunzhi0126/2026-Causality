@@ -13,8 +13,9 @@ from mignet_ce.transition.ot import build_entropic_ot_kernel
 
 
 CostBuilder = Callable[
-    [np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, str],
-    tuple[Mapping[str, np.ndarray], Mapping[str, float]],
+    [np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, str, int, int],
+    tuple[Mapping[str, np.ndarray], Mapping[str, float]]
+    | tuple[Mapping[str, np.ndarray], Mapping[str, float], Mapping[str, object]],
 ]
 
 
@@ -30,16 +31,25 @@ def _build_kernel(
     source_coords: np.ndarray | None,
     target_coords: np.ndarray | None,
     space: str,
+    t0: int,
+    t1: int,
     cfg: TemporalRunConfig,
     component_builder: CostBuilder,
-) -> tuple[np.ndarray, dict[str, object]]:
-    components, weights = component_builder(
+) -> tuple[np.ndarray, dict[str, object], dict[str, np.ndarray]]:
+    built = component_builder(
         source_features,
         target_features,
         source_coords,
         target_coords,
         space,
+        t0,
+        t1,
     )
+    if len(built) == 2:
+        components, weights = built
+        extra_metadata: Mapping[str, object] = {}
+    else:
+        components, weights, extra_metadata = built
     cost, cost_summary = combine_costs(components, weights)
     kernel = build_entropic_ot_kernel(
         cost,
@@ -57,7 +67,10 @@ def _build_kernel(
         "cost_summary": cost_summary,
         "row_stochastic": bool(kernel.shape[1] == 0 or np.allclose(kernel.sum(axis=1), 1.0)),
     }
-    return kernel, metadata
+    metadata.update(dict(extra_metadata))
+    diagnostics = {f"{name}_cost": np.asarray(cost, dtype=float) for name, cost in components.items()}
+    diagnostics["main_cost"] = np.asarray(cost, dtype=float)
+    return kernel, metadata, diagnostics
 
 
 def run_ot_pij_method(
@@ -86,26 +99,32 @@ def run_ot_pij_method(
         }
     )
     for t0, t1 in pairs:
-        lower_kernel, lower_meta = _build_kernel(
+        lower_kernel, lower_meta, lower_diagnostics = _build_kernel(
             result.lower_features[t0],
             result.lower_features[t1],
             _coords_at(result.lower_coords, t0),
             _coords_at(result.lower_coords, t1),
             "lower",
+            t0,
+            t1,
             cfg,
             component_builder,
         )
-        upper_kernel, upper_meta = _build_kernel(
+        upper_kernel, upper_meta, upper_diagnostics = _build_kernel(
             result.upper_features[t0],
             result.upper_features[t1],
             _coords_at(result.upper_coords, t0),
             _coords_at(result.upper_coords, t1),
             "upper",
+            t0,
+            t1,
             cfg,
             component_builder,
         )
         kernels.p_lower[(t0, t1)] = lower_kernel
         kernels.p_upper[(t0, t1)] = upper_kernel
+        kernels.kernel_diagnostics.setdefault("lower", {})[(t0, t1)] = lower_diagnostics
+        kernels.kernel_diagnostics.setdefault("upper", {})[(t0, t1)] = upper_diagnostics
         pair_label = f"{context.time_points[t0]}->{context.time_points[t1]}"
         kernels.kernel_metadata[pair_label] = {
             "lower": lower_meta,

@@ -26,6 +26,8 @@ class ExprOTPijMethod:
             source_coords: np.ndarray | None,
             target_coords: np.ndarray | None,
             space: str,
+            t0: int,
+            t1: int,
         ):
             return (
                 {

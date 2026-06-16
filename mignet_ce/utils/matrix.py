@@ -70,6 +70,7 @@ def transition_topk_table(
     space: str,
     top_k: int = 10,
     pij_method: str | None = None,
+    diagnostic_costs: Mapping[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     arr = np.asarray(matrix, dtype=float)
     source_units = list(map(str, source_units))
@@ -86,16 +87,20 @@ def transition_topk_table(
         values = arr[i]
         order = np.argsort(-values)[:k]
         for rank, j in enumerate(order, start=1):
-            rows.append(
-                {
-                    "time_pair": time_pair,
-                    "space": space,
-                    "pij_method": pij_method,
-                    "source_unit": source,
-                    "target_unit": target_units[j],
-                    "probability": float(values[j]),
-                    "pij": float(values[j]),
-                    "rank": rank,
-                }
-            )
+            record = {
+                "time_pair": time_pair,
+                "space": space,
+                "pij_method": pij_method,
+                "source_unit": source,
+                "target_unit": target_units[j],
+                "probability": float(values[j]),
+                "pij": float(values[j]),
+                "rank": rank,
+            }
+            if diagnostic_costs:
+                for name, costs in diagnostic_costs.items():
+                    cost_arr = np.asarray(costs, dtype=float)
+                    if cost_arr.shape == arr.shape:
+                        record[name] = float(cost_arr[i, j])
+            rows.append(record)
     return pd.DataFrame(rows)

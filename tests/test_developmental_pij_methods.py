@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
+from mignet_ce.mapping import OverlapMapping
+from mignet_ce.networks.base import NetworkContext
+from mignet_ce.pij.registry import get_pij_method
+
+
+def assert_row_stochastic(matrix: np.ndarray) -> None:
+    assert matrix.ndim == 2
+    assert np.all(np.isfinite(matrix))
+    assert np.all(matrix >= 0)
+    assert np.allclose(matrix.sum(axis=1), 1.0)
+
+
+def _synthetic_context() -> NetworkContext:
+    stable_units = ["u1", "u2", "u3"]
+    lower_units = ["s1", "s2", "s3"]
+    overlaps = [
+        OverlapMapping(
+            lower_units=lower_units,
+            upper_units=stable_units,
+            counts=np.eye(3),
+            weights=np.eye(3),
+        ),
+        OverlapMapping(
+            lower_units=lower_units,
+            upper_units=stable_units,
+            counts=np.eye(3),
+            weights=np.eye(3),
+        ),
+    ]
+    lower_mats = [
+        np.array([[1.0, 0.0, 0.2], [0.0, 1.0, 0.1], [0.2, 0.1, 1.0]]),
+        np.array([[0.9, 0.1, 0.3], [0.1, 0.9, 0.2], [0.3, 0.2, 0.9]]),
+    ]
+    upper_mats = [
+        np.array([[1.0, 0.0, 0.3], [0.0, 1.0, 0.2], [0.3, 0.2, 1.0]]),
+        np.array([[0.8, 0.2, 0.4], [0.2, 0.8, 0.3], [0.4, 0.3, 0.8]]),
+    ]
+    return NetworkContext(
+        organ="heart",
+        pair=VerticalPairSpec("spot", "louvain_less_than5"),
+        time_points=["11.5", "12.5"],
+        network_method="synthetic",
+        stable_upper_units=stable_units,
+        shared_genes=["g1", "g2", "g3"],
+        lower_mats=lower_mats,
+        upper_mats=upper_mats,
+        overlaps=overlaps,
+        lower_units_by_time=[lower_units, lower_units],
+        upper_units_by_time=[stable_units, stable_units],
+        upper_coords_by_time=[
+            np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            np.array([[0.1, 0.0], [1.1, 0.0], [0.0, 1.1]]),
+        ],
+        feature_names=["f1", "f2", "f3"],
+        feature_blocks={"synthetic": ["f1", "f2", "f3"]},
+        graph_summaries=[],
+        coverage_tables=[pd.DataFrame(), pd.DataFrame()],
+    )
+
+
+def _write_features(root, layer: str, stage: str, units: list[str], velocity_dims: int = 3, include: set[str] | None = None) -> None:
+    include = include or {"pseudotime", "sr", "potency_score", "velocity"}
+    rows = []
+    for idx, unit in enumerate(units):
+        row: dict[str, object] = {"unit_id": unit}
+        if "pseudotime" in include:
+            row["pseudotime"] = 0.1 + 0.2 * idx + (0.05 if stage == "12.5" else 0.0)
+        if "sr" in include:
+            row["sr"] = 0.9 - 0.1 * idx
+        if "potency_score" in include:
+            row["potency_score"] = 0.8 - 0.1 * idx
+        if "velocity" in include:
+            for dim in range(velocity_dims):
+                row[f"velocity_{dim}"] = 1.0 if dim == idx % max(1, velocity_dims) else 0.1 * (idx + dim + 1)
+        rows.append(row)
+    path = root / layer / f"heart_{stage}_features.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _write_all_feature_files(root, velocity_dims: int = 3, include: set[str] | None = None) -> None:
+    for stage in ("11.5", "12.5"):
+        _write_features(root, "spot", stage, ["s1", "s2", "s3"], velocity_dims=velocity_dims, include=include)
+        _write_features(root, "louvain_less_than5", stage, ["u1", "u2", "u3"], velocity_dims=velocity_dims, include=include)
+
+
+@pytest.mark.parametrize("method_name", ["pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"])
+def test_developmental_ot_methods_build_kernels(tmp_path, method_name: str) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root)
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method=method_name,
+        pij_feature_components=None,
+        ot_max_iter=20,
+    )
+
+    result, kernels = get_pij_method(method_name).run(_synthetic_context(), cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["pij_method"] == method_name
+    assert kernels.kernel_metadata["pij_method"] == method_name
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])
+    assert "main_cost" in kernels.kernel_diagnostics["lower"][(0, 1)]
+
+
+def test_pseudotime_ot_errors_when_pseudotime_column_is_missing(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root, include={"sr", "potency_score", "velocity"})
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="pseudotime_ot",
+        pij_feature_components=None,
+    )
+
+    with pytest.raises(ValueError, match="pseudotime_ot requires developmental feature column"):
+        get_pij_method("pseudotime_ot").run(_synthetic_context(), cfg, [(0, 1)])
+
+
+def test_sr_ot_accepts_potency_score_when_sr_is_missing(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root, include={"pseudotime", "potency_score", "velocity"})
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="sr_ot",
+        pij_feature_components=None,
+    )
+
+    _, kernels = get_pij_method("sr_ot").run(_synthetic_context(), cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_velocity_ot_errors_when_velocity_dimension_does_not_match_features(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root, velocity_dims=2)
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="velocity_ot",
+        pij_feature_components=None,
+    )
+
+    with pytest.raises(ValueError, match="velocity_\\* dimension to match graph feature dimension"):
+        get_pij_method("velocity_ot").run(_synthetic_context(), cfg, [(0, 1)])
