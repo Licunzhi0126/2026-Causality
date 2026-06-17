@@ -36,32 +36,7 @@ from mignet_ce.networks.base import NetworkContext
 from mignet_ce.utils.coords import align_coords
 
 
-MICRO_FEATURES = [
-    "micro_intra_strength",
-    "micro_cross_out_strength",
-    "micro_cross_in_strength",
-    "micro_cross_total_strength",
-]
-CELL_COMM_FEATURES = [
-    "cell_comm_out_strength",
-    "cell_comm_in_strength",
-    "cell_comm_total_strength",
-    "cell_comm_out_entropy",
-    "cell_comm_in_entropy",
-    "cell_comm_topk_out_strength",
-    "cell_comm_topk_in_strength",
-]
-MACRO_DDI_FEATURES = [
-    "macro_ddi_out_strength",
-    "macro_ddi_in_strength",
-    "macro_ddi_total_strength",
-]
-FEATURE_NAMES = MICRO_FEATURES + CELL_COMM_FEATURES + MACRO_DDI_FEATURES
-FEATURE_BLOCKS = {
-    "micro_regulatory": MICRO_FEATURES,
-    "cell_communication": CELL_COMM_FEATURES,
-    "macro_ddi": MACRO_DDI_FEATURES,
-}
+TARGET_AWARE_BLOCK_ORDER = ("grn_target", "cci_out_target", "cci_in_source", "lr_target")
 
 
 @dataclass
@@ -71,8 +46,9 @@ class _LayerFeatureResult:
     cci: sp.csr_matrix
     cci_source: str
     mode: str
-    micro_edges: pd.DataFrame
+    grn_self_edges: pd.DataFrame
     cell_edges: pd.DataFrame
+    lr_edges: pd.DataFrame
 
 
 def _minmax_scale(values: np.ndarray, floor: float = 1e-6) -> np.ndarray:
@@ -93,6 +69,11 @@ def _split_complex_genes(value: object) -> List[str]:
     if not text:
         return []
     return [part for part in re.split(r"[_+|;/,]", text) if part]
+
+
+def _empty_edge_frame(include_stage: bool = True) -> pd.DataFrame:
+    columns = EDGE_COLUMNS + (["stage"] if include_stage else [])
+    return pd.DataFrame(columns=columns)
 
 
 def _threshold_sparse(mat: sp.spmatrix, cci_min: float) -> sp.csr_matrix:
@@ -144,57 +125,6 @@ def _read_cci_matrix(paths: LayerPaths, units: Sequence[str], cci_min: float) ->
     return _threshold_sparse(_align_square_matrix(total, index_names, units), cci_min), "lr_aggregate"
 
 
-def _row_entropy(mat: sp.spmatrix) -> np.ndarray:
-    csr = mat.tocsr()
-    out = np.zeros(csr.shape[0], dtype=float)
-    for row in range(csr.shape[0]):
-        data = csr.data[csr.indptr[row] : csr.indptr[row + 1]]
-        data = data[data > 0]
-        total = float(data.sum())
-        if total <= 0:
-            continue
-        prob = data / total
-        out[row] = float(-np.sum(prob * np.log(prob + 1e-12)))
-    return out
-
-
-def _row_topk_sum(mat: sp.spmatrix, k: int) -> np.ndarray:
-    csr = mat.tocsr()
-    out = np.zeros(csr.shape[0], dtype=float)
-    for row in range(csr.shape[0]):
-        data = csr.data[csr.indptr[row] : csr.indptr[row + 1]]
-        data = data[data > 0]
-        if data.size == 0:
-            continue
-        keep = min(int(k), data.size)
-        out[row] = float(np.partition(data, data.size - keep)[data.size - keep :].sum())
-    return out
-
-
-def _communication_features(mat: sp.spmatrix, top_k: int) -> np.ndarray:
-    csr = mat.tocsr()
-    out_strength = np.asarray(csr.sum(axis=1)).ravel()
-    in_strength = np.asarray(csr.sum(axis=0)).ravel()
-    return np.column_stack(
-        [
-            out_strength,
-            in_strength,
-            out_strength + in_strength,
-            _row_entropy(csr),
-            _row_entropy(csr.T),
-            _row_topk_sum(csr, top_k),
-            _row_topk_sum(csr.T, top_k),
-        ]
-    )
-
-
-def _macro_features(mat: sp.spmatrix) -> np.ndarray:
-    csr = mat.tocsr()
-    out_strength = np.asarray(csr.sum(axis=1)).ravel()
-    in_strength = np.asarray(csr.sum(axis=0)).ravel()
-    return np.column_stack([out_strength, in_strength, out_strength + in_strength])
-
-
 def _restrict_grn(grn: pd.DataFrame, shared_genes: Sequence[str]) -> pd.DataFrame:
     shared = set(shared_genes)
     out = grn[grn["regulator"].isin(shared) & grn["target"].isin(shared)].copy()
@@ -231,85 +161,42 @@ def _heap_to_frame(heap: list[tuple[float, int, dict[str, object]]]) -> pd.DataF
     return pd.DataFrame(records)
 
 
-def _micro_cross_features(
-    layer_name: str,
-    stage: str,
-    expr: pd.DataFrame,
-    paths: LayerPaths,
-    grn: pd.DataFrame,
-    cfg: TemporalRunConfig,
-) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame, str]:
-    n_units = expr.shape[0]
-    cross_out = np.zeros(n_units, dtype=float)
-    cross_in = np.zeros(n_units, dtype=float)
-    if not paths.cci_manifest.exists() or not paths.cci_lr_dir.exists():
-        return cross_out, cross_in, pd.DataFrame(), "lr_unavailable_intra_only"
-
-    manifest = read_commot_manifest(paths.cci_manifest)
-    index_names = read_commot_index(paths.cci_index)
-    gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.astype(str).tolist())}
-    pair_lookup = {
-        (str(row.regulator), str(row.target)): float(row.grn_weight_norm)
-        for row in grn.itertuples(index=False)
+def _build_target_aware_feature_names(stable_upper_units: Sequence[str]) -> Tuple[List[str], Dict[str, List[str]]]:
+    stable_upper_units = list(map(str, stable_upper_units))
+    blocks = {
+        "grn_target": [f"grntarget_to_{unit}" for unit in stable_upper_units],
+        "cci_out_target": [f"cciout_to_{unit}" for unit in stable_upper_units],
+        "cci_in_source": [f"cciin_from_{unit}" for unit in stable_upper_units],
+        "lr_target": [f"lr_to_{unit}" for unit in stable_upper_units],
     }
-    expr_values = expr.to_numpy(dtype=float)
-    heap: list[tuple[float, int, dict[str, object]]] = []
-    seq = 0
+    names: List[str] = []
+    for block in TARGET_AWARE_BLOCK_ORDER:
+        names.extend(blocks[block])
+    return names, blocks
 
-    for row in manifest.itertuples(index=False):
-        ligand_genes = [gene for gene in _split_complex_genes(row.ligand) if gene in gene_to_idx]
-        receptor_genes = [gene for gene in _split_complex_genes(row.receptor) if gene in gene_to_idx]
-        if not ligand_genes or not receptor_genes:
-            continue
-        usable_pairs = [
-            (ligand, receptor, pair_lookup[(ligand, receptor)])
-            for ligand in ligand_genes
-            for receptor in receptor_genes
-            if (ligand, receptor) in pair_lookup
-        ]
-        if not usable_pairs:
-            continue
-        matrix_path = paths.cci_lr_dir / str(row.filename)
-        mat = sp.load_npz(matrix_path)
-        aligned = _threshold_sparse(_align_square_matrix(mat, index_names, expr.index.astype(str).tolist()), cfg.cci_min).tocoo()
-        if aligned.nnz == 0:
-            continue
-        rows = np.asarray(aligned.row, dtype=int)
-        cols = np.asarray(aligned.col, dtype=int)
-        cci_values = np.asarray(aligned.data, dtype=float)
-        for ligand, receptor, grn_weight_norm in usable_pairs:
-            ligand_idx = gene_to_idx[ligand]
-            receptor_idx = gene_to_idx[receptor]
-            scores = cci_values * grn_weight_norm * expr_values[rows, ligand_idx] * expr_values[cols, receptor_idx]
-            if cfg.require_target_expression_for_inter:
-                scores = scores * (expr_values[cols, receptor_idx] > cfg.expr_threshold)
-            keep = np.flatnonzero(scores > 0)
-            if keep.size == 0:
-                continue
-            cross_out += np.bincount(rows[keep], weights=scores[keep], minlength=n_units)
-            cross_in += np.bincount(cols[keep], weights=scores[keep], minlength=n_units)
-            for idx in keep:
-                score = float(scores[idx])
-                seq += 1
-                _push_top_record(
-                    heap,
-                    cfg.cross_cell_top_k_edges,
-                    seq,
-                    score,
-                    {
-                        "stage": stage,
-                        "layer": layer_name,
-                        "src_unit": str(expr.index[int(rows[idx])]),
-                        "dst_unit": str(expr.index[int(cols[idx])]),
-                        "ligand": ligand,
-                        "receptor": receptor,
-                        "lr_key": str(getattr(row, "lr_key", f"{row.ligand}-{row.receptor}")),
-                        "cci_score_raw": float(cci_values[idx]),
-                        "grn_weight_norm": float(grn_weight_norm),
-                        "influence_score": score,
-                    },
-                )
-    return cross_out, cross_in, _heap_to_frame(heap), "lr_grn_fallback"
+
+def _identity_projection_weights(current_units: Sequence[str], stable_upper_units: Sequence[str]) -> np.ndarray:
+    current_units = list(map(str, current_units))
+    stable_upper_units = list(map(str, stable_upper_units))
+    stable_index = {unit: idx for idx, unit in enumerate(stable_upper_units)}
+    weights = np.zeros((len(current_units), len(stable_upper_units)), dtype=float)
+    for row, unit in enumerate(current_units):
+        col = stable_index.get(unit)
+        if col is not None:
+            weights[row, col] = 1.0
+    return weights
+
+
+def _project_grn_to_targets(intra_strength: np.ndarray, projection_weights: np.ndarray) -> np.ndarray:
+    return np.asarray(intra_strength, dtype=float)[:, None] * np.asarray(projection_weights, dtype=float)
+
+
+def _project_cci_out_to_targets(cci_matrix: sp.spmatrix, projection_weights: np.ndarray) -> np.ndarray:
+    return np.asarray(cci_matrix.tocsr() @ np.asarray(projection_weights, dtype=float), dtype=float)
+
+
+def _project_cci_in_from_targets(cci_matrix: sp.spmatrix, projection_weights: np.ndarray) -> np.ndarray:
+    return np.asarray(cci_matrix.tocsr().T @ np.asarray(projection_weights, dtype=float), dtype=float)
 
 
 def _edge_table_from_sparse(
@@ -354,7 +241,7 @@ def _edge_table_from_sparse(
         )
     frame = _heap_to_frame(heap)
     if frame.empty:
-        return pd.DataFrame(columns=EDGE_COLUMNS + ["stage"])
+        return _empty_edge_frame(include_stage=True)
     return frame.loc[:, EDGE_COLUMNS + ["stage"]]
 
 
@@ -386,22 +273,115 @@ def _self_loop_edges(values: np.ndarray, units: Sequence[str], layer_name: str, 
             }
         )
     if not records:
-        return pd.DataFrame(columns=EDGE_COLUMNS + ["stage"])
+        return _empty_edge_frame(include_stage=True)
     return pd.DataFrame.from_records(records).loc[:, EDGE_COLUMNS + ["stage"]]
 
 
-def _coarse_grain_cci(lower_cci: sp.spmatrix, overlap_weights: np.ndarray) -> sp.csr_matrix:
-    weights = sp.csr_matrix(overlap_weights)
-    return (weights.T @ lower_cci.tocsr() @ weights).tocsr()
+def _project_lr_to_targets(
+    layer_name: str,
+    stage: str,
+    expr: pd.DataFrame,
+    paths: LayerPaths,
+    projection_weights: np.ndarray,
+    grn: pd.DataFrame,
+    cfg: TemporalRunConfig,
+) -> Tuple[np.ndarray, pd.DataFrame, str]:
+    n_units, n_targets = projection_weights.shape
+    lr_features = np.zeros((n_units, n_targets), dtype=float)
+    if not paths.cci_manifest.exists() or not paths.cci_lr_dir.exists():
+        return lr_features, _empty_edge_frame(include_stage=True), "lr_unavailable"
 
+    manifest = read_commot_manifest(paths.cci_manifest)
+    index_names = read_commot_index(paths.cci_index)
+    unit_names = expr.index.astype(str).tolist()
+    gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.astype(str).tolist())}
+    grn_lookup = {
+        (str(row.regulator), str(row.target)): float(row.grn_weight_norm)
+        for row in grn.itertuples(index=False)
+    }
+    expr_values = expr.to_numpy(dtype=float)
+    heap: list[tuple[float, int, dict[str, object]]] = []
+    seq = 0
 
-def _select_rows(features: np.ndarray, source_units: Sequence[str], target_units: Sequence[str]) -> np.ndarray:
-    source_index = {unit: idx for idx, unit in enumerate(map(str, source_units))}
-    out = np.zeros((len(target_units), features.shape[1]), dtype=float)
-    for row, unit in enumerate(map(str, target_units)):
-        if unit in source_index:
-            out[row] = features[source_index[unit]]
-    return out
+    for row in manifest.itertuples(index=False):
+        ligand_genes = [gene for gene in _split_complex_genes(row.ligand) if gene in gene_to_idx]
+        receptor_genes = [gene for gene in _split_complex_genes(row.receptor) if gene in gene_to_idx]
+        if not ligand_genes or not receptor_genes:
+            continue
+
+        matrix_path = paths.cci_lr_dir / str(row.filename)
+        mat = sp.load_npz(matrix_path)
+        if mat.shape[0] != len(index_names) or mat.shape[1] != len(index_names):
+            raise ValueError(f"COMMOT matrix shape {mat.shape} does not match index length {len(index_names)} for {matrix_path}")
+        aligned = _threshold_sparse(_align_square_matrix(mat, index_names, unit_names), cfg.cci_min).tocoo()
+        if aligned.nnz == 0:
+            continue
+
+        rows = np.asarray(aligned.row, dtype=int)
+        cols = np.asarray(aligned.col, dtype=int)
+        cci_values = np.asarray(aligned.data, dtype=float)
+        for ligand in ligand_genes:
+            ligand_idx = gene_to_idx[ligand]
+            ligand_expr = expr_values[rows, ligand_idx]
+            for receptor in receptor_genes:
+                receptor_idx = gene_to_idx[receptor]
+                receptor_expr = expr_values[cols, receptor_idx]
+                scores = cci_values * ligand_expr * receptor_expr
+                if cfg.require_target_expression_for_inter:
+                    scores = scores * (receptor_expr > cfg.expr_threshold)
+                grn_weight = np.nan
+                if cfg.cross_cell_lr_use_grn_gate:
+                    grn_weight = grn_lookup.get((ligand, receptor), 0.0)
+                    if grn_weight <= 0:
+                        continue
+                    scores = scores * float(grn_weight)
+                keep = np.flatnonzero(scores > 0)
+                if keep.size == 0:
+                    continue
+
+                for src_idx in np.unique(rows[keep]):
+                    src_keep = keep[rows[keep] == src_idx]
+                    if src_keep.size == 0:
+                        continue
+                    weighted_projection = scores[src_keep, None] * projection_weights[cols[src_keep], :]
+                    lr_features[int(src_idx), :] += weighted_projection.sum(axis=0)
+
+                for idx in keep:
+                    score = float(scores[idx])
+                    seq += 1
+                    _push_top_record(
+                        heap,
+                        cfg.cross_cell_top_k_edges,
+                        seq,
+                        score,
+                        {
+                            "src_layer": layer_name,
+                            "src_unit": unit_names[int(rows[idx])],
+                            "src_gene": ligand,
+                            "dst_layer": layer_name,
+                            "dst_unit": unit_names[int(cols[idx])],
+                            "dst_gene": receptor,
+                            "edge_type": "target_aware_lr",
+                            "commot_lr_key": str(getattr(row, "lr_key", f"{row.ligand}-{row.receptor}")),
+                            "commot_ligand": str(row.ligand),
+                            "commot_receptor": str(row.receptor),
+                            "grn_weight_raw": np.nan,
+                            "grn_weight_norm": grn_weight,
+                            "cci_score_raw": float(cci_values[idx]),
+                            "cci_score_norm": np.nan,
+                            "distance_raw": np.nan,
+                            "influence_score": score,
+                            "stage": stage,
+                        },
+                    )
+
+    frame = _heap_to_frame(heap)
+    if frame.empty:
+        frame = _empty_edge_frame(include_stage=True)
+    else:
+        frame = frame.loc[:, EDGE_COLUMNS + ["stage"]]
+    mode = "lr_grn_gate" if cfg.cross_cell_lr_use_grn_gate else "lr_no_grn_gate"
+    return lr_features, frame, mode
 
 
 class CrossCellMultilayerBuilder:
@@ -417,6 +397,7 @@ class CrossCellMultilayerBuilder:
         all_paths = self._check_pair_paths(cfg, resolver, organ, pair)
         shared_genes = self._compute_shared_genes(cfg, all_paths, pair)
         stable_upper_units = self._stable_upper_units(cfg, all_paths, pair.upper_layer)
+        feature_names, feature_blocks = _build_target_aware_feature_names(stable_upper_units)
 
         lower_mats: List[np.ndarray] = []
         upper_mats: List[np.ndarray] = []
@@ -461,17 +442,28 @@ class CrossCellMultilayerBuilder:
             overlap_quality = summarize_overlap_quality(overlap_edges)
             overlap_quality["stage"] = stage
 
-            lower_result = self._build_layer_features(pair.lower_layer, stage, lower_expr, lower_paths, shared_genes, cfg)
-            upper_result = self._build_layer_features(pair.upper_layer, stage, upper_expr, upper_paths, shared_genes, cfg)
-
-            ddi_matrix = upper_result.cci
-            ddi_units = upper_expr.units
-            if cfg.cross_cell_ddi_source == "coarse_grained":
-                ddi_matrix = _coarse_grain_cci(lower_result.cci, overlap.weights)
-                ddi_units = stable_upper_units
-                macro = _select_rows(_macro_features(ddi_matrix), stable_upper_units, upper_expr.units)
-                macro_start = len(MICRO_FEATURES) + len(CELL_COMM_FEATURES)
-                upper_result.matrix[:, macro_start : macro_start + len(MACRO_DDI_FEATURES)] = macro
+            lower_projection = overlap.weights
+            upper_projection = _identity_projection_weights(upper_expr.units, stable_upper_units)
+            lower_result = self._build_layer_features(
+                pair.lower_layer,
+                stage,
+                lower_expr,
+                lower_paths,
+                shared_genes,
+                lower_projection,
+                stable_upper_units,
+                cfg,
+            )
+            upper_result = self._build_layer_features(
+                pair.upper_layer,
+                stage,
+                upper_expr,
+                upper_paths,
+                shared_genes,
+                upper_projection,
+                stable_upper_units,
+                cfg,
+            )
 
             if cfg.feature_log1p:
                 lower_mat = np.log1p(lower_result.matrix)
@@ -480,14 +472,6 @@ class CrossCellMultilayerBuilder:
                 lower_mat = lower_result.matrix
                 upper_mat = upper_result.matrix
 
-            upper_ddi_edges = _edge_table_from_sparse(
-                ddi_matrix,
-                ddi_units,
-                pair.upper_layer,
-                stage,
-                "macro_ddi",
-                cfg.cross_cell_top_k_edges,
-            )
             lower_mats.append(lower_mat)
             upper_mats.append(upper_mat)
             overlaps.append(overlap)
@@ -496,23 +480,13 @@ class CrossCellMultilayerBuilder:
             lower_assignments_by_time.append(lower_assignments.rows.copy())
             upper_assignments_by_time.append(upper_assignments.rows.copy())
             lower_graphs.append(lower_result.graph)
-            upper_graphs.append(
-                LayerGraph(
-                    layer=pair.upper_layer,
-                    time_point=stage,
-                    units=upper_expr.units,
-                    genes=list(shared_genes),
-                    intra_edges=upper_result.graph.intra_edges,
-                    inter_edges=upper_ddi_edges.loc[:, EDGE_COLUMNS].copy() if not upper_ddi_edges.empty else upper_ddi_edges.loc[:, EDGE_COLUMNS].copy(),
-                    shared_genes=list(shared_genes),
-                )
-            )
+            upper_graphs.append(upper_result.graph)
             upper_coords_by_time.append(align_coords(upper_expr.coords, stable_upper_units))
             coverage_tables.append(coverage_table(stage, stable_upper_units, overlap.coverage_counts(), upper_expr.units))
             spot_correspondence_tables.append(spot_correspondence)
             overlap_edge_tables.append(overlap_edges)
             overlap_quality_summaries.append(overlap_quality)
-            graph_summaries.append(self._graph_summary(stage, lower_result, upper_result, lower_mat, upper_mat, upper_ddi_edges))
+            graph_summaries.append(self._graph_summary(stage, lower_result, upper_result, lower_mat, upper_mat, feature_blocks))
             stage_metadata.append(
                 {
                     "stage": stage,
@@ -520,15 +494,19 @@ class CrossCellMultilayerBuilder:
                     "upper_cci_source": upper_result.cci_source,
                     "lower_mode": lower_result.mode,
                     "upper_mode": upper_result.mode,
-                    "ddi_source": cfg.cross_cell_ddi_source,
+                    "feature_dim": int(len(feature_names)),
+                    "stable_upper_unit_count": int(len(stable_upper_units)),
+                    "ddi_handling": "disabled_in_target_aware_mode",
+                    "lr_grn_gate": bool(cfg.cross_cell_lr_use_grn_gate),
                 }
             )
 
-            exports[f"network_exports/{stage}_lower_topk_micro_edges.csv"] = lower_result.micro_edges
-            exports[f"network_exports/{stage}_upper_topk_micro_edges.csv"] = upper_result.micro_edges
+            exports[f"network_exports/{stage}_lower_target_aware_lr_edges_topk.csv"] = lower_result.lr_edges
+            exports[f"network_exports/{stage}_upper_target_aware_lr_edges_topk.csv"] = upper_result.lr_edges
             exports[f"network_exports/{stage}_lower_cell_comm_edges_topk.csv"] = lower_result.cell_edges
             exports[f"network_exports/{stage}_upper_cell_comm_edges_topk.csv"] = upper_result.cell_edges
-            exports[f"network_exports/{stage}_ddi_edges.csv"] = upper_ddi_edges
+            exports[f"network_exports/{stage}_lower_grn_self_edges.csv"] = lower_result.grn_self_edges
+            exports[f"network_exports/{stage}_upper_grn_self_edges.csv"] = upper_result.grn_self_edges
 
         return NetworkContext(
             organ=organ,
@@ -543,16 +521,19 @@ class CrossCellMultilayerBuilder:
             lower_units_by_time=lower_units_by_time,
             upper_units_by_time=upper_units_by_time,
             upper_coords_by_time=upper_coords_by_time,
-            feature_names=list(FEATURE_NAMES),
-            feature_blocks={key: list(value) for key, value in FEATURE_BLOCKS.items()},
+            feature_names=feature_names,
+            feature_blocks={key: list(value) for key, value in feature_blocks.items()},
             graph_summaries=graph_summaries,
             exports=exports,
             metadata={
                 "network_method": self.network_method,
-                "cross_cell_multilayer_mode": "lr_grn_fallback",
-                "cross_cell_ddi_source": cfg.cross_cell_ddi_source,
-                "feature_block_count": len(FEATURE_BLOCKS),
-                "feature_blocks": {key: list(value) for key, value in FEATURE_BLOCKS.items()},
+                "cross_cell_feature_mode": "target_aware_multichannel",
+                "feature_alignment_space": "stable_upper_units",
+                "feature_dim": int(len(feature_names)),
+                "feature_block_count": len(feature_blocks),
+                "feature_blocks": {key: list(value) for key, value in feature_blocks.items()},
+                "ddi_handling": "disabled_in_target_aware_mode",
+                "lr_grn_gate": bool(cfg.cross_cell_lr_use_grn_gate),
                 "stages": stage_metadata,
             },
             lower_assignments_by_time=lower_assignments_by_time,
@@ -572,32 +553,37 @@ class CrossCellMultilayerBuilder:
         expression: ExpressionData,
         paths: LayerPaths,
         shared_genes: Sequence[str],
+        projection_weights: np.ndarray,
+        stable_upper_units: Sequence[str],
         cfg: TemporalRunConfig,
     ) -> _LayerFeatureResult:
         expr = expression.expr.loc[:, list(shared_genes)].copy()
-        grn = _restrict_grn(read_grn_edges(paths.grn_edges, cfg.top_k_targets_per_regulator), shared_genes)
-        cci, cci_source = _read_cci_matrix(paths, expr.index.astype(str).tolist(), cfg.cci_min)
-        intra = _intra_strength(expr, grn, cfg.expr_threshold)
-        cross_out, cross_in, micro_edges, mode = _micro_cross_features(layer_name, stage, expr, paths, grn, cfg)
-        matrix = np.zeros((expr.shape[0], len(FEATURE_NAMES)), dtype=float)
-        matrix[:, 0] = intra
-        matrix[:, 1] = cross_out
-        matrix[:, 2] = cross_in
-        matrix[:, 3] = cross_out + cross_in
-        cell_start = len(MICRO_FEATURES)
-        matrix[:, cell_start : cell_start + len(CELL_COMM_FEATURES)] = _communication_features(cci, cfg.cross_cell_top_k_edges_per_unit)
-        macro_start = cell_start + len(CELL_COMM_FEATURES)
-        matrix[:, macro_start : macro_start + len(MACRO_DDI_FEATURES)] = _macro_features(cci)
+        units = expr.index.astype(str).tolist()
+        projection_weights = np.asarray(projection_weights, dtype=float)
+        if projection_weights.shape != (expr.shape[0], len(stable_upper_units)):
+            raise ValueError(
+                f"Projection matrix shape {projection_weights.shape} does not match "
+                f"{layer_name} units x stable upper units {(expr.shape[0], len(stable_upper_units))}."
+            )
 
-        intra_edges = _self_loop_edges(intra, expr.index.astype(str).tolist(), layer_name, stage, "micro_intra")
-        cell_edges = _edge_table_from_sparse(cci, expr.index.astype(str).tolist(), layer_name, stage, "cell_communication", cfg.cross_cell_top_k_edges)
+        grn = _restrict_grn(read_grn_edges(paths.grn_edges, cfg.top_k_targets_per_regulator), shared_genes)
+        cci, cci_source = _read_cci_matrix(paths, units, cfg.cci_min)
+        intra = _intra_strength(expr, grn, cfg.expr_threshold)
+        grn_block = _project_grn_to_targets(intra, projection_weights)
+        cci_out_block = _project_cci_out_to_targets(cci, projection_weights)
+        cci_in_block = _project_cci_in_from_targets(cci, projection_weights)
+        lr_block, lr_edges, lr_mode = _project_lr_to_targets(layer_name, stage, expr, paths, projection_weights, grn, cfg)
+        matrix = np.hstack([grn_block, cci_out_block, cci_in_block, lr_block])
+
+        grn_self_edges = _self_loop_edges(intra, units, layer_name, stage, "grn_self")
+        cell_edges = _edge_table_from_sparse(cci, units, layer_name, stage, "cell_communication", cfg.cross_cell_top_k_edges)
         graph = LayerGraph(
             layer=layer_name,
             time_point=stage,
-            units=expr.index.astype(str).tolist(),
+            units=units,
             genes=list(shared_genes),
-            intra_edges=intra_edges.loc[:, EDGE_COLUMNS].copy() if not intra_edges.empty else intra_edges.loc[:, EDGE_COLUMNS].copy(),
-            inter_edges=cell_edges.loc[:, EDGE_COLUMNS].copy() if not cell_edges.empty else cell_edges.loc[:, EDGE_COLUMNS].copy(),
+            intra_edges=grn_self_edges.loc[:, EDGE_COLUMNS].copy(),
+            inter_edges=cell_edges.loc[:, EDGE_COLUMNS].copy(),
             shared_genes=list(shared_genes),
         )
         return _LayerFeatureResult(
@@ -605,17 +591,16 @@ class CrossCellMultilayerBuilder:
             graph=graph,
             cci=cci,
             cci_source=cci_source,
-            mode=mode,
-            micro_edges=micro_edges,
+            mode=lr_mode,
+            grn_self_edges=grn_self_edges,
             cell_edges=cell_edges,
+            lr_edges=lr_edges,
         )
 
     def _required_paths(self, paths: LayerPaths) -> List[Path]:
-        required = [paths.h5ad, paths.grn_edges, paths.cci_index]
+        required = [paths.h5ad, paths.grn_edges, paths.cci_manifest, paths.cci_index, paths.cci_lr_dir]
         if paths.spot_domain_map is not None:
             required.append(paths.spot_domain_map)
-        if not paths.cci_total.exists():
-            required.extend([paths.cci_manifest, paths.cci_lr_dir])
         return required
 
     def _check_pair_paths(
@@ -652,14 +637,10 @@ class CrossCellMultilayerBuilder:
             upper_paths = all_paths[(str(stage), pair.upper_layer)]
             lower_expr_genes = set(peek_h5ad_genes(lower_paths.h5ad))
             upper_expr_genes = set(peek_h5ad_genes(upper_paths.h5ad))
-            lower_grn = read_grn_edges(lower_paths.grn_edges, cfg.top_k_targets_per_regulator)
-            upper_grn = read_grn_edges(upper_paths.grn_edges, cfg.top_k_targets_per_regulator)
-            lower_grn_genes = set(lower_grn["regulator"]).union(lower_grn["target"])
-            upper_grn_genes = set(upper_grn["regulator"]).union(upper_grn["target"])
-            intersections.append(lower_expr_genes & upper_expr_genes & lower_grn_genes & upper_grn_genes)
+            intersections.append(lower_expr_genes & upper_expr_genes)
         shared = natural_sort(set.intersection(*intersections)) if intersections else []
         if not shared:
-            raise ValueError(f"Shared gene intersection is empty for {pair.label()}.")
+            raise ValueError(f"Shared expression gene intersection is empty for {pair.label()}.")
         return shared
 
     def _stable_upper_units(
@@ -683,20 +664,24 @@ class CrossCellMultilayerBuilder:
         upper_result: _LayerFeatureResult,
         lower_mat: np.ndarray,
         upper_mat: np.ndarray,
-        ddi_edges: pd.DataFrame,
+        feature_blocks: Dict[str, List[str]],
     ) -> dict[str, object]:
         return {
             "time_point": stage,
             "network_method": CrossCellMultilayerBuilder.network_method,
-            "feature_blocks": {key: list(value) for key, value in FEATURE_BLOCKS.items()},
+            "cross_cell_feature_mode": "target_aware_multichannel",
+            "feature_blocks": {key: list(value) for key, value in feature_blocks.items()},
             "lower_units": len(lower_result.graph.units),
             "upper_units": len(upper_result.graph.units),
             "shared_genes": len(lower_result.graph.shared_genes),
-            "lower_micro_edges_topk": int(len(lower_result.micro_edges)),
-            "upper_micro_edges_topk": int(len(upper_result.micro_edges)),
+            "lower_grn_self_edges": int(len(lower_result.grn_self_edges)),
+            "upper_grn_self_edges": int(len(upper_result.grn_self_edges)),
             "lower_cell_comm_edges_topk": int(len(lower_result.cell_edges)),
             "upper_cell_comm_edges_topk": int(len(upper_result.cell_edges)),
-            "ddi_edges_topk": int(len(ddi_edges)),
+            "lower_lr_edges_topk": int(len(lower_result.lr_edges)),
+            "upper_lr_edges_topk": int(len(upper_result.lr_edges)),
+            "ddi_edges_topk": 0,
+            "ddi_handling": "disabled_in_target_aware_mode",
             "lower_matrix_shape": list(lower_mat.shape),
             "upper_matrix_shape": list(upper_mat.shape),
         }

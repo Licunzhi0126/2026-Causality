@@ -7,7 +7,7 @@ import scipy.sparse as sp
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.io.loaders import LayerDataResolver
-from mignet_ce.networks.cross_cell_multilayer import CrossCellMultilayerBuilder, FEATURE_BLOCKS, FEATURE_NAMES
+from mignet_ce.networks.cross_cell_multilayer import CrossCellMultilayerBuilder
 
 
 ad = pytest.importorskip("anndata")
@@ -81,7 +81,7 @@ def _write_tiny_vertical_data(root) -> None:
         ).to_csv(map_dir / f"louvainLessThan5_heart_{stage}_spot_domain_map.csv", index=False)
 
 
-def test_cross_cell_multilayer_builds_three_feature_blocks(tmp_path) -> None:
+def test_cross_cell_multilayer_builds_target_aware_feature_blocks(tmp_path) -> None:
     _write_tiny_vertical_data(tmp_path)
     cfg = TemporalRunConfig(
         data_root=tmp_path,
@@ -101,8 +101,12 @@ def test_cross_cell_multilayer_builds_three_feature_blocks(tmp_path) -> None:
     )
 
     assert context.network_method == "cross_cell_multilayer"
-    assert context.feature_names == FEATURE_NAMES
-    assert context.feature_blocks == FEATURE_BLOCKS
-    assert context.lower_mats[0].shape[1] == len(FEATURE_NAMES)
-    assert context.upper_mats[0].shape[1] == len(FEATURE_NAMES)
-    assert "network_exports/11.5_ddi_edges.csv" in context.exports
+    assert set(context.feature_blocks) == {"grn_target", "cci_out_target", "cci_in_source", "lr_target"}
+    assert all(len(block) == len(context.stable_upper_units) for block in context.feature_blocks.values())
+    assert context.feature_names == [name for block in context.feature_blocks.values() for name in block]
+    assert context.lower_mats[0].shape == (3, 4 * len(context.stable_upper_units))
+    assert context.upper_mats[0].shape == (2, 4 * len(context.stable_upper_units))
+    assert context.metadata["cross_cell_feature_mode"] == "target_aware_multichannel"
+    assert context.metadata["ddi_handling"] == "disabled_in_target_aware_mode"
+    assert "network_exports/11.5_ddi_edges.csv" not in context.exports
+    assert "network_exports/11.5_lower_target_aware_lr_edges_topk.csv" in context.exports

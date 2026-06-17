@@ -40,9 +40,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-method", choices=sorted(PIJ_METHODS), default=None)
     parser.add_argument("--embedding-method", choices=["joint_nmf", "laplacian"], default=None, help="Deprecated alias for --pij-method.")
     parser.add_argument("--network-method", choices=sorted(NETWORK_METHODS), default="legacy_mixed_grn_cci")
-    parser.add_argument("--cross-cell-ddi-source", choices=["direct", "coarse_grained"], default="coarse_grained")
+    parser.add_argument("--cross-cell-lr-use-grn-gate", action="store_true")
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
-    parser.add_argument("--cross-cell-top-k-edges-per-unit", type=int, default=5)
     parser.add_argument("--export-pij", action="store_true")
     parser.add_argument("--export-pij-topk", type=int, default=10)
     parser.add_argument("--development-feature-root", type=Path, default=None)
@@ -111,9 +110,8 @@ def main() -> None:
         embedding_method=embedding_method,
         pij_method=pij_method,
         network_method=args.network_method,
-        cross_cell_ddi_source=args.cross_cell_ddi_source,
+        cross_cell_lr_use_grn_gate=args.cross_cell_lr_use_grn_gate,
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,
-        cross_cell_top_k_edges_per_unit=args.cross_cell_top_k_edges_per_unit,
         export_pij=args.export_pij,
         export_pij_topk=args.export_pij_topk,
         development_feature_root=args.development_feature_root,

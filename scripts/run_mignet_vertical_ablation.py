@@ -36,9 +36,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--expr-threshold", type=float, default=0.0)
     parser.add_argument("--cci-min", type=float, default=0.0)
     parser.add_argument("--top-k-targets-per-regulator", type=int, default=20)
-    parser.add_argument("--cross-cell-ddi-source", choices=["direct", "coarse_grained"], default="coarse_grained")
+    parser.add_argument("--cross-cell-lr-use-grn-gate", action="store_true")
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
-    parser.add_argument("--cross-cell-top-k-edges-per-unit", type=int, default=5)
     parser.add_argument("--nmf-components", type=int, default=5)
     parser.add_argument("--nmf-max-iter", type=int, default=300)
     parser.add_argument("--nmf-seed", type=int, default=42)
@@ -107,9 +106,8 @@ def main() -> None:
         expr_threshold=args.expr_threshold,
         cci_min=args.cci_min,
         top_k_targets_per_regulator=args.top_k_targets_per_regulator,
-        cross_cell_ddi_source=args.cross_cell_ddi_source,
+        cross_cell_lr_use_grn_gate=args.cross_cell_lr_use_grn_gate,
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,
-        cross_cell_top_k_edges_per_unit=args.cross_cell_top_k_edges_per_unit,
         nmf_components=args.nmf_components,
         nmf_max_iter=args.nmf_max_iter,
         nmf_seed=args.nmf_seed,

@@ -149,7 +149,6 @@ PIJ_METHOD_PRESETS = {
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
-CROSS_CELL_DDI_SOURCES = {"direct", "coarse_grained"}
 DEVELOPMENT_PIJ_METHODS = {"pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"}
 
 
@@ -170,9 +169,8 @@ class TemporalRunConfig:
     embedding_method: str = "joint_nmf"
     pij_method: str | None = None
     network_method: str = "legacy_mixed_grn_cci"
-    cross_cell_ddi_source: str = "coarse_grained"
+    cross_cell_lr_use_grn_gate: bool = False
     cross_cell_top_k_edges: int = 1000
-    cross_cell_top_k_edges_per_unit: int = 5
     export_pij: bool = False
     development_feature_root: Path | None = None
     pij_feature_aggregation: str = "mean"
@@ -229,12 +227,10 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
-        if self.cross_cell_ddi_source not in CROSS_CELL_DDI_SOURCES:
-            raise ValueError(f"cross_cell_ddi_source must be one of {sorted(CROSS_CELL_DDI_SOURCES)}.")
+        if not isinstance(self.cross_cell_lr_use_grn_gate, bool):
+            raise ValueError("cross_cell_lr_use_grn_gate must be bool.")
         if self.cross_cell_top_k_edges <= 0:
             raise ValueError("cross_cell_top_k_edges must be positive.")
-        if self.cross_cell_top_k_edges_per_unit <= 0:
-            raise ValueError("cross_cell_top_k_edges_per_unit must be positive.")
         if self.pij_temperature <= 0:
             raise ValueError("pij_temperature must be positive.")
         if self.pij_entropy_epsilon <= 0:
