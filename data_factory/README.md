@@ -209,6 +209,40 @@ python scripts/run_cci_layer_commot.py --layer spatial_domain_k40
 - `reference/stLearn` and `reference/DeepST` are development references only. The spatial-domain code does not import, read, or require those local folders at runtime.
 - The spatial-domain builder uses regular Python package dependencies already used in this factory, such as numpy, scipy, scanpy, anndata, scikit-learn, and networkx.
 
+## Developmental Feature Generation
+
+The developmental OT Pij methods (`pseudotime_ot`, `sr_ot`, `velocity_ot`, and
+`development_ot`) require a `--development-feature-root` directory. Generate the
+first-pass factory proxy features from the spot h5ad files with:
+
+```bash
+cd "/home/jovyan/work/2026 Causality"
+
+python scripts/build_developmental_features.py \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --output-root "/home/jovyan/work/2026 Causality/output/developmental_features" \
+  --organs heart brain lung \
+  --time-points 11.5 12.5 \
+  --mode factory_proxy \
+  --velocity-components 30 \
+  --overwrite
+```
+
+This writes spot-level CSVs under:
+
+```text
+$DEV_ROOT/spot/{organ}_{stage}_features.csv
+```
+
+Each CSV contains `unit_id`, `pseudotime`, `sr`, `potency_score`, and fixed-width
+`velocity_*` columns. These are factory proxy developmental features built from
+stage labels and expression-space summaries; they are not scVelo RNA velocity or
+externally validated pseudotime. The manifest records `feature_mode=factory_proxy`.
+
+Seurat, Louvain, and spatial-domain layers do not need separate developmental
+feature CSVs. The existing MIGNet-CE reader falls back to the spot-level feature
+files and aggregates through each layer's `spot_domain_map.csv`.
+
 ## Parallelism And GPU Boundary
 
 GRN defaults to 32 GENIE3 worker processes:
