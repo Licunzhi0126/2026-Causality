@@ -7,6 +7,7 @@ import numpy as np
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij._developmental_ot_components import (
+    build_expression_cost,
     build_pseudotime_cost,
     developmental_metadata,
     make_developmental_table_loader,
@@ -15,8 +16,8 @@ from mignet_ce.pij._ot_common import run_ot_pij_method
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
 
 
-class PseudotimeOTPijMethod:
-    name = "pseudotime_ot"
+class PseudotimeExpressionOTPijMethod:
+    name = "pseudotime_expression_ot"
 
     def run(
         self,
@@ -37,9 +38,13 @@ class PseudotimeOTPijMethod:
         ):
             source_table = table(space, t0)
             target_table = table(space, t1)
-            cost = build_pseudotime_cost(source_table, target_table, self.name)
+            components = {
+                "pseudotime": build_pseudotime_cost(source_table, target_table, self.name),
+                "expression": build_expression_cost(source_features, target_features, cfg),
+            }
+            weights = {"pseudotime": 1.0, "expression": 1.0}
             metadata = developmental_metadata(source_table, target_table, ["pseudotime"], cfg)
-            return {"pseudotime": cost}, {"pseudotime": 1.0}, metadata
+            return components, weights, metadata
 
         return run_ot_pij_method(
             context=context,

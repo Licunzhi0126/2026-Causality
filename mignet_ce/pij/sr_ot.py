@@ -5,16 +5,14 @@ from typing import Sequence
 import numpy as np
 
 from mignet_ce.config import TemporalRunConfig
-from mignet_ce.io.developmental_features import (
-    DevelopmentalFeatureTable,
-    load_developmental_features_for_pij,
-    require_columns,
-    select_first_available_column,
-)
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.pij._developmental_ot_components import (
+    build_sr_cost,
+    developmental_metadata,
+    make_developmental_table_loader,
+)
 from mignet_ce.pij._ot_common import run_ot_pij_method
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
-from mignet_ce.transition.cost_components import pairwise_feature_cost, pairwise_scalar_cost
 
 
 class SROTPijMethod:
@@ -26,13 +24,7 @@ class SROTPijMethod:
         cfg: TemporalRunConfig,
         pairs: Sequence[TimePair],
     ) -> tuple[MethodResult, TransitionKernels | None]:
-        feature_cache: dict[tuple[str, int], DevelopmentalFeatureTable] = {}
-
-        def table(space: str, time_index: int) -> DevelopmentalFeatureTable:
-            key = (space, time_index)
-            if key not in feature_cache:
-                feature_cache[key] = load_developmental_features_for_pij(context, cfg, time_index, space)
-            return feature_cache[key]
+        table = make_developmental_table_loader(context, cfg)
 
         def component_builder(
             source_features: np.ndarray,
@@ -45,37 +37,9 @@ class SROTPijMethod:
         ):
             source_table = table(space, t0)
             target_table = table(space, t1)
-            column = select_first_available_column(source_table.values, ["sr", "potency_score"], self.name)
-            require_columns(target_table.values, [column], self.name)
-            source_values = source_table.values[column].to_numpy(dtype=float)
-            target_values = target_table.values[column].to_numpy(dtype=float)
-            component_name = "sr" if column == "sr" else "potency"
-            components = {
-                "expression": pairwise_feature_cost(
-                    source_features,
-                    target_features,
-                    metric=cfg.pij_cost_metric,
-                ),
-                component_name: pairwise_scalar_cost(source_values, target_values),
-            }
-            if cfg.pij_reverse_potency_weight > 0:
-                components[f"reverse_{component_name}"] = np.maximum(0.0, target_values[None, :] - source_values[:, None])
-            scalar_weight = cfg.pij_sr_weight if column == "sr" else cfg.pij_potency_weight
-            weights = {
-                "expression": cfg.pij_expr_weight,
-                component_name: scalar_weight,
-                f"reverse_{component_name}": cfg.pij_reverse_potency_weight,
-            }
-            metadata = {
-                "feature_columns_used": [column],
-                "feature_aggregation": cfg.pij_feature_aggregation,
-                "missing_feature_policy": cfg.pij_missing_feature_policy,
-                "developmental_features": {
-                    "source": source_table.metadata,
-                    "target": target_table.metadata,
-                },
-            }
-            return components, weights, metadata
+            component_name, cost, column = build_sr_cost(source_table, target_table, self.name)
+            metadata = developmental_metadata(source_table, target_table, [column], cfg)
+            return {component_name: cost}, {component_name: 1.0}, metadata
 
         return run_ot_pij_method(
             context=context,

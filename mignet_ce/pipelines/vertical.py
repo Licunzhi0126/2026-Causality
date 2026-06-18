@@ -11,6 +11,7 @@ import pandas as pd
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.io.loaders import LayerDataResolver
+from mignet_ce.io.pij_exports import export_pij_csv_archive
 from mignet_ce.metrics import TemporalMetricsEngine
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.registry import get_network_builder
@@ -139,22 +140,32 @@ class VerticalMIGNetPipeline:
         if "network_method" not in metrics.columns:
             metrics.insert(0, "network_method", context.network_method)
 
-        self._export_pair_outputs(
-            organ=organ,
-            pair=pair,
-            network_context=context,
-            stable_upper_units=context.stable_upper_units,
-            shared_genes=context.shared_genes,
-            metrics=metrics,
-            coverage_tables=context.coverage_tables,
-            graph_summaries=context.graph_summaries,
-            method_result=method_result,
-            kernels=kernels,
-            spot_correspondence_tables=context.spot_correspondence_tables,
-            overlap_edge_tables=context.overlap_edge_tables,
-            overlap_quality_summaries=context.overlap_quality_summaries,
-            upper_units_by_time=context.upper_units_by_time,
-        )
+        if kernels is not None:
+            export_pij_csv_archive(
+                cfg=self.cfg,
+                organ=organ,
+                pair=pair,
+                stable_upper_units=context.stable_upper_units,
+                kernels=kernels,
+            )
+
+        if self.cfg.export_pair_artifacts:
+            self._export_pair_outputs(
+                organ=organ,
+                pair=pair,
+                network_context=context,
+                stable_upper_units=context.stable_upper_units,
+                shared_genes=context.shared_genes,
+                metrics=metrics,
+                coverage_tables=context.coverage_tables,
+                graph_summaries=context.graph_summaries,
+                method_result=method_result,
+                kernels=kernels,
+                spot_correspondence_tables=context.spot_correspondence_tables,
+                overlap_edge_tables=context.overlap_edge_tables,
+                overlap_quality_summaries=context.overlap_quality_summaries,
+                upper_units_by_time=context.upper_units_by_time,
+            )
         return metrics
 
     def _export_pair_outputs(

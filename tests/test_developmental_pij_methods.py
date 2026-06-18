@@ -91,7 +91,20 @@ def _write_all_feature_files(root, velocity_dims: int = 3, include: set[str] | N
         _write_features(root, "louvain_less_than5", stage, ["u1", "u2", "u3"], velocity_dims=velocity_dims, include=include)
 
 
-@pytest.mark.parametrize("method_name", ["pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"])
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "pseudotime_ot",
+        "sr_ot",
+        "spatial_ot",
+        "sr_spatial_ot",
+        "pseudotime_spatial_ot",
+        "sr_expression_ot",
+        "pseudotime_expression_ot",
+        "velocity_ot",
+        "development_ot",
+    ],
+)
 def test_developmental_ot_methods_build_kernels(tmp_path, method_name: str) -> None:
     feature_root = tmp_path / "developmental_features"
     _write_all_feature_files(feature_root)
@@ -111,6 +124,45 @@ def test_developmental_ot_methods_build_kernels(tmp_path, method_name: str) -> N
     assert_row_stochastic(kernels.p_lower[(0, 1)])
     assert_row_stochastic(kernels.p_upper[(0, 1)])
     assert "main_cost" in kernels.kernel_diagnostics["lower"][(0, 1)]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_components"),
+    [
+        ("sr_ot", ["sr"]),
+        ("pseudotime_ot", ["pseudotime"]),
+        ("spatial_ot", ["spatial"]),
+        ("sr_spatial_ot", ["sr", "spatial"]),
+        ("pseudotime_spatial_ot", ["pseudotime", "spatial"]),
+        ("sr_expression_ot", ["sr", "expression"]),
+        ("pseudotime_expression_ot", ["pseudotime", "expression"]),
+    ],
+)
+def test_ot_ablation_v2_methods_use_only_declared_cost_components(
+    tmp_path,
+    method_name: str,
+    expected_components: list[str],
+) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root)
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method=method_name,
+        pij_feature_components=None,
+        ot_max_iter=20,
+    )
+
+    _, kernels = get_pij_method(method_name).run(_synthetic_context(), cfg, [(0, 1)])
+
+    assert kernels is not None
+    pair_metadata = kernels.kernel_metadata["11.5->12.5"]
+    assert pair_metadata["lower"]["cost_components"] == expected_components
+    assert pair_metadata["upper"]["cost_components"] == expected_components
+    assert set(kernels.kernel_diagnostics["lower"][(0, 1)]) == {
+        *(f"{component}_cost" for component in expected_components),
+        "main_cost",
+    }
 
 
 def test_pseudotime_ot_errors_when_pseudotime_column_is_missing(tmp_path) -> None:
@@ -141,6 +193,38 @@ def test_sr_ot_accepts_potency_score_when_sr_is_missing(tmp_path) -> None:
 
     assert kernels is not None
     assert_row_stochastic(kernels.p_lower[(0, 1)])
+    pair_metadata = kernels.kernel_metadata["11.5->12.5"]["lower"]
+    assert pair_metadata["cost_components"] == ["potency"]
+    assert pair_metadata["feature_columns_used"] == ["potency_score"]
+
+
+def test_spatial_ot_does_not_require_developmental_features(tmp_path) -> None:
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=None,
+        pij_method="spatial_ot",
+        pij_feature_components=None,
+        ot_max_iter=20,
+    )
+    cfg.validate()
+
+    _, kernels = get_pij_method("spatial_ot").run(_synthetic_context(), cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_spatial_ot_errors_when_coordinates_are_missing(tmp_path) -> None:
+    context = _synthetic_context()
+    context.upper_coords_by_time = None  # type: ignore[assignment]
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        pij_method="spatial_ot",
+        pij_feature_components=None,
+    )
+
+    with pytest.raises(ValueError, match="spatial_ot requires coordinates"):
+        get_pij_method("spatial_ot").run(context, cfg, [(0, 1)])
 
 
 def test_velocity_ot_errors_when_velocity_dimension_does_not_match_features(tmp_path) -> None:

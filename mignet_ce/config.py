@@ -126,6 +126,11 @@ PIJ_METHODS = {
     "energy_entropy_ot",
     "pseudotime_ot",
     "sr_ot",
+    "spatial_ot",
+    "sr_spatial_ot",
+    "pseudotime_spatial_ot",
+    "sr_expression_ot",
+    "pseudotime_expression_ot",
     "velocity_ot",
     "development_ot",
 }
@@ -134,6 +139,24 @@ PIJ_METHOD_PRESETS = {
     "ot_basic": ("expr_ot", "energy_entropy_ot"),
     "development_scalar": ("pseudotime_ot", "sr_ot"),
     "development_all": ("pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"),
+    "ot_ablation_v2": (
+        "sr_ot",
+        "pseudotime_ot",
+        "spatial_ot",
+        "sr_spatial_ot",
+        "pseudotime_spatial_ot",
+        "sr_expression_ot",
+        "pseudotime_expression_ot",
+    ),
+    "development_ot_ablation": (
+        "sr_ot",
+        "pseudotime_ot",
+        "spatial_ot",
+        "sr_spatial_ot",
+        "pseudotime_spatial_ot",
+        "sr_expression_ot",
+        "pseudotime_expression_ot",
+    ),
     "all": (
         "joint_nmf",
         "laplacian",
@@ -143,13 +166,27 @@ PIJ_METHOD_PRESETS = {
         "energy_entropy_ot",
         "pseudotime_ot",
         "sr_ot",
+        "spatial_ot",
+        "sr_spatial_ot",
+        "pseudotime_spatial_ot",
+        "sr_expression_ot",
+        "pseudotime_expression_ot",
         "velocity_ot",
         "development_ot",
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
-DEVELOPMENT_PIJ_METHODS = {"pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"}
+DEVELOPMENT_PIJ_METHODS = {
+    "pseudotime_ot",
+    "sr_ot",
+    "sr_spatial_ot",
+    "pseudotime_spatial_ot",
+    "sr_expression_ot",
+    "pseudotime_expression_ot",
+    "velocity_ot",
+    "development_ot",
+}
 
 
 @dataclass
@@ -172,9 +209,11 @@ class TemporalRunConfig:
     cross_cell_lr_use_grn_gate: bool = False
     cross_cell_top_k_edges: int = 1000
     export_pij: bool = False
+    pij_archive_root: Path | None = None
+    export_pair_artifacts: bool = False
     development_feature_root: Path | None = None
     pij_feature_aggregation: str = "mean"
-    pij_missing_feature_policy: str = "error"
+    pij_missing_feature_policy: str = "impute_mean"
     pij_feature_components: int | None = 30
     pij_temperature: float = 1.0
     pij_expr_weight: float = 1.0
@@ -216,6 +255,9 @@ class TemporalRunConfig:
 
     def effective_pij_method(self) -> str:
         return self.pij_method or self.embedding_method
+
+    def effective_pij_archive_root(self) -> Path:
+        return Path(self.pij_archive_root) if self.pij_archive_root is not None else Path(self.data_root) / "pij"
 
     def validate(self) -> None:
         if self.embedding_method not in EMBEDDING_METHODS:

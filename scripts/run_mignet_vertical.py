@@ -44,9 +44,16 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
     parser.add_argument("--export-pij", action="store_true")
     parser.add_argument("--export-pij-topk", type=int, default=10)
+    parser.add_argument(
+        "--pij-archive-root",
+        type=Path,
+        default=None,
+        help="PIJ CSV archive root. Defaults to DATA_ROOT/pij.",
+    )
+    parser.add_argument("--export-pair-artifacts", action="store_true")
     parser.add_argument("--development-feature-root", type=Path, default=None)
     parser.add_argument("--pij-feature-aggregation", choices=["mean", "median"], default="mean")
-    parser.add_argument("--pij-missing-feature-policy", choices=["error", "impute_mean", "ignore"], default="error")
+    parser.add_argument("--pij-missing-feature-policy", choices=["error", "impute_mean", "ignore"], default="impute_mean")
     parser.add_argument("--pij-feature-components", type=int, default=30)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
     parser.add_argument("--pij-expr-weight", type=float, default=1.0)
@@ -114,6 +121,8 @@ def main() -> None:
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,
         export_pij=args.export_pij,
         export_pij_topk=args.export_pij_topk,
+        pij_archive_root=args.pij_archive_root,
+        export_pair_artifacts=args.export_pair_artifacts,
         development_feature_root=args.development_feature_root,
         pij_feature_aggregation=args.pij_feature_aggregation,
         pij_missing_feature_policy=args.pij_missing_feature_policy,
