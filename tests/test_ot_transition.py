@@ -101,7 +101,7 @@ def _synthetic_context() -> NetworkContext:
     )
 
 
-@pytest.mark.parametrize("method_name", ["expr_ot", "energy_entropy_ot"])
+@pytest.mark.parametrize("method_name", ["expr_ot", "energy_ot", "energy_entropy_ot"])
 def test_ot_pij_methods_build_precomputed_kernels(method_name: str) -> None:
     cfg = TemporalRunConfig(
         organs=["heart"],
@@ -118,3 +118,23 @@ def test_ot_pij_methods_build_precomputed_kernels(method_name: str) -> None:
     assert (0, 1) in kernels.p_upper
     assert_row_stochastic(kernels.p_lower[(0, 1)])
     assert_row_stochastic(kernels.p_upper[(0, 1)])
+
+
+def test_energy_ot_uses_only_graph_energy_and_needs_no_external_features() -> None:
+    context = _synthetic_context()
+    context.upper_coords_by_time = None  # type: ignore[assignment]
+    cfg = TemporalRunConfig(
+        development_feature_root=None,
+        pij_method="energy_ot",
+        pij_feature_components=None,
+        ot_max_iter=20,
+    )
+    cfg.validate()
+
+    _, kernels = get_pij_method("energy_ot").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    pair_metadata = kernels.kernel_metadata["11.5->12.5"]
+    assert pair_metadata["lower"]["cost_components"] == ["graph_energy"]
+    assert pair_metadata["upper"]["cost_components"] == ["graph_energy"]
+    assert pair_metadata["lower"]["cost_summary"]["total_weight"] == pytest.approx(1.0)

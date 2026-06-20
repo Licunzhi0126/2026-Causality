@@ -80,6 +80,16 @@ def build_expression_cost(
     return pairwise_feature_cost(source_features, target_features, metric=cfg.pij_cost_metric)
 
 
+def build_graph_energy_cost(
+    source_features: np.ndarray,
+    target_features: np.ndarray,
+) -> np.ndarray:
+    return pairwise_scalar_cost(
+        np.linalg.norm(source_features, axis=1),
+        np.linalg.norm(target_features, axis=1),
+    )
+
+
 def developmental_metadata(
     source_table: DevelopmentalFeatureTable,
     target_table: DevelopmentalFeatureTable,

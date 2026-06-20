@@ -5,8 +5,12 @@ from typing import Dict, Sequence, Type
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.development_ot import DevelopmentOTPijMethod
+from mignet_ce.pij.energy_ot import EnergyOTPijMethod
 from mignet_ce.pij.energy_entropy_ot import EnergyEntropyOTPijMethod
 from mignet_ce.pij.expr_ot import ExprOTPijMethod
+from mignet_ce.pij.expr_pseudotime_sr_energy_ot import ExprPseudotimeSREnergyOTPijMethod
+from mignet_ce.pij.expr_pseudotime_sr_ot import ExprPseudotimeSROTPijMethod
+from mignet_ce.pij.expr_pseudotime_sr_spatial_ot import ExprPseudotimeSRSpatialOTPijMethod
 from mignet_ce.pij.joint_nmf import JointNMFPijMethod
 from mignet_ce.pij.laplacian import LaplacianPijMethod
 from mignet_ce.pij.pseudotime_expression_ot import PseudotimeExpressionOTPijMethod
@@ -28,6 +32,7 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "3dot": ThreeDotPijMethod,
     "slat": SLATPijMethod,
     "expr_ot": ExprOTPijMethod,
+    "energy_ot": EnergyOTPijMethod,
     "energy_entropy_ot": EnergyEntropyOTPijMethod,
     "pseudotime_ot": PseudotimeOTPijMethod,
     "sr_ot": SROTPijMethod,
@@ -36,6 +41,9 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "pseudotime_spatial_ot": PseudotimeSpatialOTPijMethod,
     "sr_expression_ot": SRExpressionOTPijMethod,
     "pseudotime_expression_ot": PseudotimeExpressionOTPijMethod,
+    "expr_pseudotime_sr_ot": ExprPseudotimeSROTPijMethod,
+    "expr_pseudotime_sr_spatial_ot": ExprPseudotimeSRSpatialOTPijMethod,
+    "expr_pseudotime_sr_energy_ot": ExprPseudotimeSREnergyOTPijMethod,
     "velocity_ot": VelocityOTPijMethod,
     "development_ot": DevelopmentOTPijMethod,
 }
