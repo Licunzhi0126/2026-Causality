@@ -11,13 +11,12 @@ import pandas as pd
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.io.loaders import LayerDataResolver
-from mignet_ce.io.pij_exports import export_pij_csv_archive
+from mignet_ce.io.pij_exports import export_pij_sparse_archive
 from mignet_ce.metrics import TemporalMetricsEngine
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.registry import get_network_builder
 from mignet_ce.pij.base import MethodResult, TransitionKernels
 from mignet_ce.pij.registry import build_method_result_and_kernels
-from mignet_ce.utils.matrix import save_transition_npz, serialize_metadata, transition_topk_table
 
 
 def _ensure_dir(path: Path) -> None:
@@ -121,6 +120,13 @@ class VerticalMIGNetPipeline:
         time_points = list(map(str, self.cfg.time_points))
         pairs = self.metrics_engine.build_time_pairs_all(time_points)
         method_result, kernels = build_method_result_and_kernels(context, self.cfg, pairs)
+        export_kernels = kernels
+        if self.cfg.export_pij and export_kernels is None:
+            export_kernels = self._build_feature_transition_kernels(
+                method_result=method_result,
+                pairs=pairs,
+            )
+
         metrics = self.metrics_engine.calculate_metrics_for_pairs(
             lower_feat=method_result.lower_features,
             upper_feat=method_result.upper_features,
@@ -132,21 +138,21 @@ class VerticalMIGNetPipeline:
             pij_method=self.cfg.effective_pij_method(),
             pij_temperature=self.cfg.pij_temperature,
             kraskov_k=self.cfg.kraskov_k,
-            precomputed_p_lower=kernels.p_lower if kernels is not None else None,
-            precomputed_p_upper=kernels.p_upper if kernels is not None else None,
+            precomputed_p_lower=export_kernels.p_lower if export_kernels is not None else None,
+            precomputed_p_upper=export_kernels.p_upper if export_kernels is not None else None,
             pairwise_lower_features=method_result.pairwise_lower_features,
             pairwise_upper_features=method_result.pairwise_upper_features,
         )
         if "network_method" not in metrics.columns:
             metrics.insert(0, "network_method", context.network_method)
 
-        if kernels is not None:
-            export_pij_csv_archive(
+        if self.cfg.export_pij and export_kernels is not None:
+            export_pij_sparse_archive(
                 cfg=self.cfg,
                 organ=organ,
                 pair=pair,
                 stable_upper_units=context.stable_upper_units,
-                kernels=kernels,
+                kernels=export_kernels,
             )
 
         if self.cfg.export_pair_artifacts:
@@ -160,13 +166,60 @@ class VerticalMIGNetPipeline:
                 coverage_tables=context.coverage_tables,
                 graph_summaries=context.graph_summaries,
                 method_result=method_result,
-                kernels=kernels,
                 spot_correspondence_tables=context.spot_correspondence_tables,
                 overlap_edge_tables=context.overlap_edge_tables,
                 overlap_quality_summaries=context.overlap_quality_summaries,
                 upper_units_by_time=context.upper_units_by_time,
             )
         return metrics
+
+    def _build_feature_transition_kernels(
+        self,
+        method_result: MethodResult,
+        pairs: Sequence[tuple[int, int]],
+    ) -> TransitionKernels:
+        p_lower = {}
+        p_upper = {}
+
+        for t0, t1 in pairs:
+            if method_result.pairwise_lower_features is not None and (t0, t1) in method_result.pairwise_lower_features:
+                lower_source, lower_target = method_result.pairwise_lower_features[(t0, t1)]
+            else:
+                lower_source = method_result.lower_features[t0]
+                lower_target = method_result.lower_features[t1]
+
+            if method_result.pairwise_upper_features is not None and (t0, t1) in method_result.pairwise_upper_features:
+                upper_source, upper_target = method_result.pairwise_upper_features[(t0, t1)]
+            else:
+                upper_source = method_result.upper_features[t0]
+                upper_target = method_result.upper_features[t1]
+
+            p_lower[(t0, t1)] = self.metrics_engine.build_transition_kernel(
+                lower_source,
+                lower_target,
+                temperature=self.cfg.pij_temperature,
+            )
+            p_upper[(t0, t1)] = self.metrics_engine.build_transition_kernel(
+                upper_source,
+                upper_target,
+                temperature=self.cfg.pij_temperature,
+            )
+
+        return TransitionKernels(
+            p_lower=p_lower,
+            p_upper=p_upper,
+            kernel_metadata={
+                "kernel_source": "feature_cosine_transition",
+                "reason": "pij method returned MethodResult without explicit TransitionKernels",
+                "pij_method": self.cfg.effective_pij_method(),
+                "temperature": float(self.cfg.pij_temperature),
+                "row_stochastic": True,
+                "matrix_convention": (
+                    "P[i,j] is transition probability from source-stage unit i "
+                    "to target-stage unit j."
+                ),
+            },
+        )
 
     def _export_pair_outputs(
         self,
@@ -179,7 +232,6 @@ class VerticalMIGNetPipeline:
         coverage_tables: Sequence[pd.DataFrame],
         graph_summaries: Sequence[Dict[str, object]],
         method_result: MethodResult,
-        kernels: TransitionKernels | None,
         spot_correspondence_tables: Sequence[pd.DataFrame],
         overlap_edge_tables: Sequence[pd.DataFrame],
         overlap_quality_summaries: Sequence[Dict[str, object]],
@@ -262,40 +314,6 @@ class VerticalMIGNetPipeline:
             with (correspondence_dir / f"{stage}_overlap_quality.json").open("w", encoding="utf-8") as handle:
                 json.dump(quality, handle, ensure_ascii=False, indent=2, default=_json_default)
         pd.DataFrame(overlap_quality_summaries).to_csv(correspondence_dir / "overlap_quality_summary.csv", index=False)
-
-        if self.cfg.export_pij and kernels is not None:
-            pij_dir = pair_dir / "pij"
-            _ensure_dir(pij_dir)
-            for (t0, t1), matrix in kernels.p_lower.items():
-                label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
-                save_transition_npz(pij_dir / f"{label}_lower_P.npz", matrix)
-                lower_diagnostics = kernels.kernel_diagnostics.get("lower", {}).get((t0, t1))
-                transition_topk_table(
-                    matrix,
-                    source_units=stable_upper_units,
-                    target_units=stable_upper_units,
-                    time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
-                    space="lower",
-                    top_k=self.cfg.export_pij_topk,
-                    pij_method=self.cfg.effective_pij_method(),
-                    diagnostic_costs=lower_diagnostics,
-                ).to_csv(pij_dir / f"{label}_lower_P_topk.csv", index=False)
-            for (t0, t1), matrix in kernels.p_upper.items():
-                label = f"{self.cfg.time_points[t0]}_to_{self.cfg.time_points[t1]}"
-                save_transition_npz(pij_dir / f"{label}_upper_P.npz", matrix)
-                upper_diagnostics = kernels.kernel_diagnostics.get("upper", {}).get((t0, t1))
-                transition_topk_table(
-                    matrix,
-                    source_units=stable_upper_units,
-                    target_units=stable_upper_units,
-                    time_pair=f"{self.cfg.time_points[t0]}->{self.cfg.time_points[t1]}",
-                    space="upper",
-                    top_k=self.cfg.export_pij_topk,
-                    pij_method=self.cfg.effective_pij_method(),
-                    diagnostic_costs=upper_diagnostics,
-                ).to_csv(pij_dir / f"{label}_upper_P_topk.csv", index=False)
-            with (pij_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
-                json.dump(serialize_metadata(kernels.kernel_metadata), handle, ensure_ascii=False, indent=2, default=_json_default)
 
         if self.cfg.export_features:
             for stage, low, up in zip(map(str, self.cfg.time_points), method_result.lower_features, method_result.upper_features):

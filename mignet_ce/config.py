@@ -265,7 +265,7 @@ class TemporalRunConfig:
     feature_log1p: bool = True
     export_features: bool = True
     export_graphs: bool = False
-    export_pij_topk: int = 10
+    export_pij_topk: int = 0
 
     def normalized_pairs(self) -> List[VerticalPairSpec]:
         return [pair if isinstance(pair, VerticalPairSpec) else VerticalPairSpec.parse(str(pair)) for pair in self.level_pairs]

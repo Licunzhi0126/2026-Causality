@@ -42,15 +42,28 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--network-method", choices=sorted(NETWORK_METHODS), default="legacy_mixed_grn_cci")
     parser.add_argument("--cross-cell-lr-use-grn-gate", action="store_true")
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
-    parser.add_argument("--export-pij", action="store_true")
-    parser.add_argument("--export-pij-topk", type=int, default=10)
+    parser.add_argument(
+        "--export-pij",
+        action="store_true",
+        help="Export full PIJ transition matrices as sparse .npz files with units.csv and metadata.",
+    )
+    parser.add_argument(
+        "--export-pij-topk",
+        type=int,
+        default=0,
+        help="Optional top-k CSV for inspection. 0 means only export full sparse .npz matrices.",
+    )
     parser.add_argument(
         "--pij-archive-root",
         type=Path,
         default=None,
-        help="PIJ CSV archive root. Defaults to DATA_ROOT/pij.",
+        help="PIJ sparse archive root. Defaults to DATA_ROOT/pij.",
     )
-    parser.add_argument("--export-pair-artifacts", action="store_true")
+    parser.add_argument(
+        "--export-pair-artifacts",
+        action="store_true",
+        help="Export pair-level debugging artifacts. This does not control PIJ export.",
+    )
     parser.add_argument("--development-feature-root", type=Path, default=None)
     parser.add_argument("--pij-feature-aggregation", choices=["mean", "median"], default="mean")
     parser.add_argument("--pij-missing-feature-policy", choices=["error", "impute_mean", "ignore"], default="impute_mean")
