@@ -270,18 +270,48 @@ class VerticalMIGNetPipeline:
             )
 
         with (pair_dir / "feature_schema.json").open("w", encoding="utf-8") as handle:
+            exported_feature_names = method_result.method_metadata.get("feature_names", network_context.feature_names)
             json.dump(
                 {
                     "network_method": network_context.network_method,
-                    "feature_names": network_context.feature_names,
+                    "feature_names": exported_feature_names,
+                    "network_feature_names": network_context.feature_names,
                     "feature_blocks": network_context.feature_blocks,
                     "metadata": network_context.metadata,
+                    "method_metadata": method_result.method_metadata,
                 },
                 handle,
                 ensure_ascii=False,
                 indent=2,
                 default=_json_default,
             )
+
+        if method_result.method_metadata.get("feature_source") == "pure_expression":
+            pd.DataFrame({"gene": method_result.method_metadata.get("selected_genes", [])}).to_csv(
+                pair_dir / "pure_expression_genes.csv",
+                index=False,
+            )
+            with (pair_dir / "pure_expression_feature_schema.json").open("w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "feature_source": "pure_expression",
+                        "uses_grn": False,
+                        "uses_cci": False,
+                        "uses_legacy_graph": False,
+                        "feature_names": exported_feature_names,
+                        "selected_gene_count": method_result.method_metadata.get("selected_gene_count"),
+                        "normalization": method_result.method_metadata.get("normalization"),
+                        "gene_selection": method_result.method_metadata.get("gene_selection"),
+                        "gene_scaler": method_result.method_metadata.get("gene_scaler"),
+                        "feature_reduction": method_result.method_metadata.get("feature_reduction"),
+                        "lower_aggregation": method_result.method_metadata.get("lower_aggregation"),
+                        "upper_alignment_missing_policy": method_result.method_metadata.get("upper_alignment_missing_policy"),
+                    },
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=_json_default,
+                )
 
         for relative_path, table in network_context.exports.items():
             export_path = pair_dir / relative_path
@@ -317,5 +347,8 @@ class VerticalMIGNetPipeline:
 
         if self.cfg.export_features:
             for stage, low, up in zip(map(str, self.cfg.time_points), method_result.lower_features, method_result.upper_features):
-                pd.DataFrame(low, index=stable_upper_units).to_csv(pair_dir / f"{stage}_lower_features_scaled.csv")
-                pd.DataFrame(up, index=stable_upper_units).to_csv(pair_dir / f"{stage}_upper_features_scaled.csv")
+                feature_names = method_result.method_metadata.get("feature_names")
+                low_columns = feature_names if isinstance(feature_names, list) and len(feature_names) == low.shape[1] else None
+                up_columns = feature_names if isinstance(feature_names, list) and len(feature_names) == up.shape[1] else None
+                pd.DataFrame(low, index=stable_upper_units, columns=low_columns).to_csv(pair_dir / f"{stage}_lower_features_scaled.csv")
+                pd.DataFrame(up, index=stable_upper_units, columns=up_columns).to_csv(pair_dir / f"{stage}_upper_features_scaled.csv")

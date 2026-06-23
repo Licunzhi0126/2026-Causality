@@ -138,3 +138,37 @@ def test_energy_ot_uses_only_graph_energy_and_needs_no_external_features() -> No
     assert pair_metadata["lower"]["cost_components"] == ["graph_energy"]
     assert pair_metadata["upper"]["cost_components"] == ["graph_energy"]
     assert pair_metadata["lower"]["cost_summary"]["total_weight"] == pytest.approx(1.0)
+
+
+def test_pure_expression_ot_uses_expression_only_context() -> None:
+    context = _synthetic_context()
+    context.network_method = "expression_only"
+    context.metadata = {
+        "feature_source": "pure_expression",
+        "uses_grn": False,
+        "uses_cci": False,
+        "uses_legacy_graph": False,
+    }
+    cfg = TemporalRunConfig(
+        network_method="expression_only",
+        pij_method="pure_expression_ot",
+        pij_feature_components=None,
+        pure_expression_normalize=False,
+        pure_expression_log1p=False,
+        pure_expression_gene_selection="all",
+        pure_expression_scaler="none",
+        ot_max_iter=20,
+    )
+    cfg.validate()
+
+    result, kernels = get_pij_method("pure_expression_ot").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["pij_method"] == "pure_expression_ot"
+    assert result.method_metadata["feature_source"] == "pure_expression"
+    assert result.method_metadata["uses_grn"] is False
+    assert result.method_metadata["uses_cci"] is False
+    assert result.method_metadata["uses_legacy_graph"] is False
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_components"] == ["pure_expression"]
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])

@@ -16,6 +16,7 @@ from mignet_ce.pij.laplacian import LaplacianPijMethod
 from mignet_ce.pij.pseudotime_expression_ot import PseudotimeExpressionOTPijMethod
 from mignet_ce.pij.pseudotime_ot import PseudotimeOTPijMethod
 from mignet_ce.pij.pseudotime_spatial_ot import PseudotimeSpatialOTPijMethod
+from mignet_ce.pij.pure_expression_ot import PureExpressionOTPijMethod
 from mignet_ce.pij.slat import SLATPijMethod
 from mignet_ce.pij.spatial_ot import SpatialOTPijMethod
 from mignet_ce.pij.sr_expression_ot import SRExpressionOTPijMethod
@@ -32,6 +33,7 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "3dot": ThreeDotPijMethod,
     "slat": SLATPijMethod,
     "expr_ot": ExprOTPijMethod,
+    "pure_expression_ot": PureExpressionOTPijMethod,
     "energy_ot": EnergyOTPijMethod,
     "energy_entropy_ot": EnergyEntropyOTPijMethod,
     "pseudotime_ot": PseudotimeOTPijMethod,

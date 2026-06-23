@@ -123,6 +123,7 @@ PIJ_METHODS = {
     "3dot",
     "slat",
     "expr_ot",
+    "pure_expression_ot",
     "energy_ot",
     "energy_entropy_ot",
     "pseudotime_ot",
@@ -141,6 +142,7 @@ PIJ_METHODS = {
 PIJ_METHOD_PRESETS = {
     "core": ("joint_nmf", "laplacian", "3dot", "slat"),
     "ot_basic": ("expr_ot", "energy_entropy_ot"),
+    "pure_expression": ("pure_expression_ot",),
     "development_scalar": ("pseudotime_ot", "sr_ot"),
     "development_all": ("pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"),
     "ot_ablation_v2": (
@@ -173,6 +175,7 @@ PIJ_METHOD_PRESETS = {
         "3dot",
         "slat",
         "expr_ot",
+        "pure_expression_ot",
         "energy_ot",
         "energy_entropy_ot",
         "pseudotime_ot",
@@ -190,7 +193,7 @@ PIJ_METHOD_PRESETS = {
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
-NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer"}
+NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer", "expression_only"}
 DEVELOPMENT_PIJ_METHODS = {
     "pseudotime_ot",
     "sr_ot",
@@ -246,6 +249,14 @@ class TemporalRunConfig:
     pij_use_unbalanced_ot: bool = False
     pij_unbalanced_mass: float = 1.0
     pij_cost_metric: str = "cosine"
+    pure_expression_normalize: bool = True
+    pure_expression_log1p: bool = True
+    pure_expression_scale_factor: float = 10000.0
+    pure_expression_max_genes: int | None = 2000
+    pure_expression_gene_selection: str = "variance"
+    pure_expression_pca_components: int | None = None
+    pure_expression_scaler: str = "standard"
+    pure_expression_cosine_eps: float = 1e-8
     ot_epsilon: float = 0.05
     ot_gamma: float = 1.0
     ot_max_iter: int = 100
@@ -298,6 +309,20 @@ class TemporalRunConfig:
             raise ValueError("pij_unbalanced_mass must be positive.")
         if self.pij_cost_metric not in {"cosine", "euclidean"}:
             raise ValueError("pij_cost_metric must be one of ['cosine', 'euclidean'].")
+        if method == "pure_expression_ot" and self.network_method != "expression_only":
+            raise ValueError("pure_expression_ot requires network_method='expression_only'.")
+        if self.pure_expression_scale_factor <= 0:
+            raise ValueError("pure_expression_scale_factor must be positive.")
+        if self.pure_expression_max_genes is not None and self.pure_expression_max_genes <= 0:
+            raise ValueError("pure_expression_max_genes must be positive when provided.")
+        if self.pure_expression_gene_selection not in {"variance", "all"}:
+            raise ValueError("pure_expression_gene_selection must be one of ['variance', 'all'].")
+        if self.pure_expression_pca_components is not None and self.pure_expression_pca_components <= 0:
+            raise ValueError("pure_expression_pca_components must be positive when provided.")
+        if self.pure_expression_scaler not in {"standard", "minmax", "none"}:
+            raise ValueError("pure_expression_scaler must be one of ['standard', 'minmax', 'none'].")
+        if self.pure_expression_cosine_eps <= 0:
+            raise ValueError("pure_expression_cosine_eps must be positive.")
         if self.pij_feature_aggregation not in {"mean", "median"}:
             raise ValueError("pij_feature_aggregation must be one of ['mean', 'median'].")
         if self.pij_missing_feature_policy not in {"error", "impute_mean", "ignore"}:

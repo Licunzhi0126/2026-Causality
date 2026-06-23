@@ -86,6 +86,24 @@ def run_ot_pij_method(
         n_components=cfg.pij_feature_components,
         seed=cfg.nmf_seed if seed is None else seed,
     )
+    return run_ot_pij_method_with_result(
+        context=context,
+        cfg=cfg,
+        pairs=pairs,
+        method_name=method_name,
+        component_builder=component_builder,
+        result=result,
+    )
+
+
+def run_ot_pij_method_with_result(
+    context: NetworkContext,
+    cfg: TemporalRunConfig,
+    pairs: Sequence[TimePair],
+    method_name: str,
+    component_builder: CostBuilder,
+    result: MethodResult,
+) -> tuple[MethodResult, TransitionKernels]:
     result.method_metadata["pij_method"] = method_name
     kernels = TransitionKernels(
         kernel_metadata={

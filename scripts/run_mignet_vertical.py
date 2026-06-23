@@ -82,6 +82,14 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-use-unbalanced-ot", action="store_true")
     parser.add_argument("--pij-unbalanced-mass", type=float, default=1.0)
     parser.add_argument("--pij-cost-metric", choices=["cosine", "euclidean"], default="cosine")
+    parser.add_argument("--no-pure-expression-normalize", action="store_true")
+    parser.add_argument("--no-pure-expression-log1p", action="store_true")
+    parser.add_argument("--pure-expression-scale-factor", type=float, default=10000.0)
+    parser.add_argument("--pure-expression-max-genes", type=int, default=2000)
+    parser.add_argument("--pure-expression-gene-selection", choices=["variance", "all"], default="variance")
+    parser.add_argument("--pure-expression-pca-components", type=int, default=None)
+    parser.add_argument("--pure-expression-scaler", choices=["standard", "minmax", "none"], default="standard")
+    parser.add_argument("--pure-expression-cosine-eps", type=float, default=1e-8)
     parser.add_argument("--ot-epsilon", type=float, default=0.05)
     parser.add_argument("--ot-gamma", type=float, default=1.0)
     parser.add_argument("--ot-max-iter", type=int, default=100)
@@ -154,6 +162,14 @@ def main() -> None:
         pij_use_unbalanced_ot=args.pij_use_unbalanced_ot,
         pij_unbalanced_mass=args.pij_unbalanced_mass,
         pij_cost_metric=args.pij_cost_metric,
+        pure_expression_normalize=not args.no_pure_expression_normalize,
+        pure_expression_log1p=not args.no_pure_expression_log1p,
+        pure_expression_scale_factor=args.pure_expression_scale_factor,
+        pure_expression_max_genes=args.pure_expression_max_genes,
+        pure_expression_gene_selection=args.pure_expression_gene_selection,
+        pure_expression_pca_components=args.pure_expression_pca_components,
+        pure_expression_scaler=args.pure_expression_scaler,
+        pure_expression_cosine_eps=args.pure_expression_cosine_eps,
         ot_epsilon=args.ot_epsilon,
         ot_gamma=args.ot_gamma,
         ot_max_iter=args.ot_max_iter,

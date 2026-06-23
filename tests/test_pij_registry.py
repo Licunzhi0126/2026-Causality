@@ -9,6 +9,8 @@ def test_pij_registry_matches_configured_methods() -> None:
     assert {get_pij_method(name).name for name in PIJ_METHODS} == PIJ_METHODS
     assert {"joint_nmf", "laplacian", "3dot", "slat"}.issubset(PIJ_METHODS)
     assert {"expr_ot", "energy_entropy_ot"}.issubset(PIJ_METHODS)
+    assert {"pure_expression_ot"}.issubset(PIJ_METHODS)
+    assert PIJ_METHOD_PRESETS["pure_expression"] == ("pure_expression_ot",)
     assert set(PIJ_METHOD_PRESETS["ot_ablation_v2"]) == {
         "sr_ot",
         "pseudotime_ot",
