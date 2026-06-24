@@ -27,10 +27,15 @@ def test_pij_registry_matches_configured_methods() -> None:
         "expr_pseudotime_sr_spatial_ot",
         "expr_pseudotime_sr_energy_ot",
     )
+    assert PIJ_METHOD_PRESETS["ot_ablation_v4"] == (
+        "expr_pseudotime_sr_energy_ot",
+        "expr_pseudotime_sr_energy_spatial_ot",
+    )
     assert "energy_ot" not in DEVELOPMENT_PIJ_METHODS
     assert {
         "expr_pseudotime_sr_ot",
         "expr_pseudotime_sr_spatial_ot",
         "expr_pseudotime_sr_energy_ot",
+        "expr_pseudotime_sr_energy_spatial_ot",
     }.issubset(DEVELOPMENT_PIJ_METHODS)
     assert set(PIJ_METHOD_PRESETS["all"]) == PIJ_METHODS

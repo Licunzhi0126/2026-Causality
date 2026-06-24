@@ -15,6 +15,13 @@ from mignet_ce.config import DEFAULT_ABLATION_OUTPUT_ROOT, DEFAULT_DATA_ROOT, NE
 from mignet_ce.io.loaders import LayerDataResolver, LayerPaths
 
 
+LEGACY_NETWORK_METHODS = {
+    "legacy_mixed_grn_cci",
+    "legacy_inter_cci_only",
+    "legacy_inter_additive_grn_cci",
+}
+
+
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check required inputs for the vertical MIGNet ablation matrix.")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
@@ -59,7 +66,7 @@ def _missing_for_method(paths_by_key: dict[tuple[str, str, str], LayerPaths], me
         required = [paths.h5ad, paths.grn_edges, paths.cci_index]
         if paths.spot_domain_map is not None:
             required.append(paths.spot_domain_map)
-        if method == "legacy_mixed_grn_cci":
+        if method in LEGACY_NETWORK_METHODS:
             required.extend([paths.cci_manifest, paths.cci_lr_dir])
         elif method == "cross_cell_multilayer":
             if not paths.cci_total.exists():

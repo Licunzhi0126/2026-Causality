@@ -31,6 +31,11 @@ from mignet_ce.utils.coords import align_coords
 
 class LegacyMixedGRNCCIBuilder:
     network_method = "legacy_mixed_grn_cci"
+    inter_influence_mode = "product"
+    inter_additive_cci_weight = 1.0
+    inter_additive_grn_weight = 1.0
+    inter_grn_pair_policy = "require_pair"
+    include_intra_grn = True
 
     def build_pair_context(
         self,
@@ -100,6 +105,11 @@ class LegacyMixedGRNCCIBuilder:
                 cci_min=cfg.cci_min,
                 top_k_targets_per_regulator=cfg.top_k_targets_per_regulator,
                 require_target_expression_for_inter=cfg.require_target_expression_for_inter,
+                inter_influence_mode=self.inter_influence_mode,
+                inter_additive_cci_weight=self.inter_additive_cci_weight,
+                inter_additive_grn_weight=self.inter_additive_grn_weight,
+                inter_grn_pair_policy=self.inter_grn_pair_policy,
+                include_intra_grn=self.include_intra_grn,
             )
             upper_graph = build_layer_graph(
                 layer_name=pair.upper_layer,
@@ -111,6 +121,11 @@ class LegacyMixedGRNCCIBuilder:
                 cci_min=cfg.cci_min,
                 top_k_targets_per_regulator=cfg.top_k_targets_per_regulator,
                 require_target_expression_for_inter=cfg.require_target_expression_for_inter,
+                inter_influence_mode=self.inter_influence_mode,
+                inter_additive_cci_weight=self.inter_additive_cci_weight,
+                inter_additive_grn_weight=self.inter_additive_grn_weight,
+                inter_grn_pair_policy=self.inter_grn_pair_policy,
+                include_intra_grn=self.include_intra_grn,
             )
 
             lower_mat = build_lower_graph_matrix(lower_graph, overlap, feature_log1p=cfg.feature_log1p)
@@ -152,13 +167,19 @@ class LegacyMixedGRNCCIBuilder:
             upper_units_by_time=upper_units_by_time,
             upper_coords_by_time=upper_coords_by_time,
             feature_names=feature_names,
-            feature_blocks={"legacy_mixed_grn_cci": feature_names},
+            feature_blocks={self.network_method: feature_names},
             graph_summaries=graph_summaries,
             exports=exports,
             metadata={
                 "network_method": self.network_method,
                 "feature_log1p": bool(cfg.feature_log1p),
                 "feature_alignment_space": "stable_upper_units",
+                "legacy_inter_influence_mode": self.inter_influence_mode,
+                "legacy_inter_grn_pair_policy": self.inter_grn_pair_policy,
+                "legacy_include_intra_grn": self.include_intra_grn,
+                "legacy_additive_cci_weight": self.inter_additive_cci_weight,
+                "legacy_additive_grn_weight": self.inter_additive_grn_weight,
+                "legacy_shared_gene_policy": "expression_and_grn_intersection_across_layers_and_time",
             },
             lower_assignments_by_time=lower_assignments_by_time,
             upper_assignments_by_time=upper_assignments_by_time,
@@ -234,10 +255,22 @@ class LegacyMixedGRNCCIBuilder:
             raise ValueError(f"No upper units found for {upper_layer}.")
         return stable
 
-    @staticmethod
-    def _graph_summary(stage: str, lower_graph: LayerGraph, upper_graph: LayerGraph, lower_mat: np.ndarray, upper_mat: np.ndarray) -> dict[str, object]:
+    def _graph_summary(
+        self,
+        stage: str,
+        lower_graph: LayerGraph,
+        upper_graph: LayerGraph,
+        lower_mat: np.ndarray,
+        upper_mat: np.ndarray,
+    ) -> dict[str, object]:
         return {
             "time_point": stage,
+            "network_method": self.network_method,
+            "inter_influence_mode": self.inter_influence_mode,
+            "inter_grn_pair_policy": self.inter_grn_pair_policy,
+            "include_intra_grn": self.include_intra_grn,
+            "inter_additive_cci_weight": self.inter_additive_cci_weight,
+            "inter_additive_grn_weight": self.inter_additive_grn_weight,
             "lower_units": len(lower_graph.units),
             "upper_units": len(upper_graph.units),
             "shared_genes": len(lower_graph.shared_genes),

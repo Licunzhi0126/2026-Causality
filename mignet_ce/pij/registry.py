@@ -8,6 +8,7 @@ from mignet_ce.pij.development_ot import DevelopmentOTPijMethod
 from mignet_ce.pij.energy_ot import EnergyOTPijMethod
 from mignet_ce.pij.energy_entropy_ot import EnergyEntropyOTPijMethod
 from mignet_ce.pij.expr_ot import ExprOTPijMethod
+from mignet_ce.pij.expr_pseudotime_sr_energy_spatial_ot import ExprPseudotimeSREnergySpatialOTPijMethod
 from mignet_ce.pij.expr_pseudotime_sr_energy_ot import ExprPseudotimeSREnergyOTPijMethod
 from mignet_ce.pij.expr_pseudotime_sr_ot import ExprPseudotimeSROTPijMethod
 from mignet_ce.pij.expr_pseudotime_sr_spatial_ot import ExprPseudotimeSRSpatialOTPijMethod
@@ -46,6 +47,7 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "expr_pseudotime_sr_ot": ExprPseudotimeSROTPijMethod,
     "expr_pseudotime_sr_spatial_ot": ExprPseudotimeSRSpatialOTPijMethod,
     "expr_pseudotime_sr_energy_ot": ExprPseudotimeSREnergyOTPijMethod,
+    "expr_pseudotime_sr_energy_spatial_ot": ExprPseudotimeSREnergySpatialOTPijMethod,
     "velocity_ot": VelocityOTPijMethod,
     "development_ot": DevelopmentOTPijMethod,
 }

@@ -96,6 +96,46 @@ def _make_pair_lookup(grn: pd.DataFrame) -> Dict[Tuple[str, str], Tuple[float, f
     return lookup
 
 
+def _resolve_inter_influence(
+    cci_norm: float,
+    pair_key: Tuple[str, str],
+    pair_lookup: Dict[Tuple[str, str], Tuple[float, float]],
+    mode: str,
+    additive_cci_weight: float,
+    additive_grn_weight: float,
+    grn_pair_policy: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    if mode not in {"product", "cci_only", "additive"}:
+        raise ValueError(f"Unsupported inter_influence_mode {mode!r}.")
+    if grn_pair_policy not in {"require_pair", "zero_if_missing"}:
+        raise ValueError(f"Unsupported inter_grn_pair_policy {grn_pair_policy!r}.")
+    if additive_cci_weight < 0 or additive_grn_weight < 0:
+        raise ValueError("Inter additive weights must be nonnegative.")
+    if mode == "additive" and additive_cci_weight + additive_grn_weight <= 0:
+        raise ValueError("Inter additive weights must have a positive sum.")
+
+    pair_weights = pair_lookup.get(pair_key)
+    if mode == "cci_only":
+        raw_w, norm_w = pair_weights if pair_weights is not None else (None, None)
+        return raw_w, norm_w, float(cci_norm)
+
+    if pair_weights is None:
+        if mode == "product" or grn_pair_policy == "require_pair":
+            return None, None, None
+        raw_w, norm_w = None, 0.0
+    else:
+        raw_w, norm_w = pair_weights
+
+    if mode == "product":
+        influence_score = float(cci_norm) * float(norm_w)
+    else:
+        total_weight = additive_cci_weight + additive_grn_weight
+        influence_score = (
+            additive_cci_weight * float(cci_norm) + additive_grn_weight * float(norm_w)
+        ) / total_weight
+    return raw_w, norm_w, influence_score
+
+
 def _scan_commot_score_range(manifest: pd.DataFrame, lr_dir: Path, cci_min: float) -> Tuple[Optional[float], Optional[float], int]:
     vmin: Optional[float] = None
     vmax: Optional[float] = None
@@ -171,6 +211,10 @@ def _build_commot_inter_edges(
     score_range: Tuple[Optional[float], Optional[float], int],
     cci_min: float,
     require_target_expression: bool,
+    inter_influence_mode: str,
+    inter_additive_cci_weight: float,
+    inter_additive_grn_weight: float,
+    inter_grn_pair_policy: str,
 ) -> pd.DataFrame:
     vmin, vmax, kept_nnz = score_range
     if kept_nnz == 0 or vmin is None or vmax is None:
@@ -226,11 +270,17 @@ def _build_commot_inter_edges(
                         continue
                     if require_target_expression and not active_mask[dst_idx, receptor_idx]:
                         continue
-                    if (ligand_gene, receptor_gene) not in pair_lookup:
+                    raw_w, norm_w, influence_score = _resolve_inter_influence(
+                        cci_norm=cci_norm,
+                        pair_key=(ligand_gene, receptor_gene),
+                        pair_lookup=pair_lookup,
+                        mode=inter_influence_mode,
+                        additive_cci_weight=inter_additive_cci_weight,
+                        additive_grn_weight=inter_additive_grn_weight,
+                        grn_pair_policy=inter_grn_pair_policy,
+                    )
+                    if influence_score is None:
                         continue
-
-                    raw_w, norm_w = pair_lookup[(ligand_gene, receptor_gene)]
-                    influence_score = cci_norm * norm_w
                     if influence_score <= 0:
                         continue
                     records.append(
@@ -266,7 +316,21 @@ def build_layer_graph(
     cci_min: float = 0.0,
     top_k_targets_per_regulator: int = 20,
     require_target_expression_for_inter: bool = True,
+    inter_influence_mode: str = "product",
+    inter_additive_cci_weight: float = 1.0,
+    inter_additive_grn_weight: float = 1.0,
+    inter_grn_pair_policy: str = "require_pair",
+    include_intra_grn: bool = True,
 ) -> LayerGraph:
+    _resolve_inter_influence(
+        cci_norm=1.0,
+        pair_key=("", ""),
+        pair_lookup={},
+        mode=inter_influence_mode,
+        additive_cci_weight=inter_additive_cci_weight,
+        additive_grn_weight=inter_additive_grn_weight,
+        grn_pair_policy=inter_grn_pair_policy,
+    )
     grn = read_grn_edges(paths.grn_edges, top_k_targets_per_regulator=top_k_targets_per_regulator)
     grn = _restrict_and_normalize_grn(grn, shared_genes)
     expr = expression.expr.loc[:, list(shared_genes)].copy()
@@ -280,7 +344,11 @@ def build_layer_graph(
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
 
-    intra = _build_intra_edges(layer_name, expr, active, regulator_to_targets)
+    intra = (
+        _build_intra_edges(layer_name, expr, active, regulator_to_targets)
+        if include_intra_grn
+        else pd.DataFrame(columns=EDGE_COLUMNS)
+    )
     inter = _build_commot_inter_edges(
         layer_name=layer_name,
         manifest=manifest,
@@ -295,6 +363,10 @@ def build_layer_graph(
         score_range=score_range,
         cci_min=cci_min,
         require_target_expression=require_target_expression_for_inter,
+        inter_influence_mode=inter_influence_mode,
+        inter_additive_cci_weight=inter_additive_cci_weight,
+        inter_additive_grn_weight=inter_additive_grn_weight,
+        inter_grn_pair_policy=inter_grn_pair_policy,
     )
     return LayerGraph(
         layer=layer_name,

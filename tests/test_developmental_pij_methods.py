@@ -104,6 +104,7 @@ def _write_all_feature_files(root, velocity_dims: int = 3, include: set[str] | N
         "expr_pseudotime_sr_ot",
         "expr_pseudotime_sr_spatial_ot",
         "expr_pseudotime_sr_energy_ot",
+        "expr_pseudotime_sr_energy_spatial_ot",
         "velocity_ot",
         "development_ot",
     ],
@@ -185,6 +186,17 @@ def test_ot_ablation_v2_methods_use_only_declared_cost_components(
             "expr_pseudotime_sr_energy_ot",
             ["expression", "pseudotime", "sr", "graph_energy"],
             {"expression": 1.0, "pseudotime": 0.5, "sr": 0.5, "graph_energy": 0.2},
+        ),
+        (
+            "expr_pseudotime_sr_energy_spatial_ot",
+            ["expression", "pseudotime", "sr", "graph_energy", "spatial"],
+            {
+                "expression": 1.0,
+                "pseudotime": 0.5,
+                "sr": 0.5,
+                "graph_energy": 0.2,
+                "spatial": 0.2,
+            },
         ),
     ],
 )
@@ -313,6 +325,22 @@ def test_expr_pseudotime_sr_spatial_ot_errors_when_coordinates_are_missing(tmp_p
 
     with pytest.raises(ValueError, match="expr_pseudotime_sr_spatial_ot requires coordinates"):
         get_pij_method("expr_pseudotime_sr_spatial_ot").run(context, cfg, [(0, 1)])
+
+
+def test_expr_pseudotime_sr_energy_spatial_ot_errors_when_coordinates_are_missing(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root)
+    context = _synthetic_context()
+    context.upper_coords_by_time = None  # type: ignore[assignment]
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="expr_pseudotime_sr_energy_spatial_ot",
+        pij_feature_components=None,
+    )
+
+    with pytest.raises(ValueError, match="expr_pseudotime_sr_energy_spatial_ot requires coordinates"):
+        get_pij_method("expr_pseudotime_sr_energy_spatial_ot").run(context, cfg, [(0, 1)])
 
 
 def test_velocity_ot_errors_when_velocity_dimension_does_not_match_features(tmp_path) -> None:

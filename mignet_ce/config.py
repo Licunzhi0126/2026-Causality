@@ -136,6 +136,7 @@ PIJ_METHODS = {
     "expr_pseudotime_sr_ot",
     "expr_pseudotime_sr_spatial_ot",
     "expr_pseudotime_sr_energy_ot",
+    "expr_pseudotime_sr_energy_spatial_ot",
     "velocity_ot",
     "development_ot",
 }
@@ -159,6 +160,10 @@ PIJ_METHOD_PRESETS = {
         "expr_pseudotime_sr_ot",
         "expr_pseudotime_sr_spatial_ot",
         "expr_pseudotime_sr_energy_ot",
+    ),
+    "ot_ablation_v4": (
+        "expr_pseudotime_sr_energy_ot",
+        "expr_pseudotime_sr_energy_spatial_ot",
     ),
     "development_ot_ablation": (
         "sr_ot",
@@ -188,12 +193,19 @@ PIJ_METHOD_PRESETS = {
         "expr_pseudotime_sr_ot",
         "expr_pseudotime_sr_spatial_ot",
         "expr_pseudotime_sr_energy_ot",
+        "expr_pseudotime_sr_energy_spatial_ot",
         "velocity_ot",
         "development_ot",
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
-NETWORK_METHODS = {"legacy_mixed_grn_cci", "cross_cell_multilayer", "expression_only"}
+NETWORK_METHODS = {
+    "legacy_mixed_grn_cci",
+    "legacy_inter_cci_only",
+    "legacy_inter_additive_grn_cci",
+    "cross_cell_multilayer",
+    "expression_only",
+}
 DEVELOPMENT_PIJ_METHODS = {
     "pseudotime_ot",
     "sr_ot",
@@ -204,6 +216,7 @@ DEVELOPMENT_PIJ_METHODS = {
     "expr_pseudotime_sr_ot",
     "expr_pseudotime_sr_spatial_ot",
     "expr_pseudotime_sr_energy_ot",
+    "expr_pseudotime_sr_energy_spatial_ot",
     "velocity_ot",
     "development_ot",
 }
