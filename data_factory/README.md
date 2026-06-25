@@ -274,7 +274,7 @@ The current copied methods are CPU implementations:
 
 These methods do not use CUDA just because CUDA devices are present. Using the two 4090D GPUs would require a separate experimental GPU implementation, for example RAPIDS/cuML for a GPU random-forest-like GRN. That would be a method change, so it is not silently enabled in this factory.
 
-## Unit-Specific And Spot-Local GRN Pilots
+## Unified Unit-Specific GRN Workflow
 
 Domain/unit-specific GRNs are inferred from the original spot/cell rows stored in
 each layer's `*_spots_with_domain.h5ad`, grouped by `obs["domain_id"]`:
@@ -296,24 +296,47 @@ grn_unit_specific/<layer>/<sample>/unit_grn_summary.csv
 The edge table contains `unit_id`, `regulator`, `target`, `weight`,
 unit-local `weight_norm`, `n_cells`, and `grn_status`.
 
-Selected spot/cell local GRNs use only raw spatial coordinates. The `k-neighbors`
-value excludes the center; with the default center inclusion, `k=50` produces a
-51-row local expression matrix:
+Spot uses the same command. Every `adata.obs_names` entry is treated as one unit.
+Its local expression matrix uses only raw spatial coordinates. The
+`spot-k-neighbors` value excludes the center; with default center inclusion,
+`k=50` produces a 51-row local expression matrix:
 
 ```bash
-python scripts/run_spot_local_grn_pilot.py \
-  --spot-h5ad /path/to/spot_heart_11.5.h5ad \
-  --selected-units spot_001 spot_023 spot_205 \
-  --neighbor-mode spatial \
-  --k-neighbors 50 \
+python scripts/run_unit_grn_layer.py \
+  --layer spot \
+  --input-root /path/to/E1S1_domain_factory/spot \
+  --output-root /path/to/E1S1_domain_factory/grn_unit_specific/spot \
+  --sample-names spot_heart_11.5 \
+  --spot-neighbor-mode spatial \
+  --spot-k-neighbors 50 \
   --include-center \
-  --min-cells 30 \
-  --output-root /path/to/grn_spot_local/spot/spot_heart_11.5
+  --min-cells-per-unit 30 \
+  --threads 32
 ```
 
-This pilot does not use domain labels, expression KNN, vertical overlap, or
-upper/lower layer assignments. `spot_local_neighbors.csv` records the exact
-spatial neighborhood used for audit.
+Spot does not use domain labels, expression KNN, vertical overlap, or upper/lower
+layer assignments. All layers write:
+
+```text
+grn_unit_specific/<layer>/<sample>/unit_grn_edges.csv
+grn_unit_specific/<layer>/<sample>/unit_grn_summary.csv
+```
+
+Spot additionally writes `unit_grn_neighbors.csv` for spatial-neighborhood audit.
+
+Before running GENIE3, inspect unit sizes with:
+
+```bash
+python scripts/inspect_unit_observation_counts.py \
+  --data-root /path/to/E1S1_domain_factory \
+  --layers spot seurat_k150 seurat_k40 louvain_k150 louvain_k40 \
+  --output-root /path/to/E1S1_domain_factory/grn_unit_specific_qc \
+  --min-cells-per-unit 30 \
+  --spot-k-neighbors 50
+```
+
+This writes `unit_observation_counts.csv`,
+`sample_unit_observation_summary.csv`, and `below_threshold_units.csv`.
 
 MIGNet can consume the resulting unit-specific files with
 `--network-method unit_specific_clean_grn_cci_mix`. Missing unit GRNs use the

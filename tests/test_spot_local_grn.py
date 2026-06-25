@@ -16,7 +16,8 @@ LIB_DIR = Path(__file__).resolve().parents[1] / "data_factory" / "lib"
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
-from spot_local_grn_runner import infer_spot_local_grn_tables, select_spatial_neighbors
+from unit_grn_layer_runner import infer_spot_unit_grn_tables
+from unit_observation_counter import build_spatial_neighbor_tables
 
 
 def _fake_infer(adata, _grn):
@@ -41,14 +42,14 @@ def _fake_infer(adata, _grn):
 def test_spatial_neighbors_use_coordinates_only_and_exclude_center() -> None:
     ids = ["s0", "s1", "s2", "s3"]
     coords = np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0], [10.0, 0.0]])
-    neighbors = select_spatial_neighbors(ids, coords, ["s0"], k_neighbors=2)["s0"]
+    neighbors = build_spatial_neighbor_tables(ids, coords, k_neighbors=2)["s0"]
 
     assert neighbors["neighbor_unit_id"].tolist() == ["s1", "s2"]
     assert neighbors["neighbor_rank"].tolist() == [1, 2]
     assert "s0" not in set(neighbors["neighbor_unit_id"])
 
 
-def test_spot_local_grn_outputs_center_edges_and_auditable_neighbors() -> None:
+def test_spot_unit_grn_processes_all_spots_with_unified_outputs() -> None:
     adata = ad.AnnData(
         X=np.ones((4, 2)),
         obs=pd.DataFrame(
@@ -61,17 +62,25 @@ def test_spot_local_grn_outputs_center_edges_and_auditable_neighbors() -> None:
         [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [8.0, 0.0]]
     )
 
-    edges, neighbors, summary = infer_spot_local_grn_tables(
+    edges, summary, neighbors = infer_spot_unit_grn_tables(
         adata,
-        ["s0"],
         k_neighbors=2,
         include_center=True,
-        min_cells=3,
+        min_cells_per_unit=3,
         infer_fn=_fake_infer,
     )
 
-    assert edges.loc[0, "center_unit_id"] == "s0"
-    assert edges.loc[0, "n_neighbors"] == 2
-    assert edges.loc[0, "neighbor_mode"] == "spatial"
-    assert neighbors["neighbor_unit_id"].tolist() == ["s1", "s2"]
-    assert summary.loc[0, "n_cells"] == 3
+    assert set(edges["unit_id"]) == {"s0", "s1", "s2", "s3"}
+    assert list(edges.columns) == [
+        "unit_id",
+        "regulator",
+        "target",
+        "weight",
+        "weight_norm",
+        "n_cells",
+        "grn_status",
+    ]
+    assert set(neighbors["unit_id"]) == {"s0", "s1", "s2", "s3"}
+    assert neighbors.loc[neighbors["unit_id"] == "s0", "neighbor_unit_id"].tolist() == ["s1", "s2"]
+    assert set(summary["unit_id"]) == {"s0", "s1", "s2", "s3"}
+    assert set(summary["n_cells"]) == {3}
