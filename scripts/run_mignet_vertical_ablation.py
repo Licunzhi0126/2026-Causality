@@ -36,6 +36,22 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--expr-threshold", type=float, default=0.0)
     parser.add_argument("--cci-min", type=float, default=0.0)
     parser.add_argument("--top-k-targets-per-regulator", type=int, default=20)
+    parser.add_argument(
+        "--grn-expression-weight-mode",
+        choices=["none", "geometric_mean", "product", "min"],
+        default="geometric_mean",
+    )
+    parser.add_argument(
+        "--grn-expression-transform",
+        choices=["log1p_minmax", "log1p_zscore", "none"],
+        default="log1p_minmax",
+    )
+    parser.add_argument("--grn-expression-weight-floor", type=float, default=0.0)
+    parser.add_argument(
+        "--unit-grn-fallback",
+        choices=["error", "sample_grn_masked", "sample_grn_expression_weighted", "skip_unit_intra"],
+        default="sample_grn_expression_weighted",
+    )
     parser.add_argument("--cross-cell-lr-use-grn-gate", action="store_true")
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
     parser.add_argument("--nmf-components", type=int, default=5)
@@ -107,6 +123,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--kraskov-k", type=int, default=3)
     parser.add_argument("--no-feature-log1p", action="store_true")
     parser.add_argument("--no-export-features", action="store_true")
+    parser.add_argument("--export-raw-native-features", action="store_true")
+    parser.add_argument("--export-graphs", action="store_true")
+    parser.add_argument("--export-feature-diagnostics", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     return parser
 
@@ -134,6 +153,10 @@ def main() -> None:
         expr_threshold=args.expr_threshold,
         cci_min=args.cci_min,
         top_k_targets_per_regulator=args.top_k_targets_per_regulator,
+        grn_expression_weight_mode=args.grn_expression_weight_mode,
+        grn_expression_transform=args.grn_expression_transform,
+        grn_expression_weight_floor=args.grn_expression_weight_floor,
+        unit_grn_fallback=args.unit_grn_fallback,
         cross_cell_lr_use_grn_gate=args.cross_cell_lr_use_grn_gate,
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,
         nmf_components=args.nmf_components,
@@ -187,6 +210,9 @@ def main() -> None:
         kraskov_k=args.kraskov_k,
         feature_log1p=not args.no_feature_log1p,
         export_features=not args.no_export_features,
+        export_graphs=args.export_graphs,
+        export_raw_native_features=args.export_raw_native_features,
+        export_feature_diagnostics=args.export_feature_diagnostics,
     )
     metrics = VerticalAblationPipeline(
         base_cfg=base_cfg,

@@ -45,4 +45,5 @@ class CrossOrganDataResolver:
             cci_index=self.data_root / "cci" / "cross_organ" / layer / f"{sample}_index.tsv",
             cci_lr_dir=self.data_root / "cci" / "cross_organ" / layer / f"{sample}_COMMOT_by_LR",
             spot_domain_map=self.data_root / "cross_organ" / layer / f"{sample}_spot_domain_map.csv",
+            unit_grn_edges=self.data_root / "grn_unit_specific" / "cross_organ" / layer / sample / "unit_grn_edges.csv",
         )

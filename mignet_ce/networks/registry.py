@@ -4,11 +4,13 @@ from typing import Dict, Type
 
 from mignet_ce.networks.base import NetworkBuilder
 from mignet_ce.networks.clean_grn_cci_mix import CleanGRNCCIMixBuilder
+from mignet_ce.networks.clean_grn_cci_expr_mix import CleanGRNCCIExpressionMixBuilder
 from mignet_ce.networks.cross_cell_multilayer import CrossCellMultilayerBuilder
 from mignet_ce.networks.expression_only import ExpressionOnlyBuilder
 from mignet_ce.networks.legacy_inter_additive_grn_cci import LegacyInterAdditiveGRNCCIBuilder
 from mignet_ce.networks.legacy_inter_cci_only import LegacyInterCCIOnlyBuilder
 from mignet_ce.networks.legacy_mixed_grn_cci import LegacyMixedGRNCCIBuilder
+from mignet_ce.networks.unit_specific_clean_grn_cci_mix import UnitSpecificCleanGRNCCIMixBuilder
 
 
 NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
@@ -16,6 +18,8 @@ NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
     "legacy_inter_cci_only": LegacyInterCCIOnlyBuilder,
     "legacy_inter_additive_grn_cci": LegacyInterAdditiveGRNCCIBuilder,
     "clean_grn_cci_mix": CleanGRNCCIMixBuilder,
+    "clean_grn_cci_expr_mix": CleanGRNCCIExpressionMixBuilder,
+    "unit_specific_clean_grn_cci_mix": UnitSpecificCleanGRNCCIMixBuilder,
     "cross_cell_multilayer": CrossCellMultilayerBuilder,
     "expression_only": ExpressionOnlyBuilder,
 }

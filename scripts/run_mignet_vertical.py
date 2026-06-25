@@ -40,6 +40,22 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-method", choices=sorted(PIJ_METHODS), default=None)
     parser.add_argument("--embedding-method", choices=["joint_nmf", "laplacian"], default=None, help="Deprecated alias for --pij-method.")
     parser.add_argument("--network-method", choices=sorted(NETWORK_METHODS), default="legacy_mixed_grn_cci")
+    parser.add_argument(
+        "--grn-expression-weight-mode",
+        choices=["none", "geometric_mean", "product", "min"],
+        default="geometric_mean",
+    )
+    parser.add_argument(
+        "--grn-expression-transform",
+        choices=["log1p_minmax", "log1p_zscore", "none"],
+        default="log1p_minmax",
+    )
+    parser.add_argument("--grn-expression-weight-floor", type=float, default=0.0)
+    parser.add_argument(
+        "--unit-grn-fallback",
+        choices=["error", "sample_grn_masked", "sample_grn_expression_weighted", "skip_unit_intra"],
+        default="sample_grn_expression_weighted",
+    )
     parser.add_argument("--cross-cell-lr-use-grn-gate", action="store_true")
     parser.add_argument("--cross-cell-top-k-edges", type=int, default=1000)
     parser.add_argument(
@@ -108,6 +124,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--kraskov-k", type=int, default=3)
     parser.add_argument("--no-feature-log1p", action="store_true")
     parser.add_argument("--no-export-features", action="store_true")
+    parser.add_argument("--export-raw-native-features", action="store_true")
+    parser.add_argument("--export-graphs", action="store_true")
+    parser.add_argument("--export-feature-diagnostics", action="store_true")
     return parser
 
 
@@ -138,6 +157,10 @@ def main() -> None:
         embedding_method=embedding_method,
         pij_method=pij_method,
         network_method=args.network_method,
+        grn_expression_weight_mode=args.grn_expression_weight_mode,
+        grn_expression_transform=args.grn_expression_transform,
+        grn_expression_weight_floor=args.grn_expression_weight_floor,
+        unit_grn_fallback=args.unit_grn_fallback,
         cross_cell_lr_use_grn_gate=args.cross_cell_lr_use_grn_gate,
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,
         export_pij=args.export_pij,
@@ -188,6 +211,9 @@ def main() -> None:
         kraskov_k=args.kraskov_k,
         feature_log1p=not args.no_feature_log1p,
         export_features=not args.no_export_features,
+        export_graphs=args.export_graphs,
+        export_raw_native_features=args.export_raw_native_features,
+        export_feature_diagnostics=args.export_feature_diagnostics,
     )
     metrics = VerticalMIGNetPipeline(cfg).run()
     if metrics.empty:

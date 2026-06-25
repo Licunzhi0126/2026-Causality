@@ -31,6 +31,7 @@ class LayerPaths:
     cci_index: Path
     cci_lr_dir: Path
     spot_domain_map: Optional[Path]
+    unit_grn_edges: Optional[Path] = None
 
 
 @dataclass
@@ -66,6 +67,7 @@ class LayerDataResolver:
             cci_index=self.data_root / "cci" / layer / f"{sample}_index.tsv",
             cci_lr_dir=self.data_root / "cci" / layer / f"{sample}_COMMOT_by_LR",
             spot_domain_map=spot_map,
+            unit_grn_edges=self.data_root / "grn_unit_specific" / layer / sample / "unit_grn_edges.csv",
         )
 
     def _select_sample_stem(self, layer: str, organ: str, stage: str, candidates: Sequence[str]) -> str:
@@ -179,6 +181,30 @@ def read_grn_edges(path: Path, top_k_targets_per_regulator: Optional[int] = None
     if top_k_targets_per_regulator is not None:
         grn = grn.groupby("regulator", group_keys=False).head(top_k_targets_per_regulator).reset_index(drop=True)
     return grn
+
+
+def read_unit_grn_edges(path: Path, top_k_targets_per_regulator: Optional[int] = None) -> pd.DataFrame:
+    work = pd.read_csv(path)
+    unit_column = first_existing_column(work, ("unit_id", "unit", "domain_id", "center_unit_id"))
+    standardized = standardize_grn_edges(work)
+    standardized.insert(0, "unit_id", work.loc[standardized.index, unit_column].astype(str).to_numpy())
+    if "weight_norm" in work.columns:
+        standardized["weight_norm"] = pd.to_numeric(
+            work.loc[standardized.index, "weight_norm"],
+            errors="coerce",
+        ).to_numpy()
+    standardized = standardized.sort_values(
+        ["unit_id", "regulator", "weight"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
+    if top_k_targets_per_regulator is not None:
+        standardized = (
+            standardized
+            .groupby(["unit_id", "regulator"], group_keys=False)
+            .head(top_k_targets_per_regulator)
+            .reset_index(drop=True)
+        )
+    return standardized
 
 
 def read_commot_manifest(path: Path) -> pd.DataFrame:

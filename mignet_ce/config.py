@@ -204,6 +204,8 @@ NETWORK_METHODS = {
     "legacy_inter_cci_only",
     "legacy_inter_additive_grn_cci",
     "clean_grn_cci_mix",
+    "clean_grn_cci_expr_mix",
+    "unit_specific_clean_grn_cci_mix",
     "cross_cell_multilayer",
     "expression_only",
 }
@@ -242,6 +244,10 @@ class TemporalRunConfig:
     network_method: str = "legacy_mixed_grn_cci"
     native_intra_use_expression_mask: bool = True
     native_cci_inter_use_expression_mask: bool = False
+    grn_expression_weight_mode: str = "geometric_mean"
+    grn_expression_transform: str = "log1p_minmax"
+    grn_expression_weight_floor: float = 0.0
+    unit_grn_fallback: str = "sample_grn_expression_weighted"
     cross_cell_lr_use_grn_gate: bool = False
     cross_cell_top_k_edges: int = 1000
     export_pij: bool = False
@@ -292,6 +298,8 @@ class TemporalRunConfig:
     feature_log1p: bool = True
     export_features: bool = True
     export_graphs: bool = False
+    export_raw_native_features: bool = False
+    export_feature_diagnostics: bool = False
     export_pij_topk: int = 0
 
     def normalized_pairs(self) -> List[VerticalPairSpec]:
@@ -317,6 +325,26 @@ class TemporalRunConfig:
             raise ValueError("native_intra_use_expression_mask must be bool.")
         if not isinstance(self.native_cci_inter_use_expression_mask, bool):
             raise ValueError("native_cci_inter_use_expression_mask must be bool.")
+        if self.grn_expression_weight_mode not in {"none", "geometric_mean", "product", "min"}:
+            raise ValueError(
+                "grn_expression_weight_mode must be one of ['none', 'geometric_mean', 'product', 'min']."
+            )
+        if self.grn_expression_transform not in {"log1p_minmax", "log1p_zscore", "none"}:
+            raise ValueError(
+                "grn_expression_transform must be one of ['log1p_minmax', 'log1p_zscore', 'none']."
+            )
+        if self.grn_expression_weight_floor < 0:
+            raise ValueError("grn_expression_weight_floor must be nonnegative.")
+        if self.unit_grn_fallback not in {
+            "error",
+            "sample_grn_masked",
+            "sample_grn_expression_weighted",
+            "skip_unit_intra",
+        }:
+            raise ValueError(
+                "unit_grn_fallback must be one of "
+                "['error', 'sample_grn_masked', 'sample_grn_expression_weighted', 'skip_unit_intra']."
+            )
         if not isinstance(self.cross_cell_lr_use_grn_gate, bool):
             raise ValueError("cross_cell_lr_use_grn_gate must be bool.")
         if self.cross_cell_top_k_edges <= 0:

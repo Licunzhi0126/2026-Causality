@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -9,7 +9,14 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from mignet_ce.io.loaders import ExpressionData, LayerPaths, read_commot_index, read_commot_manifest, read_grn_edges
+from mignet_ce.io.loaders import (
+    ExpressionData,
+    LayerPaths,
+    read_commot_index,
+    read_commot_manifest,
+    read_grn_edges,
+    read_unit_grn_edges,
+)
 
 
 EDGE_COLUMNS = [
@@ -41,6 +48,7 @@ class LayerGraph:
     intra_edges: pd.DataFrame
     inter_edges: pd.DataFrame
     shared_genes: List[str]
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 def _minmax_scale(values: np.ndarray, floor: float = 1e-6) -> np.ndarray:
@@ -76,6 +84,29 @@ def _restrict_and_normalize_grn(grn: pd.DataFrame, shared_genes: Sequence[str]) 
     return out
 
 
+def _restrict_and_normalize_unit_grn(grn: pd.DataFrame, shared_genes: Sequence[str]) -> pd.DataFrame:
+    shared = set(shared_genes)
+    out = grn[grn["regulator"].isin(shared) & grn["target"].isin(shared)].copy()
+    if out.empty:
+        out["grn_weight_norm"] = pd.Series(dtype=float)
+        return out
+    normalized_parts = []
+    for _unit, sub in out.groupby("unit_id", sort=False):
+        part = sub.copy()
+        if "weight_norm" in part.columns and part["weight_norm"].notna().any():
+            supplied = pd.to_numeric(part["weight_norm"], errors="coerce").to_numpy(dtype=float)
+            computed = _minmax_scale(part["weight"].to_numpy(dtype=float))
+            part["grn_weight_norm"] = np.clip(
+                np.where(np.isfinite(supplied), supplied, computed),
+                0.0,
+                1.0,
+            )
+        else:
+            part["grn_weight_norm"] = _minmax_scale(part["weight"].to_numpy(dtype=float))
+        normalized_parts.append(part)
+    return pd.concat(normalized_parts, ignore_index=True)
+
+
 def _make_regulator_dict(grn: pd.DataFrame) -> Dict[str, List[Tuple[str, float, float]]]:
     regulator_to_targets: Dict[str, List[Tuple[str, float, float]]] = {}
     for reg, sub in grn.groupby("regulator"):
@@ -87,6 +118,15 @@ def _make_regulator_dict(grn: pd.DataFrame) -> Dict[str, List[Tuple[str, float, 
             )
         )
     return regulator_to_targets
+
+
+def _make_unit_regulator_dict(
+    grn: pd.DataFrame,
+) -> Dict[str, Dict[str, List[Tuple[str, float, float]]]]:
+    result: Dict[str, Dict[str, List[Tuple[str, float, float]]]] = {}
+    for unit, sub in grn.groupby("unit_id"):
+        result[str(unit)] = _make_regulator_dict(sub)
+    return result
 
 
 def _make_pair_lookup(grn: pd.DataFrame) -> Dict[Tuple[str, str], Tuple[float, float]]:
@@ -158,25 +198,133 @@ def _scan_commot_score_range(manifest: pd.DataFrame, lr_dir: Path, cci_min: floa
     return vmin, vmax, kept_nnz
 
 
+def _transform_expression_activity(expr: pd.DataFrame, transform: str) -> np.ndarray:
+    if transform not in {"log1p_minmax", "log1p_zscore", "none"}:
+        raise ValueError(
+            "expression_transform must be one of ['log1p_minmax', 'log1p_zscore', 'none']."
+        )
+    values = np.clip(expr.to_numpy(dtype=float), 0.0, None)
+    if transform == "none":
+        return values
+    logged = np.log1p(values)
+    if transform == "log1p_minmax":
+        mins = np.nanmin(logged, axis=0)
+        maxs = np.nanmax(logged, axis=0)
+        denom = maxs - mins
+        scaled = np.divide(
+            logged - mins,
+            denom,
+            out=np.zeros_like(logged),
+            where=denom > 0,
+        )
+        constant_positive = (denom <= 0) & (maxs > 0)
+        if np.any(constant_positive):
+            scaled[:, constant_positive] = 1.0
+        return scaled
+    means = np.nanmean(logged, axis=0)
+    stds = np.nanstd(logged, axis=0)
+    scaled = np.divide(
+        logged - means,
+        stds,
+        out=np.zeros_like(logged),
+        where=stds > 0,
+    )
+    constant_positive = (stds <= 0) & (means > 0)
+    if np.any(constant_positive):
+        scaled[:, constant_positive] = 1.0
+    return np.clip(scaled, 0.0, None)
+
+
+def _expression_activity(src_value: float, dst_value: float, mode: str, floor: float) -> float:
+    if mode not in {"none", "geometric_mean", "product", "min"}:
+        raise ValueError(
+            "expression_weight_mode must be one of ['none', 'geometric_mean', 'product', 'min']."
+        )
+    if floor < 0:
+        raise ValueError("expression_weight_floor must be nonnegative.")
+    if mode == "none":
+        return 1.0
+    if mode == "geometric_mean":
+        activity = float(np.sqrt(max(0.0, src_value) * max(0.0, dst_value)))
+    elif mode == "product":
+        activity = float(max(0.0, src_value) * max(0.0, dst_value))
+    else:
+        activity = float(min(max(0.0, src_value), max(0.0, dst_value)))
+    return max(float(floor), activity)
+
+
 def _build_intra_edges(
     layer_name: str,
     expr: pd.DataFrame,
     active_mask: np.ndarray,
     regulator_to_targets: Dict[str, List[Tuple[str, float, float]]],
     use_expression_mask: bool = True,
-) -> pd.DataFrame:
+    expression_weight_mode: str = "none",
+    expression_transform: str = "log1p_minmax",
+    expression_weight_floor: float = 0.0,
+    unit_regulator_to_targets: Dict[str, Dict[str, List[Tuple[str, float, float]]]] | None = None,
+    unit_specific_fallback: str = "sample_grn_expression_weighted",
+    return_metadata: bool = False,
+) -> pd.DataFrame | Tuple[pd.DataFrame, dict[str, object]]:
+    if unit_specific_fallback not in {
+        "error",
+        "sample_grn_masked",
+        "sample_grn_expression_weighted",
+        "skip_unit_intra",
+    }:
+        raise ValueError(
+            "unit_specific_fallback must be one of "
+            "['error', 'sample_grn_masked', 'sample_grn_expression_weighted', 'skip_unit_intra']."
+        )
     gene_names = expr.columns.tolist()
+    gene_to_idx = {gene: idx for idx, gene in enumerate(gene_names)}
     unit_names = expr.index.tolist()
+    activity_values = _transform_expression_activity(expr, expression_transform)
     records: List[Tuple] = []
+    fallback_units: List[str] = []
     for unit_idx, unit in enumerate(unit_names):
-        if use_expression_mask:
+        unit_key = str(unit)
+        unit_targets = None if unit_regulator_to_targets is None else unit_regulator_to_targets.get(unit_key)
+        using_unit_specific = unit_targets is not None
+        if unit_regulator_to_targets is not None and unit_targets is None:
+            fallback_units.append(unit_key)
+            if unit_specific_fallback == "error":
+                continue
+            if unit_specific_fallback == "skip_unit_intra":
+                continue
+            unit_targets = regulator_to_targets
+        if unit_targets is None:
+            unit_targets = regulator_to_targets
+
+        if using_unit_specific:
+            effective_mask = False
+            effective_weight_mode = "none"
+        elif unit_regulator_to_targets is not None and unit_specific_fallback == "sample_grn_masked":
+            effective_mask = True
+            effective_weight_mode = "none"
+        else:
+            effective_mask = use_expression_mask
+            effective_weight_mode = expression_weight_mode
+
+        if effective_mask:
             active_gene_idx = np.where(active_mask[unit_idx])[0]
             active_gene_set = {gene_names[gidx] for gidx in active_gene_idx}
         else:
             active_gene_set = set(gene_names)
         for src_gene in active_gene_set:
-            for dst_gene, raw_w, norm_w in regulator_to_targets.get(src_gene, []):
+            for dst_gene, raw_w, norm_w in unit_targets.get(src_gene, []):
                 if dst_gene not in active_gene_set:
+                    continue
+                src_idx = gene_to_idx[src_gene]
+                dst_idx = gene_to_idx[dst_gene]
+                activity = _expression_activity(
+                    activity_values[unit_idx, src_idx],
+                    activity_values[unit_idx, dst_idx],
+                    effective_weight_mode,
+                    expression_weight_floor,
+                )
+                influence_score = float(norm_w) * activity
+                if influence_score <= 0:
                     continue
                 records.append(
                     (
@@ -195,10 +343,26 @@ def _build_intra_edges(
                         np.nan,
                         np.nan,
                         np.nan,
-                        norm_w,
+                        influence_score,
                     )
                 )
-    return pd.DataFrame.from_records(records, columns=EDGE_COLUMNS)
+    if unit_regulator_to_targets is not None and unit_specific_fallback == "error" and fallback_units:
+        raise ValueError(
+            "Unit-specific GRN is missing units: "
+            + ", ".join(fallback_units[:20])
+            + (f" ... ({len(fallback_units)} total)" if len(fallback_units) > 20 else "")
+        )
+    edge_table = pd.DataFrame.from_records(records, columns=EDGE_COLUMNS)
+    metadata = {
+        "unit_specific_units": int(
+            0 if unit_regulator_to_targets is None else len(set(unit_names) & set(unit_regulator_to_targets))
+        ),
+        "unit_specific_fallback_units": fallback_units,
+        "expression_weight_mode": expression_weight_mode,
+        "expression_transform": expression_transform,
+        "expression_weight_floor": float(expression_weight_floor),
+    }
+    return (edge_table, metadata) if return_metadata else edge_table
 
 
 def _build_commot_inter_edges(
@@ -341,7 +505,16 @@ def build_layer_graph(
     intra_use_expression_mask: bool = True,
     cci_inter_use_expression_mask: bool = True,
     cci_inter_require_coords: bool = True,
+    grn_source: str = "sample",
+    expression_weight_mode: str = "none",
+    expression_transform: str = "log1p_minmax",
+    expression_weight_floor: float = 0.0,
+    unit_specific_fallback: str = "sample_grn_expression_weighted",
 ) -> LayerGraph:
+    if grn_source not in {"sample", "sample_expression_weighted", "unit_specific"}:
+        raise ValueError(
+            "grn_source must be one of ['sample', 'sample_expression_weighted', 'unit_specific']."
+        )
     _resolve_inter_influence(
         cci_norm=1.0,
         pair_key=("", ""),
@@ -353,10 +526,19 @@ def build_layer_graph(
     )
     grn = read_grn_edges(paths.grn_edges, top_k_targets_per_regulator=top_k_targets_per_regulator)
     grn = _restrict_and_normalize_grn(grn, shared_genes)
+    unit_grn = None
+    unit_grn_path = paths.unit_grn_edges
+    if grn_source == "unit_specific" and unit_grn_path is not None and unit_grn_path.exists():
+        unit_grn = read_unit_grn_edges(
+            unit_grn_path,
+            top_k_targets_per_regulator=top_k_targets_per_regulator,
+        )
+        unit_grn = _restrict_and_normalize_unit_grn(unit_grn, shared_genes)
     expr = expression.expr.loc[:, list(shared_genes)].copy()
     active = expr.to_numpy() > expr_threshold
 
     regulator_to_targets = _make_regulator_dict(grn)
+    unit_regulator_to_targets = None if unit_grn is None else _make_unit_regulator_dict(unit_grn)
     pair_lookup = _make_pair_lookup(grn)
     manifest = read_commot_manifest(paths.cci_manifest)
     index_names = read_commot_index(paths.cci_index)
@@ -364,17 +546,30 @@ def build_layer_graph(
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
 
-    intra = (
-        _build_intra_edges(
+    effective_expression_weight_mode = (
+        expression_weight_mode if grn_source in {"sample_expression_weighted", "unit_specific"} else "none"
+    )
+    if include_intra_grn:
+        intra, intra_metadata = _build_intra_edges(
             layer_name,
             expr,
             active,
             regulator_to_targets,
             use_expression_mask=intra_use_expression_mask,
+            expression_weight_mode=effective_expression_weight_mode,
+            expression_transform=expression_transform,
+            expression_weight_floor=expression_weight_floor,
+            unit_regulator_to_targets=(
+                (unit_regulator_to_targets or {})
+                if grn_source == "unit_specific"
+                else None
+            ),
+            unit_specific_fallback=unit_specific_fallback,
+            return_metadata=True,
         )
-        if include_intra_grn
-        else pd.DataFrame(columns=EDGE_COLUMNS)
-    )
+    else:
+        intra = pd.DataFrame(columns=EDGE_COLUMNS)
+        intra_metadata = {}
     inter = _build_commot_inter_edges(
         layer_name=layer_name,
         manifest=manifest,
@@ -404,4 +599,11 @@ def build_layer_graph(
         intra_edges=intra,
         inter_edges=inter,
         shared_genes=list(shared_genes),
+        metadata={
+            "grn_source": grn_source,
+            "unit_grn_path": str(unit_grn_path) if unit_grn_path is not None else None,
+            "unit_grn_file_found": bool(unit_grn_path is not None and unit_grn_path.exists()),
+            "unit_specific_fallback": unit_specific_fallback,
+            **intra_metadata,
+        },
     )

@@ -116,3 +116,49 @@ def build_native_graph_matrix(
                 matrix[unit_to_row[src_unit], feature_col] += score
 
     return np.log1p(matrix) if feature_log1p else matrix
+
+
+def build_native_feature_block_summary(
+    matrix: np.ndarray,
+    units: Iterable[str],
+    feature_names: List[str],
+    feature_blocks: Dict[str, List[str]],
+    *,
+    stage: str,
+    layer_role: str,
+) -> pd.DataFrame:
+    values = np.asarray(matrix, dtype=float)
+    unit_list = list(map(str, units))
+    if values.ndim != 2 or values.shape[0] != len(unit_list):
+        raise ValueError(
+            f"Feature matrix shape {values.shape} does not match {len(unit_list)} units."
+        )
+    if values.shape[1] != len(feature_names):
+        raise ValueError(
+            f"Feature matrix has {values.shape[1]} columns but schema has {len(feature_names)} names."
+        )
+    name_to_index = {name: idx for idx, name in enumerate(feature_names)}
+    intra_indices = [
+        name_to_index[name]
+        for name in feature_blocks.get("intra_grn", [])
+        if name in name_to_index
+    ]
+    inter_indices = [
+        name_to_index[name]
+        for name in feature_blocks.get("inter_cci", [])
+        if name in name_to_index
+    ]
+    intra = values[:, intra_indices] if intra_indices else np.zeros((len(unit_list), 0))
+    inter = values[:, inter_indices] if inter_indices else np.zeros((len(unit_list), 0))
+    return pd.DataFrame(
+        {
+            "stage": str(stage),
+            "layer_role": str(layer_role),
+            "unit_id": unit_list,
+            "intra_sum": intra.sum(axis=1),
+            "inter_sum": inter.sum(axis=1),
+            "intra_nonzero": np.count_nonzero(intra, axis=1),
+            "inter_nonzero": np.count_nonzero(inter, axis=1),
+            "feature_norm": np.linalg.norm(values, axis=1),
+        }
+    )

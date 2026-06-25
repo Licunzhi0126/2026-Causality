@@ -33,6 +33,22 @@ class CleanGRNCCIMixBuilder(LegacyMixedGRNCCIBuilder):
     inter_grn_pair_policy = "zero_if_missing"
     include_intra_grn = True
 
+    def _grn_build_options(self, cfg: TemporalRunConfig) -> dict[str, object]:
+        return {
+            "grn_source": "sample",
+            "expression_weight_mode": "none",
+            "expression_transform": cfg.grn_expression_transform,
+            "expression_weight_floor": cfg.grn_expression_weight_floor,
+            "unit_specific_fallback": cfg.unit_grn_fallback,
+        }
+
+    def _network_metadata(self, cfg: TemporalRunConfig) -> dict[str, object]:
+        return {
+            "intra_source": "normalized_grn_weight",
+            "inter_source": "cci_only",
+            "grn_source": "sample",
+        }
+
     def build_pair_context(
         self,
         organ: str,
@@ -101,6 +117,7 @@ class CleanGRNCCIMixBuilder(LegacyMixedGRNCCIBuilder):
                 "intra_use_expression_mask": cfg.native_intra_use_expression_mask,
                 "cci_inter_use_expression_mask": cfg.native_cci_inter_use_expression_mask,
                 "cci_inter_require_coords": False,
+                **self._grn_build_options(cfg),
             }
             lower_graph = build_layer_graph(
                 layer_name=pair.lower_layer,
@@ -187,11 +204,10 @@ class CleanGRNCCIMixBuilder(LegacyMixedGRNCCIBuilder):
                 "network_method": self.network_method,
                 "feature_log1p": bool(cfg.feature_log1p),
                 "feature_alignment_space": "native_units",
-                "intra_source": "normalized_grn_weight",
-                "inter_source": "outgoing_cci_lr_score",
                 "native_intra_use_expression_mask": bool(cfg.native_intra_use_expression_mask),
                 "native_cci_inter_use_expression_mask": bool(cfg.native_cci_inter_use_expression_mask),
                 "shared_gene_policy": "expression_intersection_across_layers_and_time",
+                **self._network_metadata(cfg),
             },
             lower_assignments_by_time=lower_assignments_by_time,
             upper_assignments_by_time=upper_assignments_by_time,
@@ -246,4 +262,6 @@ class CleanGRNCCIMixBuilder(LegacyMixedGRNCCIBuilder):
             "upper_matrix_shape": list(upper_mat.shape),
             "native_intra_use_expression_mask": bool(cfg.native_intra_use_expression_mask),
             "native_cci_inter_use_expression_mask": bool(cfg.native_cci_inter_use_expression_mask),
+            "lower_grn_metadata": lower_graph.metadata,
+            "upper_grn_metadata": upper_graph.metadata,
         }

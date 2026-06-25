@@ -21,6 +21,48 @@ DEFAULT_TOP_HVG = 2000
 DEFAULT_TOP_EDGE_COUNT = 500_000
 
 
+def configure_grn_runtime(
+    grn,
+    *,
+    threads: int = DEFAULT_THREADS,
+    n_trees: int = DEFAULT_N_TREES,
+    top_hvg: int = DEFAULT_TOP_HVG,
+    top_edge_count: int = DEFAULT_TOP_EDGE_COUNT,
+    tf_list: Path | None = None,
+) -> None:
+    grn.N_THREADS = int(threads)
+    grn.N_TREES = int(n_trees)
+    grn.TOP_HVG = int(top_hvg)
+    grn.TOP_EDGE_COUNT = int(top_edge_count)
+    if tf_list is not None:
+        grn.TF_CANDIDATE_FILES = [
+            Path(tf_list),
+            *[path for path in grn.TF_CANDIDATE_FILES if Path(path) != Path(tf_list)],
+        ]
+        grn.TF_SYMBOL_CACHE = None
+
+
+def infer_grn_edges_from_adata(adata_raw, grn) -> tuple[object, dict[str, object]]:
+    expression_source = prefer_count_layer(adata_raw)
+    adata = grn.preprocess_adata(adata_raw)
+    expr_data, genes = grn.extract_expression_matrix(adata)
+    regulator_indices = grn.select_regulator_indices(genes)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        vim = grn.run_genie3(expr_data, regulator_indices)
+    edge_table = grn.build_edge_table(vim, genes)
+    metadata = {
+        "n_cells": int(adata.n_obs),
+        "n_genes_used": int(len(genes)),
+        "n_regulators_used": int(len(regulator_indices)),
+        "n_edges": int(len(edge_table)),
+        "expression_source": expression_source,
+    }
+    del adata, expr_data, genes, regulator_indices, vim
+    gc.collect()
+    return edge_table, metadata
+
+
 def prefer_count_layer(adata) -> str:
     for key in ("count", "counts"):
         if key in adata.layers:
@@ -100,13 +142,14 @@ def run_grn_layer(
     import GRN_global as grn
 
     ensure_dir(output_root)
-    grn.N_THREADS = int(threads)
-    grn.N_TREES = int(n_trees)
-    grn.TOP_HVG = int(top_hvg)
-    grn.TOP_EDGE_COUNT = int(top_edge_count)
-    if tf_list is not None:
-        grn.TF_CANDIDATE_FILES = [Path(tf_list)] + [path for path in grn.TF_CANDIDATE_FILES if Path(path) != Path(tf_list)]
-        grn.TF_SYMBOL_CACHE = None
+    configure_grn_runtime(
+        grn,
+        threads=threads,
+        n_trees=n_trees,
+        top_hvg=top_hvg,
+        top_edge_count=top_edge_count,
+        tf_list=tf_list,
+    )
 
     allowed = set(map(str, sample_names))
     files = [

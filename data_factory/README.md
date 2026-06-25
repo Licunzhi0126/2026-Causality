@@ -273,3 +273,59 @@ The current copied methods are CPU implementations:
 - CCI uses the official COMMOT/POT workflow from `CCI_IO_COMMOT.py`.
 
 These methods do not use CUDA just because CUDA devices are present. Using the two 4090D GPUs would require a separate experimental GPU implementation, for example RAPIDS/cuML for a GPU random-forest-like GRN. That would be a method change, so it is not silently enabled in this factory.
+
+## Unit-Specific And Spot-Local GRN Pilots
+
+Domain/unit-specific GRNs are inferred from the original spot/cell rows stored in
+each layer's `*_spots_with_domain.h5ad`, grouped by `obs["domain_id"]`:
+
+```bash
+python scripts/run_unit_grn_layer.py \
+  --layer louvain_k150 \
+  --min-cells-per-unit 30 \
+  --threads 32
+```
+
+Outputs are written under:
+
+```text
+grn_unit_specific/<layer>/<sample>/unit_grn_edges.csv
+grn_unit_specific/<layer>/<sample>/unit_grn_summary.csv
+```
+
+The edge table contains `unit_id`, `regulator`, `target`, `weight`,
+unit-local `weight_norm`, `n_cells`, and `grn_status`.
+
+Selected spot/cell local GRNs use only raw spatial coordinates. The `k-neighbors`
+value excludes the center; with the default center inclusion, `k=50` produces a
+51-row local expression matrix:
+
+```bash
+python scripts/run_spot_local_grn_pilot.py \
+  --spot-h5ad /path/to/spot_heart_11.5.h5ad \
+  --selected-units spot_001 spot_023 spot_205 \
+  --neighbor-mode spatial \
+  --k-neighbors 50 \
+  --include-center \
+  --min-cells 30 \
+  --output-root /path/to/grn_spot_local/spot/spot_heart_11.5
+```
+
+This pilot does not use domain labels, expression KNN, vertical overlap, or
+upper/lower layer assignments. `spot_local_neighbors.csv` records the exact
+spatial neighborhood used for audit.
+
+MIGNet can consume the resulting unit-specific files with
+`--network-method unit_specific_clean_grn_cci_mix`. Missing unit GRNs use the
+configured `--unit-grn-fallback`. The lower-cost expression-activity
+approximation is:
+
+```bash
+python ../scripts/run_mignet_vertical.py \
+  --network-method clean_grn_cci_expr_mix \
+  --grn-expression-weight-mode geometric_mean \
+  --grn-expression-transform log1p_minmax \
+  --export-raw-native-features \
+  --export-graphs \
+  --export-feature-diagnostics
+```

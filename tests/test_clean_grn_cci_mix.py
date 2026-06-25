@@ -7,7 +7,11 @@ import pandas as pd
 import scipy.sparse as sp
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
-from mignet_ce.features_native import build_native_feature_schema, build_native_graph_matrix
+from mignet_ce.features_native import (
+    build_native_feature_block_summary,
+    build_native_feature_schema,
+    build_native_graph_matrix,
+)
 from mignet_ce.graph.builder import EDGE_COLUMNS, LayerGraph, _build_commot_inter_edges
 from mignet_ce.io.pij_exports import export_pij_sparse_archive
 from mignet_ce.mapping import OverlapMapping
@@ -119,6 +123,25 @@ def test_native_feature_matrix_uses_gene_pairs_and_outgoing_lr_pairs() -> None:
     assert matrix[1, 0] == 0.4
     assert matrix[0, 1] == 0.75
     assert matrix[1, 1] == 0.0
+
+
+def test_native_feature_block_summary_reports_intra_and_inter_activity() -> None:
+    summary = build_native_feature_block_summary(
+        np.array([[1.0, 2.0, 0.0], [0.0, 3.0, 4.0]]),
+        ["u1", "u2"],
+        ["intra_a", "inter_a", "inter_b"],
+        {
+            "intra_grn": ["intra_a"],
+            "inter_cci": ["inter_a", "inter_b"],
+        },
+        stage="11.5",
+        layer_role="lower",
+    )
+
+    assert summary.loc[0, "intra_sum"] == 1.0
+    assert summary.loc[0, "inter_sum"] == 2.0
+    assert summary.loc[1, "inter_nonzero"] == 2
+    assert summary.loc[1, "feature_norm"] == 5.0
 
 
 def test_clean_cci_edges_do_not_require_expression_or_coordinates(tmp_path) -> None:

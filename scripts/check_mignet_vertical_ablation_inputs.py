@@ -21,6 +21,8 @@ LEGACY_NETWORK_METHODS = {
     "legacy_inter_additive_grn_cci",
 }
 GRN_CCI_NETWORK_METHODS = {*LEGACY_NETWORK_METHODS, "clean_grn_cci_mix"}
+GRN_CCI_NETWORK_METHODS.update({"clean_grn_cci_expr_mix", "unit_specific_clean_grn_cci_mix"})
+UNIT_SPECIFIC_NETWORK_METHODS = {"unit_specific_clean_grn_cci_mix"}
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -46,6 +48,8 @@ def _path_rows(paths: LayerPaths) -> list[dict[str, object]]:
     ]
     if paths.spot_domain_map is not None:
         rows.append(("spot_domain_map", paths.spot_domain_map, True))
+    if paths.unit_grn_edges is not None:
+        rows.append(("unit_grn_edges", paths.unit_grn_edges, False))
     return [
         {
             "layer": paths.layer,
@@ -69,7 +73,7 @@ def _missing_for_method(paths_by_key: dict[tuple[str, str, str], LayerPaths], me
             required.append(paths.spot_domain_map)
         if method in GRN_CCI_NETWORK_METHODS:
             required.extend([paths.cci_manifest, paths.cci_lr_dir])
-        elif method == "cross_cell_multilayer":
+        if method == "cross_cell_multilayer":
             if not paths.cci_total.exists():
                 required.extend([paths.cci_manifest, paths.cci_lr_dir])
         for path in required:

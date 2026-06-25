@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
+from mignet_ce.features_native import build_native_feature_block_summary
 from mignet_ce.io.loaders import LayerDataResolver
 from mignet_ce.io.pij_exports import export_pij_sparse_archive
 from mignet_ce.metrics import TemporalMetricsEngine
@@ -160,7 +161,12 @@ class VerticalMIGNetPipeline:
                 feature_alignment_space=context.feature_alignment_space,
             )
 
-        if self.cfg.export_pair_artifacts:
+        if (
+            self.cfg.export_pair_artifacts
+            or self.cfg.export_graphs
+            or self.cfg.export_raw_native_features
+            or self.cfg.export_feature_diagnostics
+        ):
             self._export_pair_outputs(
                 organ=organ,
                 pair=pair,
@@ -328,6 +334,56 @@ class VerticalMIGNetPipeline:
             export_path = pair_dir / relative_path
             _ensure_dir(export_path.parent)
             table.to_csv(export_path, index=False)
+
+        if self.cfg.export_raw_native_features and network_context.feature_alignment_space == "native_units":
+            for time_index, stage in enumerate(map(str, self.cfg.time_points)):
+                lower_raw = network_context.lower_mats[time_index]
+                upper_raw = network_context.upper_mats[time_index]
+                lower_columns = (
+                    network_context.feature_names
+                    if len(network_context.feature_names) == lower_raw.shape[1]
+                    else None
+                )
+                upper_columns = (
+                    network_context.feature_names
+                    if len(network_context.feature_names) == upper_raw.shape[1]
+                    else None
+                )
+                pd.DataFrame(
+                    lower_raw,
+                    index=list(map(str, lower_units_by_time[time_index])),
+                    columns=lower_columns,
+                ).to_csv(pair_dir / f"{stage}_lower_features_raw_native.csv")
+                pd.DataFrame(
+                    upper_raw,
+                    index=list(map(str, upper_units_by_time[time_index])),
+                    columns=upper_columns,
+                ).to_csv(pair_dir / f"{stage}_upper_features_raw_native.csv")
+
+        if self.cfg.export_feature_diagnostics and network_context.feature_alignment_space == "native_units":
+            diagnostics_dir = pair_dir / "diagnostics"
+            _ensure_dir(diagnostics_dir)
+            for time_index, stage in enumerate(map(str, self.cfg.time_points)):
+                lower_summary = build_native_feature_block_summary(
+                    network_context.lower_mats[time_index],
+                    lower_units_by_time[time_index],
+                    network_context.feature_names,
+                    network_context.feature_blocks,
+                    stage=stage,
+                    layer_role="lower",
+                )
+                upper_summary = build_native_feature_block_summary(
+                    network_context.upper_mats[time_index],
+                    upper_units_by_time[time_index],
+                    network_context.feature_names,
+                    network_context.feature_blocks,
+                    stage=stage,
+                    layer_role="upper",
+                )
+                pd.concat([lower_summary, upper_summary], ignore_index=True).to_csv(
+                    diagnostics_dir / f"{stage}_feature_block_summary.csv",
+                    index=False,
+                )
 
         correspondence_dir = pair_dir / "correspondence"
         _ensure_dir(correspondence_dir)
