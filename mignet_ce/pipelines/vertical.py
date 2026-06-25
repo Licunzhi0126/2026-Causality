@@ -100,6 +100,7 @@ class VerticalMIGNetPipeline:
                 "EI_lower",
                 "EI_upper",
                 "EI_gain",
+                "metric_alignment",
                 "TE_raw",
                 "TE",
                 "DI_raw",
@@ -142,6 +143,7 @@ class VerticalMIGNetPipeline:
             precomputed_p_upper=export_kernels.p_upper if export_kernels is not None else None,
             pairwise_lower_features=method_result.pairwise_lower_features,
             pairwise_upper_features=method_result.pairwise_upper_features,
+            feature_alignment_space=context.feature_alignment_space,
         )
         if "network_method" not in metrics.columns:
             metrics.insert(0, "network_method", context.network_method)
@@ -153,6 +155,9 @@ class VerticalMIGNetPipeline:
                 pair=pair,
                 stable_upper_units=context.stable_upper_units,
                 kernels=export_kernels,
+                lower_units_by_time=context.lower_units_by_time,
+                upper_units_by_time=context.upper_units_by_time,
+                feature_alignment_space=context.feature_alignment_space,
             )
 
         if self.cfg.export_pair_artifacts:
@@ -170,6 +175,7 @@ class VerticalMIGNetPipeline:
                 overlap_edge_tables=context.overlap_edge_tables,
                 overlap_quality_summaries=context.overlap_quality_summaries,
                 upper_units_by_time=context.upper_units_by_time,
+                lower_units_by_time=context.lower_units_by_time,
             )
         return metrics
 
@@ -236,6 +242,7 @@ class VerticalMIGNetPipeline:
         overlap_edge_tables: Sequence[pd.DataFrame],
         overlap_quality_summaries: Sequence[Dict[str, object]],
         upper_units_by_time: Sequence[Sequence[str]],
+        lower_units_by_time: Sequence[Sequence[str]],
     ) -> None:
         pair_dir = self.cfg.output_root / "features" / organ / pair.label()
         _ensure_dir(pair_dir)
@@ -255,8 +262,12 @@ class VerticalMIGNetPipeline:
                     "method_metadata": method_result.method_metadata,
                     "network_metadata": network_context.metadata,
                     "feature_blocks": network_context.feature_blocks,
-                    "feature_alignment_space": "stable_upper_units",
-                    "lower_feature_meaning": "lower layer features aggregated to upper units by spot overlap",
+                    "feature_alignment_space": network_context.feature_alignment_space,
+                    "lower_feature_meaning": (
+                        "lower layer features remain on native lower units"
+                        if network_context.feature_alignment_space == "native_units"
+                        else "lower layer features aggregated to upper units by spot overlap"
+                    ),
                     "matching_diagnostics_available": True,
                     "laplacian_components": self.cfg.laplacian_components,
                     "laplacian_normalized": self.cfg.laplacian_normalized,
@@ -346,9 +357,17 @@ class VerticalMIGNetPipeline:
         pd.DataFrame(overlap_quality_summaries).to_csv(correspondence_dir / "overlap_quality_summary.csv", index=False)
 
         if self.cfg.export_features:
-            for stage, low, up in zip(map(str, self.cfg.time_points), method_result.lower_features, method_result.upper_features):
+            for time_index, (stage, low, up) in enumerate(
+                zip(map(str, self.cfg.time_points), method_result.lower_features, method_result.upper_features)
+            ):
                 feature_names = method_result.method_metadata.get("feature_names")
                 low_columns = feature_names if isinstance(feature_names, list) and len(feature_names) == low.shape[1] else None
                 up_columns = feature_names if isinstance(feature_names, list) and len(feature_names) == up.shape[1] else None
-                pd.DataFrame(low, index=stable_upper_units, columns=low_columns).to_csv(pair_dir / f"{stage}_lower_features_scaled.csv")
-                pd.DataFrame(up, index=stable_upper_units, columns=up_columns).to_csv(pair_dir / f"{stage}_upper_features_scaled.csv")
+                if network_context.feature_alignment_space == "native_units":
+                    lower_index = list(map(str, lower_units_by_time[time_index]))
+                    upper_index = list(map(str, upper_units_by_time[time_index]))
+                else:
+                    lower_index = list(map(str, stable_upper_units))
+                    upper_index = list(map(str, stable_upper_units))
+                pd.DataFrame(low, index=lower_index, columns=low_columns).to_csv(pair_dir / f"{stage}_lower_features_scaled.csv")
+                pd.DataFrame(up, index=upper_index, columns=up_columns).to_csv(pair_dir / f"{stage}_upper_features_scaled.csv")

@@ -26,7 +26,9 @@ def _method_result() -> MethodResult:
 def _context() -> SimpleNamespace:
     return SimpleNamespace(
         network_method="legacy_mixed_grn_cci",
+        feature_alignment_space="stable_upper_units",
         stable_upper_units=["u1", "u2"],
+        lower_units_by_time=[["u1", "u2"], ["u1", "u2"]],
         shared_genes=[],
         coverage_tables=[],
         graph_summaries=[],

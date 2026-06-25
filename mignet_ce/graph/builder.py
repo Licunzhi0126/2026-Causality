@@ -163,13 +163,17 @@ def _build_intra_edges(
     expr: pd.DataFrame,
     active_mask: np.ndarray,
     regulator_to_targets: Dict[str, List[Tuple[str, float, float]]],
+    use_expression_mask: bool = True,
 ) -> pd.DataFrame:
     gene_names = expr.columns.tolist()
     unit_names = expr.index.tolist()
     records: List[Tuple] = []
     for unit_idx, unit in enumerate(unit_names):
-        active_gene_idx = np.where(active_mask[unit_idx])[0]
-        active_gene_set = {gene_names[gidx] for gidx in active_gene_idx}
+        if use_expression_mask:
+            active_gene_idx = np.where(active_mask[unit_idx])[0]
+            active_gene_set = {gene_names[gidx] for gidx in active_gene_idx}
+        else:
+            active_gene_set = set(gene_names)
         for src_gene in active_gene_set:
             for dst_gene, raw_w, norm_w in regulator_to_targets.get(src_gene, []):
                 if dst_gene not in active_gene_set:
@@ -215,6 +219,8 @@ def _build_commot_inter_edges(
     inter_additive_cci_weight: float,
     inter_additive_grn_weight: float,
     inter_grn_pair_policy: str,
+    use_expression_mask: bool = True,
+    require_coords: bool = True,
 ) -> pd.DataFrame:
     vmin, vmax, kept_nnz = score_range
     if kept_nnz == 0 or vmin is None or vmax is None:
@@ -222,8 +228,11 @@ def _build_commot_inter_edges(
 
     records: List[Tuple] = []
     for row in manifest.itertuples(index=False):
-        ligand_genes = [g for g in _split_complex_genes(row.ligand) if g in gene_to_idx]
-        receptor_genes = [g for g in _split_complex_genes(row.receptor) if g in gene_to_idx]
+        ligand_genes = _split_complex_genes(row.ligand)
+        receptor_genes = _split_complex_genes(row.receptor)
+        if use_expression_mask:
+            ligand_genes = [g for g in ligand_genes if g in gene_to_idx]
+            receptor_genes = [g for g in receptor_genes if g in gene_to_idx]
         if not ligand_genes or not receptor_genes:
             continue
 
@@ -250,25 +259,33 @@ def _build_commot_inter_edges(
             dst_unit = index_names[int(dst_pos)]
             if src_unit not in unit_index or dst_unit not in unit_index:
                 continue
-            if src_unit not in coords.index or dst_unit not in coords.index:
+            has_coords = src_unit in coords.index and dst_unit in coords.index
+            if require_coords and not has_coords:
                 continue
 
             src_idx = unit_index[src_unit]
             dst_idx = unit_index[dst_unit]
             cci_norm = _normalize_scalar(float(cci_raw), vmin=vmin, vmax=vmax)
-            src_xy = coords.loc[src_unit, ["x", "y"]].to_numpy(dtype=float)
-            dst_xy = coords.loc[dst_unit, ["x", "y"]].to_numpy(dtype=float)
-            distance_raw = float(np.sqrt(((src_xy - dst_xy) ** 2).sum()))
+            if has_coords:
+                src_xy = coords.loc[src_unit, ["x", "y"]].to_numpy(dtype=float)
+                dst_xy = coords.loc[dst_unit, ["x", "y"]].to_numpy(dtype=float)
+                distance_raw = float(np.sqrt(((src_xy - dst_xy) ** 2).sum()))
+            else:
+                distance_raw = np.nan
 
             for ligand_gene in ligand_genes:
                 ligand_idx = gene_to_idx.get(ligand_gene)
-                if ligand_idx is None or not active_mask[src_idx, ligand_idx]:
+                if use_expression_mask and (ligand_idx is None or not active_mask[src_idx, ligand_idx]):
                     continue
                 for receptor_gene in receptor_genes:
                     receptor_idx = gene_to_idx.get(receptor_gene)
-                    if receptor_idx is None:
+                    if use_expression_mask and receptor_idx is None:
                         continue
-                    if require_target_expression and not active_mask[dst_idx, receptor_idx]:
+                    if (
+                        use_expression_mask
+                        and require_target_expression
+                        and not active_mask[dst_idx, receptor_idx]
+                    ):
                         continue
                     raw_w, norm_w, influence_score = _resolve_inter_influence(
                         cci_norm=cci_norm,
@@ -321,6 +338,9 @@ def build_layer_graph(
     inter_additive_grn_weight: float = 1.0,
     inter_grn_pair_policy: str = "require_pair",
     include_intra_grn: bool = True,
+    intra_use_expression_mask: bool = True,
+    cci_inter_use_expression_mask: bool = True,
+    cci_inter_require_coords: bool = True,
 ) -> LayerGraph:
     _resolve_inter_influence(
         cci_norm=1.0,
@@ -345,7 +365,13 @@ def build_layer_graph(
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
 
     intra = (
-        _build_intra_edges(layer_name, expr, active, regulator_to_targets)
+        _build_intra_edges(
+            layer_name,
+            expr,
+            active,
+            regulator_to_targets,
+            use_expression_mask=intra_use_expression_mask,
+        )
         if include_intra_grn
         else pd.DataFrame(columns=EDGE_COLUMNS)
     )
@@ -367,6 +393,8 @@ def build_layer_graph(
         inter_additive_cci_weight=inter_additive_cci_weight,
         inter_additive_grn_weight=inter_additive_grn_weight,
         inter_grn_pair_policy=inter_grn_pair_policy,
+        use_expression_mask=cci_inter_use_expression_mask,
+        require_coords=cci_inter_require_coords,
     )
     return LayerGraph(
         layer=layer_name,

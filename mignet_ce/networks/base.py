@@ -29,6 +29,8 @@ class NetworkContext:
     feature_names: List[str]
     feature_blocks: Dict[str, List[str]]
     graph_summaries: List[dict[str, object]]
+    lower_coords_by_time: List[np.ndarray] = field(default_factory=list)
+    feature_alignment_space: str = "stable_upper_units"
     exports: Dict[str, pd.DataFrame] = field(default_factory=dict)
     metadata: dict[str, object] = field(default_factory=dict)
     lower_assignments_by_time: List[pd.DataFrame] = field(default_factory=list)

@@ -101,6 +101,7 @@ class TemporalMetricsEngine:
         precomputed_p_upper: Dict[Tuple[int, int], np.ndarray] | None = None,
         pairwise_lower_features: PairFeatures | None = None,
         pairwise_upper_features: PairFeatures | None = None,
+        feature_alignment_space: str = "stable_upper_units",
     ) -> pd.DataFrame:
         rows = []
         for t0, t1 in pairs:
@@ -115,9 +116,25 @@ class TemporalMetricsEngine:
                 x_t = upper_feat[t0]
                 x_t1 = upper_feat[t1]
 
-            h_base = self.kraskov_conditional_entropy(y_t1, y_t, k=kraskov_k)
-            h_full = self.kraskov_conditional_entropy(y_t1, np.hstack([y_t, x_t]), k=kraskov_k)
-            h_macro = self.kraskov_conditional_entropy(y_t1, x_t, k=kraskov_k)
+            conditional_metrics_compatible = (
+                y_t.shape[0] == y_t1.shape[0] == x_t.shape[0]
+            )
+            if conditional_metrics_compatible:
+                h_base = self.kraskov_conditional_entropy(y_t1, y_t, k=kraskov_k)
+                h_full = self.kraskov_conditional_entropy(y_t1, np.hstack([y_t, x_t]), k=kraskov_k)
+                h_macro = self.kraskov_conditional_entropy(y_t1, x_t, k=kraskov_k)
+                te_raw = h_base - h_full
+                di_raw = h_macro - h_full
+                te = max(0.0, te_raw)
+                di = max(0.0, di_raw)
+            else:
+                h_base = np.nan
+                h_full = np.nan
+                h_macro = np.nan
+                te_raw = np.nan
+                di_raw = np.nan
+                te = np.nan
+                di = np.nan
             p_lower = (
                 precomputed_p_lower[(t0, t1)]
                 if precomputed_p_lower is not None and (t0, t1) in precomputed_p_lower
@@ -130,8 +147,14 @@ class TemporalMetricsEngine:
             )
             ei_lower = effective_information(p_lower)
             ei_upper = effective_information(p_upper)
-            te_raw = h_base - h_full
-            di_raw = h_macro - h_full
+            if feature_alignment_space == "native_units":
+                metric_alignment = (
+                    "native_units_full"
+                    if conditional_metrics_compatible
+                    else "native_units_ei_only"
+                )
+            else:
+                metric_alignment = "stable_upper_units"
             rows.append(
                 {
                     "pij_method": pij_method,
@@ -146,10 +169,11 @@ class TemporalMetricsEngine:
                     "EI_lower": ei_lower,
                     "EI_upper": ei_upper,
                     "EI_gain": ei_upper - ei_lower,
+                    "metric_alignment": metric_alignment,
                     "TE_raw": te_raw,
-                    "TE": max(0.0, te_raw),
+                    "TE": te,
                     "DI_raw": di_raw,
-                    "DI": max(0.0, di_raw),
+                    "DI": di,
                 }
             )
         return pd.DataFrame(rows)

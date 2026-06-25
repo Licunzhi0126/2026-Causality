@@ -262,20 +262,31 @@ def load_developmental_features_for_pij(
 
     stage = str(context.time_points[time_index])
     resolver = LayerDataResolver(cfg.data_root)
+    native_units = context.feature_alignment_space == "native_units"
     if space == "upper":
         layer = context.pair.upper_layer
         paths = resolver.paths(layer, context.organ, stage)
-        return load_developmental_features_for_layer(
+        units = context.upper_units_by_time[time_index] if native_units else context.stable_upper_units
+        table = load_developmental_features_for_layer(
             development_feature_root=cfg.development_feature_root,
             data_root=cfg.data_root,
             layer=layer,
             organ=context.organ,
             stage=stage,
-            units=context.stable_upper_units,
+            units=units,
             aggregation=cfg.pij_feature_aggregation,
             missing_policy=cfg.pij_missing_feature_policy,
             spot_domain_map=paths.spot_domain_map,
         )
+        if native_units:
+            table.metadata.update(
+                {
+                    "space": "upper",
+                    "aligned_to": "native_units",
+                    "upper_layer": layer,
+                }
+            )
+        return table
 
     layer = context.pair.lower_layer
     paths = resolver.paths(layer, context.organ, stage)
@@ -290,6 +301,16 @@ def load_developmental_features_for_pij(
         missing_policy=cfg.pij_missing_feature_policy,
         spot_domain_map=paths.spot_domain_map,
     )
+    if native_units:
+        lower_table.metadata.update(
+            {
+                "space": "lower",
+                "aligned_to": "native_units",
+                "lower_layer": layer,
+                "overlap_aggregation": "none",
+            }
+        )
+        return lower_table
     aggregated = _nan_aware_overlap_mean(
         lower_table.values,
         overlap=context.overlaps[time_index],

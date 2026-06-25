@@ -203,6 +203,7 @@ NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
     "legacy_inter_cci_only",
     "legacy_inter_additive_grn_cci",
+    "clean_grn_cci_mix",
     "cross_cell_multilayer",
     "expression_only",
 }
@@ -239,6 +240,8 @@ class TemporalRunConfig:
     embedding_method: str = "joint_nmf"
     pij_method: str | None = None
     network_method: str = "legacy_mixed_grn_cci"
+    native_intra_use_expression_mask: bool = True
+    native_cci_inter_use_expression_mask: bool = False
     cross_cell_lr_use_grn_gate: bool = False
     cross_cell_top_k_edges: int = 1000
     export_pij: bool = False
@@ -310,6 +313,10 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
+        if not isinstance(self.native_intra_use_expression_mask, bool):
+            raise ValueError("native_intra_use_expression_mask must be bool.")
+        if not isinstance(self.native_cci_inter_use_expression_mask, bool):
+            raise ValueError("native_cci_inter_use_expression_mask must be bool.")
         if not isinstance(self.cross_cell_lr_use_grn_gate, bool):
             raise ValueError("cross_cell_lr_use_grn_gate must be bool.")
         if self.cross_cell_top_k_edges <= 0:
