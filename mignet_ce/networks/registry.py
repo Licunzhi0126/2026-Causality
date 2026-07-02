@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Type
 
 from mignet_ce.networks.base import NetworkBuilder
+from mignet_ce.networks.clean_expression_cci_mix import CleanExpressionCCIMixBuilder
 from mignet_ce.networks.clean_grn_cci_mix import CleanGRNCCIMixBuilder
 from mignet_ce.networks.clean_grn_cci_expr_mix import CleanGRNCCIExpressionMixBuilder
 from mignet_ce.networks.cross_cell_multilayer import CrossCellMultilayerBuilder
@@ -19,6 +20,7 @@ NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
     "legacy_inter_additive_grn_cci": LegacyInterAdditiveGRNCCIBuilder,
     "clean_grn_cci_mix": CleanGRNCCIMixBuilder,
     "clean_grn_cci_expr_mix": CleanGRNCCIExpressionMixBuilder,
+    "clean_expression_cci_mix": CleanExpressionCCIMixBuilder,
     "unit_specific_clean_grn_cci_mix": UnitSpecificCleanGRNCCIMixBuilder,
     "cross_cell_multilayer": CrossCellMultilayerBuilder,
     "expression_only": ExpressionOnlyBuilder,

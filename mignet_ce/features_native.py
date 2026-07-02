@@ -138,9 +138,14 @@ def build_native_feature_block_summary(
             f"Feature matrix has {values.shape[1]} columns but schema has {len(feature_names)} names."
         )
     name_to_index = {name: idx for idx, name in enumerate(feature_names)}
-    intra_indices = [
+    intra_grn_indices = [
         name_to_index[name]
         for name in feature_blocks.get("intra_grn", [])
+        if name in name_to_index
+    ]
+    intra_expr_indices = [
+        name_to_index[name]
+        for name in feature_blocks.get("intra_expr", [])
         if name in name_to_index
     ]
     inter_indices = [
@@ -148,16 +153,25 @@ def build_native_feature_block_summary(
         for name in feature_blocks.get("inter_cci", [])
         if name in name_to_index
     ]
-    intra = values[:, intra_indices] if intra_indices else np.zeros((len(unit_list), 0))
+    intra_grn = values[:, intra_grn_indices] if intra_grn_indices else np.zeros((len(unit_list), 0))
+    intra_expr = values[:, intra_expr_indices] if intra_expr_indices else np.zeros((len(unit_list), 0))
     inter = values[:, inter_indices] if inter_indices else np.zeros((len(unit_list), 0))
+    intra_grn_sum = intra_grn.sum(axis=1)
+    intra_expr_sum = intra_expr.sum(axis=1)
+    intra_grn_nonzero = np.count_nonzero(intra_grn, axis=1)
+    intra_expr_nonzero = np.count_nonzero(intra_expr, axis=1)
     return pd.DataFrame(
         {
             "stage": str(stage),
             "layer_role": str(layer_role),
             "unit_id": unit_list,
-            "intra_sum": intra.sum(axis=1),
+            "intra_expr_sum": intra_expr_sum,
+            "intra_expr_nonzero": intra_expr_nonzero,
+            "intra_grn_sum": intra_grn_sum,
+            "intra_grn_nonzero": intra_grn_nonzero,
+            "intra_sum": intra_grn_sum + intra_expr_sum,
             "inter_sum": inter.sum(axis=1),
-            "intra_nonzero": np.count_nonzero(intra, axis=1),
+            "intra_nonzero": intra_grn_nonzero + intra_expr_nonzero,
             "inter_nonzero": np.count_nonzero(inter, axis=1),
             "feature_norm": np.linalg.norm(values, axis=1),
         }

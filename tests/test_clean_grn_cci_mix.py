@@ -139,7 +139,11 @@ def test_native_feature_block_summary_reports_intra_and_inter_activity() -> None
     )
 
     assert summary.loc[0, "intra_sum"] == 1.0
+    assert summary.loc[0, "intra_grn_sum"] == 1.0
+    assert summary.loc[0, "intra_expr_sum"] == 0.0
     assert summary.loc[0, "inter_sum"] == 2.0
+    assert summary.loc[1, "intra_grn_nonzero"] == 0
+    assert summary.loc[1, "intra_expr_nonzero"] == 0
     assert summary.loc[1, "inter_nonzero"] == 2
     assert summary.loc[1, "feature_norm"] == 5.0
 

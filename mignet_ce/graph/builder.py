@@ -487,6 +487,66 @@ def _build_commot_inter_edges(
     return pd.DataFrame.from_records(records, columns=EDGE_COLUMNS)
 
 
+def build_layer_cci_graph(
+    layer_name: str,
+    time_point: str,
+    expression: ExpressionData,
+    paths: LayerPaths,
+    shared_genes: Sequence[str],
+    expr_threshold: float = 0.0,
+    cci_min: float = 0.0,
+    require_target_expression_for_inter: bool = True,
+    cci_inter_use_expression_mask: bool = True,
+    cci_inter_require_coords: bool = False,
+) -> LayerGraph:
+    expr = expression.expr.loc[:, list(shared_genes)].copy()
+    active = expr.to_numpy() > expr_threshold
+    manifest = read_commot_manifest(paths.cci_manifest)
+    index_names = read_commot_index(paths.cci_index)
+    score_range = _scan_commot_score_range(manifest, paths.cci_lr_dir, cci_min=cci_min)
+    unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
+    gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
+    inter = _build_commot_inter_edges(
+        layer_name=layer_name,
+        manifest=manifest,
+        lr_dir=paths.cci_lr_dir,
+        index_names=index_names,
+        expr=expr,
+        coords=expression.coords,
+        active_mask=active,
+        unit_index=unit_index,
+        gene_to_idx=gene_to_idx,
+        pair_lookup={},
+        score_range=score_range,
+        cci_min=cci_min,
+        require_target_expression=require_target_expression_for_inter,
+        inter_influence_mode="cci_only",
+        inter_additive_cci_weight=1.0,
+        inter_additive_grn_weight=0.0,
+        inter_grn_pair_policy="zero_if_missing",
+        use_expression_mask=cci_inter_use_expression_mask,
+        require_coords=cci_inter_require_coords,
+    )
+    return LayerGraph(
+        layer=layer_name,
+        time_point=time_point,
+        units=expr.index.astype(str).tolist(),
+        genes=expr.columns.astype(str).tolist(),
+        intra_edges=pd.DataFrame(columns=EDGE_COLUMNS),
+        inter_edges=inter,
+        shared_genes=list(shared_genes),
+        metadata={
+            "grn_source": "not_used",
+            "intra_source": "expression_matrix",
+            "inter_source": "cci_only",
+            "inter_influence_mode": "cci_only",
+            "inter_additive_cci_weight": 1.0,
+            "inter_additive_grn_weight": 0.0,
+            "inter_grn_pair_policy": "zero_if_missing",
+        },
+    )
+
+
 def build_layer_graph(
     layer_name: str,
     time_point: str,

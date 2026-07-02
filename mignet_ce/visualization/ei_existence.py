@@ -363,12 +363,13 @@ def plot_full_slice_base(
     slice_frame: pd.DataFrame,
     point_size: float = 0.55,
     alpha: float = 0.34,
+    color: str = "#b7c0cb",
 ) -> None:
     ax.scatter(
         slice_frame["x"],
         slice_frame["y"],
         s=point_size,
-        color="#cfd5dd",
+        color=color,
         alpha=alpha,
         linewidths=0,
         rasterized=True,
@@ -623,8 +624,8 @@ def _configure_3d_stack_axis(ax: plt.Axes) -> None:
     ax.set_xlim(-0.54, 0.54)
     ax.set_ylim(-0.54, 0.54)
     ax.set_zlim(-0.08, 1.22)
-    ax.set_box_aspect((1.0, 1.0, 0.72))
-    ax.view_init(elev=20, azim=-58)
+    ax.set_box_aspect((1.0, 1.0, 0.78))
+    ax.view_init(elev=22, azim=-58)
     ax.set_axis_off()
 
 
@@ -645,9 +646,9 @@ def _plot_stage_stack(
             background["nx"],
             background["ny"],
             np.full(len(background), z_value),
-            s=0.20,
-            color="#dbe1e8",
-            alpha=0.075,
+            s=0.34,
+            color="#aeb8c4",
+            alpha=0.14,
             linewidths=0,
             depthshade=False,
         )
@@ -667,8 +668,8 @@ def _plot_stage_stack(
         stage_data["spot"],
         z_value=STACK_Z["spot"],
         color="#c53d3d",
-        point_size=1.45,
-        alpha=0.88,
+        point_size=2.05,
+        alpha=0.90,
         max_points=18000,
     )
     draw_slat_like_layer_points(
@@ -677,8 +678,8 @@ def _plot_stage_stack(
         z_value=STACK_Z["seurat_k150"],
         color_col="domain_id",
         color_lookup=k150_colors,
-        point_size=1.30,
-        alpha=0.76,
+        point_size=1.85,
+        alpha=0.78,
         max_points=18000,
     )
     draw_slat_like_layer_points(
@@ -687,13 +688,13 @@ def _plot_stage_stack(
         z_value=STACK_Z["seurat_k40"],
         color_col="domain_id",
         color_lookup=k40_colors,
-        point_size=1.35,
-        alpha=0.76,
+        point_size=1.90,
+        alpha=0.78,
         max_points=18000,
     )
     if show_layer_labels:
-        for layer, label in (("seurat_k40", "K40"), ("seurat_k150", "K150"), ("spot", "Spot / Local")):
-            ax.text(-0.60, -0.58, STACK_Z[layer], label, fontsize=9.4, ha="right", va="center", color="#1f2937")
+        for y, label in ((0.62, "K40"), (0.47, "K150"), (0.31, "Spot / Local")):
+            ax.text2D(0.03, y, label, transform=ax.transAxes, fontsize=9.4, ha="left", va="center", color="#1f2937")
     ax.text2D(0.50, 0.96, f"E{stage}", transform=ax.transAxes, ha="center", va="top", fontsize=12, weight="semibold")
     _configure_3d_stack_axis(ax)
 
@@ -704,27 +705,27 @@ def draw_vertical_ei_brackets(ax: plt.Axes, values_by_pair: Dict[str, float]) ->
     ax.set_ylim(0, 1)
     draw_axis_brace(
         ax,
-        0.18,
+        0.13,
         0.58,
         0.82,
-        f"K150 -> K40  EI gain = {format_signed(values_by_pair.get('seurat_k150->seurat_k40', float('nan')))}",
-        fontsize=9.0,
+        f"EI gain = {format_signed(values_by_pair.get('seurat_k150->seurat_k40', float('nan')))}",
+        fontsize=9.2,
     )
     draw_axis_brace(
         ax,
-        0.18,
+        0.13,
         0.30,
         0.54,
-        f"Spot -> K150  EI gain = {format_signed(values_by_pair.get('spot->seurat_k150', float('nan')))}",
-        fontsize=9.0,
+        f"EI gain = {format_signed(values_by_pair.get('spot->seurat_k150', float('nan')))}",
+        fontsize=9.2,
     )
     draw_axis_brace(
         ax,
-        0.55,
+        0.62,
         0.22,
         0.84,
-        f"Spot -> K40  EI gain = {format_signed(values_by_pair.get('spot->seurat_k40', float('nan')))}",
-        fontsize=9.0,
+        f"EI gain = {format_signed(values_by_pair.get('spot->seurat_k40', float('nan')))}",
+        fontsize=9.2,
     )
 
 
@@ -757,8 +758,8 @@ def plot_fig1_hierarchy(
     k150_colors = domain_color_lookup(k150_ids or ["missing"], cmap_name="tab20")
     k40_colors = domain_color_lookup(k40_ids or ["missing"], cmap_name="tab20")
 
-    fig = plt.figure(figsize=(12.4, 6.7), dpi=dpi)
-    grid = fig.add_gridspec(1, 4, width_ratios=[1.10, 0.20, 1.10, 0.75], wspace=0.00)
+    fig = plt.figure(figsize=(14.8, 6.2), dpi=dpi)
+    grid = fig.add_gridspec(1, 4, width_ratios=[1.55, 0.13, 1.55, 0.90], wspace=-0.08)
     left_ax = fig.add_subplot(grid[0, 0], projection="3d")
     arrow_ax = fig.add_subplot(grid[0, 1])
     right_ax = fig.add_subplot(grid[0, 2], projection="3d")
@@ -808,6 +809,7 @@ def plot_fig1_hierarchy(
     )
     fig.text(0.018, 0.51, "coarse-graining direction", rotation=90, ha="center", va="center", fontsize=9.8, color="#30343b")
     fig.suptitle("EI existence hierarchy", fontsize=14, weight="semibold", y=0.98)
+    fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.08)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -905,7 +907,7 @@ def plot_fig3_timeline(
         axes = [axes]
 
     for ax, stage, frame in zip(axes, time_points, slice_frames):
-        plot_full_slice_base(ax, frame, point_size=0.52, alpha=0.30)
+        plot_full_slice_base(ax, frame, point_size=0.62, alpha=0.42)
         heart = frame[frame["is_target_organ"]].copy()
         plot_heart_overlay(ax, heart, color_lookup=None, point_size=2.2, alpha=0.94)
         ax.text(0.5, -0.075, f"E{stage}", ha="center", va="top", transform=ax.transAxes, fontsize=12, weight="semibold")

@@ -205,6 +205,7 @@ NETWORK_METHODS = {
     "legacy_inter_additive_grn_cci",
     "clean_grn_cci_mix",
     "clean_grn_cci_expr_mix",
+    "clean_expression_cci_mix",
     "unit_specific_clean_grn_cci_mix",
     "cross_cell_multilayer",
     "expression_only",

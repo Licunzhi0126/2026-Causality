@@ -12,6 +12,7 @@ def test_network_registry_matches_configured_methods() -> None:
         "legacy_inter_additive_grn_cci",
         "clean_grn_cci_mix",
         "clean_grn_cci_expr_mix",
+        "clean_expression_cci_mix",
         "unit_specific_clean_grn_cci_mix",
         "cross_cell_multilayer",
         "expression_only",
@@ -23,6 +24,10 @@ def test_network_registry_matches_configured_methods() -> None:
     assert (
         NETWORK_BUILDERS["clean_grn_cci_expr_mix"].__module__
         == "mignet_ce.networks.clean_grn_cci_expr_mix"
+    )
+    assert (
+        NETWORK_BUILDERS["clean_expression_cci_mix"].__module__
+        == "mignet_ce.networks.clean_expression_cci_mix"
     )
     assert (
         NETWORK_BUILDERS["unit_specific_clean_grn_cci_mix"].__module__
