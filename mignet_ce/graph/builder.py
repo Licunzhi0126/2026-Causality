@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,7 +177,48 @@ def _resolve_inter_influence(
     return raw_w, norm_w, influence_score
 
 
-def _scan_commot_score_range(manifest: pd.DataFrame, lr_dir: Path, cci_min: float) -> Tuple[Optional[float], Optional[float], int]:
+def _manifest_chunks(manifest: pd.DataFrame, chunk_size: int) -> List[pd.DataFrame]:
+    size = max(1, int(chunk_size))
+    return [
+        manifest.iloc[start : start + size].copy()
+        for start in range(0, len(manifest), size)
+    ]
+
+
+def _scan_commot_score_range(
+    manifest: pd.DataFrame,
+    lr_dir: Path,
+    cci_min: float,
+    workers: int = 1,
+    chunk_size: int = 64,
+) -> Tuple[Optional[float], Optional[float], int]:
+    if workers > 1 and len(manifest) > 1:
+        chunks = _manifest_chunks(manifest, chunk_size)
+        actual_workers = max(1, min(int(workers), len(chunks)))
+        results: list[Tuple[Optional[float], Optional[float], int] | None] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
+            future_to_index = {
+                pool.submit(
+                    _scan_commot_score_range,
+                    chunk,
+                    lr_dir,
+                    cci_min,
+                    1,
+                    chunk_size,
+                ): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(future_to_index):
+                results[future_to_index[future]] = future.result()
+        vmins = [result[0] for result in results if result is not None and result[0] is not None]
+        vmaxs = [result[1] for result in results if result is not None and result[1] is not None]
+        kept_nnz = sum(result[2] for result in results if result is not None)
+        return (
+            min(vmins) if vmins else None,
+            max(vmaxs) if vmaxs else None,
+            int(kept_nnz),
+        )
+
     vmin: Optional[float] = None
     vmax: Optional[float] = None
     kept_nnz = 0
@@ -385,7 +427,48 @@ def _build_commot_inter_edges(
     inter_grn_pair_policy: str,
     use_expression_mask: bool = True,
     require_coords: bool = True,
+    workers: int = 1,
+    chunk_size: int = 64,
 ) -> pd.DataFrame:
+    if workers > 1 and len(manifest) > 1:
+        chunks = _manifest_chunks(manifest, chunk_size)
+        actual_workers = max(1, min(int(workers), len(chunks)))
+        parts: list[pd.DataFrame | None] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
+            future_to_index = {
+                pool.submit(
+                    _build_commot_inter_edges,
+                    layer_name=layer_name,
+                    manifest=chunk,
+                    lr_dir=lr_dir,
+                    index_names=index_names,
+                    expr=expr,
+                    coords=coords,
+                    active_mask=active_mask,
+                    unit_index=unit_index,
+                    gene_to_idx=gene_to_idx,
+                    pair_lookup=pair_lookup,
+                    score_range=score_range,
+                    cci_min=cci_min,
+                    require_target_expression=require_target_expression,
+                    inter_influence_mode=inter_influence_mode,
+                    inter_additive_cci_weight=inter_additive_cci_weight,
+                    inter_additive_grn_weight=inter_additive_grn_weight,
+                    inter_grn_pair_policy=inter_grn_pair_policy,
+                    use_expression_mask=use_expression_mask,
+                    require_coords=require_coords,
+                    workers=1,
+                    chunk_size=chunk_size,
+                ): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(future_to_index):
+                parts[future_to_index[future]] = future.result()
+        non_empty = [part for part in parts if part is not None and not part.empty]
+        if not non_empty:
+            return pd.DataFrame(columns=EDGE_COLUMNS)
+        return pd.concat(non_empty, ignore_index=True)
+
     vmin, vmax, kept_nnz = score_range
     if kept_nnz == 0 or vmin is None or vmax is None:
         return pd.DataFrame(columns=EDGE_COLUMNS)
@@ -498,12 +581,20 @@ def build_layer_cci_graph(
     require_target_expression_for_inter: bool = True,
     cci_inter_use_expression_mask: bool = True,
     cci_inter_require_coords: bool = False,
+    cci_workers: int = 1,
+    cci_chunk_size: int = 64,
 ) -> LayerGraph:
     expr = expression.expr.loc[:, list(shared_genes)].copy()
     active = expr.to_numpy() > expr_threshold
     manifest = read_commot_manifest(paths.cci_manifest)
     index_names = read_commot_index(paths.cci_index)
-    score_range = _scan_commot_score_range(manifest, paths.cci_lr_dir, cci_min=cci_min)
+    score_range = _scan_commot_score_range(
+        manifest,
+        paths.cci_lr_dir,
+        cci_min=cci_min,
+        workers=cci_workers,
+        chunk_size=cci_chunk_size,
+    )
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
     inter = _build_commot_inter_edges(
@@ -526,6 +617,8 @@ def build_layer_cci_graph(
         inter_grn_pair_policy="zero_if_missing",
         use_expression_mask=cci_inter_use_expression_mask,
         require_coords=cci_inter_require_coords,
+        workers=cci_workers,
+        chunk_size=cci_chunk_size,
     )
     return LayerGraph(
         layer=layer_name,
@@ -570,6 +663,8 @@ def build_layer_graph(
     expression_transform: str = "log1p_minmax",
     expression_weight_floor: float = 0.0,
     unit_specific_fallback: str = "sample_grn_expression_weighted",
+    cci_workers: int = 1,
+    cci_chunk_size: int = 64,
 ) -> LayerGraph:
     if grn_source not in {"sample", "sample_expression_weighted", "unit_specific"}:
         raise ValueError(
@@ -602,7 +697,13 @@ def build_layer_graph(
     pair_lookup = _make_pair_lookup(grn)
     manifest = read_commot_manifest(paths.cci_manifest)
     index_names = read_commot_index(paths.cci_index)
-    score_range = _scan_commot_score_range(manifest, paths.cci_lr_dir, cci_min=cci_min)
+    score_range = _scan_commot_score_range(
+        manifest,
+        paths.cci_lr_dir,
+        cci_min=cci_min,
+        workers=cci_workers,
+        chunk_size=cci_chunk_size,
+    )
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
 
@@ -650,6 +751,8 @@ def build_layer_graph(
         inter_grn_pair_policy=inter_grn_pair_policy,
         use_expression_mask=cci_inter_use_expression_mask,
         require_coords=cci_inter_require_coords,
+        workers=cci_workers,
+        chunk_size=cci_chunk_size,
     )
     return LayerGraph(
         layer=layer_name,

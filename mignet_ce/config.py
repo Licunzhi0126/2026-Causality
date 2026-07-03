@@ -302,6 +302,7 @@ class TemporalRunConfig:
     export_raw_native_features: bool = False
     export_feature_diagnostics: bool = False
     export_pij_topk: int = 0
+    max_workers: int = 1
 
     def normalized_pairs(self) -> List[VerticalPairSpec]:
         return [pair if isinstance(pair, VerticalPairSpec) else VerticalPairSpec.parse(str(pair)) for pair in self.level_pairs]
@@ -322,6 +323,8 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
+        if self.max_workers < 1:
+            raise ValueError("max_workers must be >= 1.")
         if not isinstance(self.native_intra_use_expression_mask, bool):
             raise ValueError("native_intra_use_expression_mask must be bool.")
         if not isinstance(self.native_cci_inter_use_expression_mask, bool):

@@ -167,6 +167,45 @@ def test_clean_expression_cci_mix_builds_native_expression_plus_cci_context(tmp_
     assert context.upper_mats[0].shape[1] == len(context.feature_names)
 
 
+def test_clean_expression_cci_mix_parallel_matches_serial(tmp_path) -> None:
+    _write_clean_expression_inputs(tmp_path)
+    pair = VerticalPairSpec("spot", "louvain_less_than5")
+    base_kwargs = dict(
+        data_root=tmp_path,
+        output_root=tmp_path / "output",
+        organs=["heart"],
+        time_points=["11.5", "12.5"],
+        level_pairs=[pair],
+        network_method="clean_expression_cci_mix",
+        feature_log1p=False,
+    )
+    serial = CleanExpressionCCIMixBuilder().build_pair_context(
+        organ="heart",
+        pair=pair,
+        cfg=TemporalRunConfig(**base_kwargs, max_workers=1),
+        resolver=LayerDataResolver(tmp_path),
+    )
+    parallel = CleanExpressionCCIMixBuilder().build_pair_context(
+        organ="heart",
+        pair=pair,
+        cfg=TemporalRunConfig(**base_kwargs, max_workers=2),
+        resolver=LayerDataResolver(tmp_path),
+    )
+
+    assert parallel.feature_names == serial.feature_names
+    assert parallel.lower_units_by_time == serial.lower_units_by_time
+    assert parallel.upper_units_by_time == serial.upper_units_by_time
+    for serial_mat, parallel_mat in zip(serial.lower_mats, parallel.lower_mats):
+        assert np.allclose(parallel_mat, serial_mat)
+    for serial_mat, parallel_mat in zip(serial.upper_mats, parallel.upper_mats):
+        assert np.allclose(parallel_mat, serial_mat)
+    for serial_graph, parallel_graph in zip(serial.lower_graphs, parallel.lower_graphs):
+        pd.testing.assert_frame_equal(
+            parallel_graph.inter_edges.reset_index(drop=True),
+            serial_graph.inter_edges.reset_index(drop=True),
+        )
+
+
 def test_clean_expression_cci_mix_builder_does_not_call_feature_alignment_helpers() -> None:
     source = inspect.getsource(CleanExpressionCCIMixBuilder)
 
@@ -209,4 +248,3 @@ def test_clean_expression_cci_mix_pipeline_exports_expression_and_cci_features(t
     assert {"intra_expr_sum", "intra_grn_sum", "inter_sum"}.issubset(diagnostics.columns)
     assert diagnostics["intra_expr_sum"].sum() > 0
     assert (pair_dir / "network_exports" / "11.5_lower_inter_edges.csv").exists()
-

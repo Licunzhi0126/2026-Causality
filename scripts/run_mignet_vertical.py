@@ -127,6 +127,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--export-raw-native-features", action="store_true")
     parser.add_argument("--export-graphs", action="store_true")
     parser.add_argument("--export-feature-diagnostics", action="store_true")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Global worker budget inside one organ/pair. Pair parallelism remains disabled.",
+    )
     return parser
 
 
@@ -214,6 +220,7 @@ def main() -> None:
         export_graphs=args.export_graphs,
         export_raw_native_features=args.export_raw_native_features,
         export_feature_diagnostics=args.export_feature_diagnostics,
+        max_workers=args.max_workers,
     )
     metrics = VerticalMIGNetPipeline(cfg).run()
     if metrics.empty:

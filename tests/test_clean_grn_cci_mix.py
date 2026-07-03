@@ -12,7 +12,7 @@ from mignet_ce.features_native import (
     build_native_feature_schema,
     build_native_graph_matrix,
 )
-from mignet_ce.graph.builder import EDGE_COLUMNS, LayerGraph, _build_commot_inter_edges
+from mignet_ce.graph.builder import EDGE_COLUMNS, LayerGraph, _build_commot_inter_edges, _scan_commot_score_range
 from mignet_ce.io.pij_exports import export_pij_sparse_archive
 from mignet_ce.mapping import OverlapMapping
 from mignet_ce.metrics import TemporalMetricsEngine
@@ -191,6 +191,56 @@ def test_clean_cci_edges_do_not_require_expression_or_coordinates(tmp_path) -> N
     assert edges.loc[0, "dst_gene"] == "RecMissing"
     assert edges.loc[0, "influence_score"] == 1.0
     assert np.isnan(edges.loc[0, "distance_raw"])
+
+
+def test_commot_inter_edges_chunked_matches_serial(tmp_path) -> None:
+    lr_dir = tmp_path / "lr"
+    lr_dir.mkdir()
+    units = ["u1", "u2", "u3"]
+    manifest_rows = []
+    for idx, value in enumerate((1.0, 2.0, 3.0)):
+        filename = f"lr{idx}.npz"
+        matrix = np.zeros((3, 3), dtype=float)
+        matrix[idx % 3, (idx + 1) % 3] = value
+        sp.save_npz(lr_dir / filename, sp.csr_matrix(matrix))
+        manifest_rows.append(
+            {
+                "filename": filename,
+                "lr_key": f"lr{idx}",
+                "ligand": f"Lig{idx}",
+                "receptor": f"Rec{idx}",
+            }
+        )
+    manifest = pd.DataFrame(manifest_rows)
+    expr = pd.DataFrame([[0.0], [0.0], [0.0]], index=units, columns=["A"])
+    common_kwargs = dict(
+        layer_name="spot",
+        manifest=manifest,
+        lr_dir=lr_dir,
+        index_names=units,
+        expr=expr,
+        coords=pd.DataFrame(columns=["x", "y"]),
+        active_mask=np.zeros((3, 1), dtype=bool),
+        unit_index={unit: idx for idx, unit in enumerate(units)},
+        gene_to_idx={"A": 0},
+        pair_lookup={},
+        cci_min=0.0,
+        require_target_expression=True,
+        inter_influence_mode="cci_only",
+        inter_additive_cci_weight=1.0,
+        inter_additive_grn_weight=1.0,
+        inter_grn_pair_policy="zero_if_missing",
+        use_expression_mask=False,
+        require_coords=False,
+    )
+    serial_range = _scan_commot_score_range(manifest, lr_dir, cci_min=0.0, workers=1)
+    chunked_range = _scan_commot_score_range(manifest, lr_dir, cci_min=0.0, workers=2, chunk_size=1)
+
+    serial = _build_commot_inter_edges(score_range=serial_range, workers=1, **common_kwargs)
+    chunked = _build_commot_inter_edges(score_range=chunked_range, workers=2, chunk_size=1, **common_kwargs)
+
+    assert chunked_range == serial_range
+    pd.testing.assert_frame_equal(chunked.reset_index(drop=True), serial.reset_index(drop=True))
 
 
 def test_native_graph_representation_keeps_native_rows_and_coordinates() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
@@ -17,6 +19,7 @@ from mignet_ce.mapping import (
     build_spot_correspondence_table,
     load_unit_assignments,
     summarize_overlap_quality,
+    UnitAssignments,
 )
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.clean_grn_cci_mix import CleanGRNCCIMixBuilder
@@ -33,6 +36,84 @@ def _build_expression_block(
     if feature_log1p:
         mat = np.log1p(np.clip(mat, a_min=0.0, a_max=None))
     return mat
+
+
+@dataclass(frozen=True)
+class LayerBuildTask:
+    stage: str
+    layer_name: str
+    paths: LayerPaths
+    shared_genes: list[str]
+    graph_kwargs: dict[str, object]
+    feature_log1p: bool
+    cci_workers: int = 1
+
+
+@dataclass
+class LayerBuildResult:
+    stage: str
+    layer_name: str
+    expr_units: list[str]
+    assignments: UnitAssignments
+    graph: LayerGraph
+    expr_block: np.ndarray
+    coords: np.ndarray
+
+
+def _run_with_single_blas_thread(fn):
+    try:
+        from threadpoolctl import threadpool_limits
+    except Exception:
+        return fn()
+    with threadpool_limits(limits=1):
+        return fn()
+
+
+def build_clean_expression_layer_task(task: LayerBuildTask) -> LayerBuildResult:
+    def _build() -> LayerBuildResult:
+        expr = read_expression_h5ad(task.paths.h5ad)
+        assignments = load_unit_assignments(task.layer_name, expr, task.paths.spot_domain_map)
+        graph = build_layer_cci_graph(
+            layer_name=task.layer_name,
+            time_point=task.stage,
+            expression=expr,
+            paths=task.paths,
+            cci_workers=task.cci_workers,
+            **task.graph_kwargs,
+        )
+        expr_block = _build_expression_block(
+            expr.expr,
+            graph.units,
+            task.shared_genes,
+            task.feature_log1p,
+        )
+        return LayerBuildResult(
+            stage=task.stage,
+            layer_name=task.layer_name,
+            expr_units=list(expr.units),
+            assignments=assignments,
+            graph=graph,
+            expr_block=expr_block,
+            coords=align_coords(expr.coords, graph.units),
+        )
+
+    return _run_with_single_blas_thread(_build)
+
+
+def _run_layer_build_tasks(tasks: list[LayerBuildTask], max_workers: int) -> list[LayerBuildResult]:
+    if max_workers <= 1 or len(tasks) <= 1:
+        return [build_clean_expression_layer_task(task) for task in tasks]
+
+    workers = max(1, min(int(max_workers), len(tasks)))
+    results: list[LayerBuildResult | None] = [None] * len(tasks)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        future_to_index = {
+            pool.submit(build_clean_expression_layer_task, task): index
+            for index, task in enumerate(tasks)
+        }
+        for future in as_completed(future_to_index):
+            results[future_to_index[future]] = future.result()
+    return [result for result in results if result is not None]
 
 
 class CleanExpressionCCIMixBuilder(CleanGRNCCIMixBuilder):
@@ -72,23 +153,53 @@ class CleanExpressionCCIMixBuilder(CleanGRNCCIMixBuilder):
         overlap_quality_summaries: List[dict[str, object]] = []
         exports: dict[str, pd.DataFrame] = {}
 
+        graph_kwargs = {
+            "shared_genes": shared_genes,
+            "expr_threshold": cfg.expr_threshold,
+            "cci_min": cfg.cci_min,
+            "require_target_expression_for_inter": cfg.require_target_expression_for_inter,
+            "cci_inter_use_expression_mask": cfg.native_cci_inter_use_expression_mask,
+            "cci_inter_require_coords": False,
+        }
+        tasks: list[LayerBuildTask] = []
+        seen_tasks: set[tuple[str, str]] = set()
+        layer_worker_count = max(1, min(int(cfg.max_workers), max(1, len(cfg.time_points) * 2)))
+        cci_workers = max(1, int(cfg.max_workers) // layer_worker_count)
         for stage in map(str, cfg.time_points):
-            lower_paths = all_paths[(stage, pair.lower_layer)]
-            upper_paths = all_paths[(stage, pair.upper_layer)]
-            lower_expr = read_expression_h5ad(lower_paths.h5ad)
-            upper_expr = read_expression_h5ad(upper_paths.h5ad)
+            for layer in (pair.lower_layer, pair.upper_layer):
+                key = (stage, layer)
+                if key in seen_tasks:
+                    continue
+                seen_tasks.add(key)
+                tasks.append(
+                    LayerBuildTask(
+                        stage=stage,
+                        layer_name=layer,
+                        paths=all_paths[key],
+                        shared_genes=list(shared_genes),
+                        graph_kwargs=dict(graph_kwargs),
+                        feature_log1p=cfg.feature_log1p,
+                        cci_workers=cci_workers,
+                    )
+                )
+        layer_results = _run_layer_build_tasks(tasks, max_workers=cfg.max_workers)
+        result_by_key = {
+            (result.stage, result.layer_name): result
+            for result in layer_results
+        }
 
-            lower_assignments = load_unit_assignments(pair.lower_layer, lower_expr, lower_paths.spot_domain_map)
-            upper_assignments = load_unit_assignments(pair.upper_layer, upper_expr, upper_paths.spot_domain_map)
+        for stage in map(str, cfg.time_points):
+            lower_result = result_by_key[(stage, pair.lower_layer)]
+            upper_result = result_by_key[(stage, pair.upper_layer)]
             overlap = build_overlap_mapping(
-                lower=lower_assignments,
-                upper=upper_assignments,
-                lower_units=lower_expr.units,
+                lower=lower_result.assignments,
+                upper=upper_result.assignments,
+                lower_units=lower_result.expr_units,
                 upper_units=stable_upper_units,
             )
             spot_correspondence = build_spot_correspondence_table(
-                lower=lower_assignments,
-                upper=upper_assignments,
+                lower=lower_result.assignments,
+                upper=upper_result.assignments,
                 stage=stage,
                 lower_layer=pair.lower_layer,
                 upper_layer=pair.upper_layer,
@@ -102,53 +213,20 @@ class CleanExpressionCCIMixBuilder(CleanGRNCCIMixBuilder):
             overlap_quality = summarize_overlap_quality(overlap_edges)
             overlap_quality["stage"] = stage
 
-            graph_kwargs = {
-                "shared_genes": shared_genes,
-                "expr_threshold": cfg.expr_threshold,
-                "cci_min": cfg.cci_min,
-                "require_target_expression_for_inter": cfg.require_target_expression_for_inter,
-                "cci_inter_use_expression_mask": cfg.native_cci_inter_use_expression_mask,
-                "cci_inter_require_coords": False,
-            }
-            lower_graph = build_layer_cci_graph(
-                layer_name=pair.lower_layer,
-                time_point=stage,
-                expression=lower_expr,
-                paths=lower_paths,
-                **graph_kwargs,
-            )
-            upper_graph = build_layer_cci_graph(
-                layer_name=pair.upper_layer,
-                time_point=stage,
-                expression=upper_expr,
-                paths=upper_paths,
-                **graph_kwargs,
-            )
-
-            lower_expr_block = _build_expression_block(
-                lower_expr.expr,
-                lower_graph.units,
-                shared_genes,
-                cfg.feature_log1p,
-            )
-            upper_expr_block = _build_expression_block(
-                upper_expr.expr,
-                upper_graph.units,
-                shared_genes,
-                cfg.feature_log1p,
-            )
+            lower_graph = lower_result.graph
+            upper_graph = upper_result.graph
 
             overlaps.append(overlap)
             lower_units_by_time.append(lower_graph.units)
             upper_units_by_time.append(upper_graph.units)
-            lower_assignments_by_time.append(lower_assignments.rows.copy())
-            upper_assignments_by_time.append(upper_assignments.rows.copy())
+            lower_assignments_by_time.append(lower_result.assignments.rows.copy())
+            upper_assignments_by_time.append(upper_result.assignments.rows.copy())
             lower_graphs.append(lower_graph)
             upper_graphs.append(upper_graph)
-            lower_expr_blocks.append(lower_expr_block)
-            upper_expr_blocks.append(upper_expr_block)
-            lower_coords_by_time.append(align_coords(lower_expr.coords, lower_graph.units))
-            upper_coords_by_time.append(align_coords(upper_expr.coords, upper_graph.units))
+            lower_expr_blocks.append(lower_result.expr_block)
+            upper_expr_blocks.append(upper_result.expr_block)
+            lower_coords_by_time.append(lower_result.coords)
+            upper_coords_by_time.append(upper_result.coords)
             coverage_tables.append(coverage_table(stage, stable_upper_units, overlap.coverage_counts(), upper_graph.units))
             spot_correspondence_tables.append(spot_correspondence)
             overlap_edge_tables.append(overlap_edges)
@@ -274,4 +352,3 @@ class CleanExpressionCCIMixBuilder(CleanGRNCCIMixBuilder):
             "lower_graph_metadata": lower_graph.metadata,
             "upper_graph_metadata": upper_graph.metadata,
         }
-

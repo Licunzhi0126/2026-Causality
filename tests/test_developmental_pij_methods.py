@@ -117,6 +117,7 @@ def test_developmental_ot_methods_build_kernels(tmp_path, method_name: str) -> N
         development_feature_root=feature_root,
         pij_method=method_name,
         pij_feature_components=None,
+        export_pij_topk=1,
         ot_max_iter=20,
     )
 
@@ -154,6 +155,7 @@ def test_ot_ablation_v2_methods_use_only_declared_cost_components(
         development_feature_root=feature_root,
         pij_method=method_name,
         pij_feature_components=None,
+        export_pij_topk=1,
         ot_max_iter=20,
     )
 
@@ -227,6 +229,54 @@ def test_ot_ablation_v3_methods_use_declared_components_and_weights(
             actual_weight = metadata["cost_summary"]["components"][component]["weight"]
             assert actual_weight == pytest.approx(expected_weight)
         assert metadata["cost_summary"]["total_weight"] == pytest.approx(sum(expected_weights.values()))
+
+
+def test_ot_parallel_workers_match_serial(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root)
+    context = _synthetic_context()
+    serial_cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="sr_expression_ot",
+        pij_feature_components=None,
+        max_workers=1,
+        ot_max_iter=20,
+    )
+    parallel_cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="sr_expression_ot",
+        pij_feature_components=None,
+        max_workers=2,
+        ot_max_iter=20,
+    )
+
+    _, serial_kernels = get_pij_method("sr_expression_ot").run(context, serial_cfg, [(0, 1)])
+    _, parallel_kernels = get_pij_method("sr_expression_ot").run(context, parallel_cfg, [(0, 1)])
+
+    assert serial_kernels is not None
+    assert parallel_kernels is not None
+    assert np.allclose(parallel_kernels.p_lower[(0, 1)], serial_kernels.p_lower[(0, 1)])
+    assert np.allclose(parallel_kernels.p_upper[(0, 1)], serial_kernels.p_upper[(0, 1)])
+
+
+def test_ot_kernel_diagnostics_are_omitted_by_default(tmp_path) -> None:
+    feature_root = tmp_path / "developmental_features"
+    _write_all_feature_files(feature_root)
+    cfg = TemporalRunConfig(
+        data_root=tmp_path / "data",
+        development_feature_root=feature_root,
+        pij_method="sr_ot",
+        pij_feature_components=None,
+        ot_max_iter=20,
+    )
+
+    _, kernels = get_pij_method("sr_ot").run(_synthetic_context(), cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert kernels.kernel_diagnostics["lower"] == {}
+    assert kernels.kernel_diagnostics["upper"] == {}
 
 
 def test_pseudotime_ot_errors_when_pseudotime_column_is_missing(tmp_path) -> None:
