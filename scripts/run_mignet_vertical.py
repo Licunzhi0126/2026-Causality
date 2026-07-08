@@ -84,6 +84,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-feature-aggregation", choices=["mean", "median"], default="mean")
     parser.add_argument("--pij-missing-feature-policy", choices=["error", "impute_mean", "ignore"], default="impute_mean")
     parser.add_argument("--pij-feature-components", type=int, default=30)
+    parser.add_argument("--compare-gene-expression-pca-components", type=int, default=64)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
     parser.add_argument("--pij-expr-weight", type=float, default=1.0)
     parser.add_argument("--pij-spatial-weight", type=float, default=0.2)
@@ -223,6 +224,7 @@ def main() -> None:
         pij_feature_aggregation=args.pij_feature_aggregation,
         pij_missing_feature_policy=args.pij_missing_feature_policy,
         pij_feature_components=args.pij_feature_components,
+        compare_gene_expression_pca_components=args.compare_gene_expression_pca_components,
         pij_temperature=args.pij_temperature,
         pij_expr_weight=args.pij_expr_weight,
         pij_spatial_weight=args.pij_spatial_weight,

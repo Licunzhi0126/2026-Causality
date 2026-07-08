@@ -7,12 +7,14 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+from scipy.linalg import orthogonal_procrustes
 from scipy.sparse.linalg import ArpackNoConvergence, eigsh
+from sklearn.decomposition import PCA
 
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.features import aggregate_lower_features_to_upper, align_upper_features
 from mignet_ce.graph.builder import LayerGraph
-from mignet_ce.io.developmental_features import load_developmental_features_for_pij
+from mignet_ce.io.developmental_features import load_developmental_features_for_layer, load_developmental_features_for_pij
 from mignet_ce.io.loaders import (
     LayerDataResolver,
     LayerPaths,
@@ -217,6 +219,14 @@ def _paths_for_side(resolver: LayerDataResolver, context: NetworkContext, side: 
     return resolver.paths(_layer_for_side(context, side), context.organ, str(stage))
 
 
+def _is_gene_side(context: NetworkContext, side: str) -> bool:
+    return _layer_for_side(context, side) == "gene"
+
+
+def _has_gene_pair(context: NetworkContext) -> bool:
+    return context.pair.lower_layer == "gene" or context.pair.upper_layer == "gene"
+
+
 def _align_side_features(
     raw: List[np.ndarray],
     context: NetworkContext,
@@ -253,7 +263,330 @@ def _align_side_features(
     return aligned, metadata
 
 
+def _preprocess_gene_expression_patterns(
+    matrices: Sequence[np.ndarray],
+    *,
+    normalize: bool,
+    log1p: bool,
+    scale_factor: float,
+) -> List[np.ndarray]:
+    out: List[np.ndarray] = []
+    for matrix in matrices:
+        values = np.maximum(np.asarray(matrix, dtype=float), 0.0)
+        if normalize:
+            totals = values.sum(axis=1, keepdims=True)
+            values = np.divide(values, totals, out=np.zeros_like(values, dtype=float), where=totals > 0) * float(scale_factor)
+        if log1p:
+            values = np.log1p(values)
+        out.append(values)
+    return out
+
+
+def _build_gene_expression_pattern_mats(
+    context: NetworkContext,
+    cfg: TemporalRunConfig,
+    side: str,
+) -> tuple[List[np.ndarray], List[dict[str, object]], List[List[str]]]:
+    if not _is_gene_side(context, side):
+        raise ValueError("_build_gene_expression_pattern_mats can only be used for a gene layer side.")
+    resolver = LayerDataResolver(cfg.data_root)
+    matrices: List[np.ndarray] = []
+    metadata: List[dict[str, object]] = []
+    units_by_time: List[List[str]] = []
+    for idx, stage in enumerate(map(str, context.time_points)):
+        spot_paths = resolver.paths("spot", context.organ, stage)
+        if not spot_paths.h5ad.exists():
+            raise FileNotFoundError(f"Gene expression feature E requires spot h5ad: {spot_paths.h5ad}")
+        spot_expr = read_expression_h5ad(spot_paths.h5ad)
+        gene_units = _native_units(context, side, idx)
+        gene_set = set(map(str, spot_expr.expr.columns))
+        present = [gene for gene in gene_units if gene in gene_set]
+        missing = [gene for gene in gene_units if gene not in gene_set]
+        matrix = spot_expr.expr.reindex(columns=gene_units, fill_value=0.0).T.to_numpy(dtype=float)
+        matrices.append(matrix)
+        units_by_time.append(gene_units)
+        metadata.append(
+            {
+                "stage": stage,
+                "side": side,
+                "gene_expression_source": "virtual_from_spot_h5ad",
+                "gene_expression_representation": "gene_by_spot_expression",
+                "spot_h5ad": str(spot_paths.h5ad),
+                "spot_sample_stem": spot_paths.sample_stem,
+                "spot_units": int(len(spot_expr.units)),
+                "spot_genes": int(len(spot_expr.genes)),
+                "gene_nodes": int(len(gene_units)),
+                "present_gene_count": int(len(present)),
+                "missing_gene_count": int(len(missing)),
+                "missing_gene_examples": missing[:10],
+            }
+        )
+    return matrices, metadata, units_by_time
+
+
+def _zero_pad_columns(matrix: np.ndarray, n_columns: int) -> np.ndarray:
+    values = np.asarray(matrix, dtype=float)
+    if values.shape[1] == n_columns:
+        return values
+    if values.shape[1] > n_columns:
+        return values[:, :n_columns]
+    return np.pad(values, ((0, 0), (0, n_columns - values.shape[1])), mode="constant")
+
+
+def _fit_gene_pattern_pca(matrix: np.ndarray, requested_components: int, seed: int) -> tuple[np.ndarray, dict[str, object]]:
+    values = np.asarray(matrix, dtype=float)
+    n_rows, n_cols = values.shape
+    if n_rows == 0 or n_cols == 0:
+        return np.zeros((n_rows, requested_components), dtype=float), {
+            "actual_components": 0,
+            "reason": "empty_gene_by_spot_matrix",
+        }
+    actual = min(int(requested_components), n_rows, n_cols)
+    if actual <= 0:
+        return np.zeros((n_rows, requested_components), dtype=float), {
+            "actual_components": 0,
+            "reason": "no_available_components",
+        }
+    solver = "randomized" if actual < min(n_rows, n_cols) else "full"
+    pca = PCA(n_components=actual, svd_solver=solver, random_state=seed)
+    transformed = pca.fit_transform(values)
+    return _zero_pad_columns(transformed, requested_components), {
+        "actual_components": int(actual),
+        "svd_solver": solver,
+        "explained_variance_ratio_sum": float(np.nansum(pca.explained_variance_ratio_)),
+    }
+
+
+def _align_gene_expression_pcs(
+    features: Sequence[np.ndarray],
+    units_by_time: Sequence[Sequence[str]],
+) -> tuple[List[np.ndarray], List[dict[str, object]]]:
+    if not features:
+        return [], []
+    aligned = [np.asarray(features[0], dtype=float)]
+    reference_units = list(map(str, units_by_time[0]))
+    reference_index = {unit: idx for idx, unit in enumerate(reference_units)}
+    alignment_metadata: List[dict[str, object]] = [
+        {
+            "time_index": 0,
+            "alignment": "reference_timepoint",
+            "shared_gene_rows": int(len(reference_units)),
+        }
+    ]
+    for idx in range(1, len(features)):
+        current = np.asarray(features[idx], dtype=float)
+        current_units = list(map(str, units_by_time[idx]))
+        current_index = {unit: row for row, unit in enumerate(current_units)}
+        shared = [unit for unit in current_units if unit in reference_index]
+        if len(shared) >= 2:
+            current_rows = [current_index[unit] for unit in shared]
+            reference_rows = [reference_index[unit] for unit in shared]
+            rotation, scale = orthogonal_procrustes(current[current_rows], aligned[0][reference_rows])
+            aligned.append(current @ rotation)
+            alignment_metadata.append(
+                {
+                    "time_index": int(idx),
+                    "alignment": "orthogonal_procrustes_to_first_timepoint",
+                    "shared_gene_rows": int(len(shared)),
+                    "procrustes_scale": float(scale),
+                }
+            )
+        else:
+            aligned.append(current)
+            alignment_metadata.append(
+                {
+                    "time_index": int(idx),
+                    "alignment": "skipped_insufficient_shared_gene_rows",
+                    "shared_gene_rows": int(len(shared)),
+                }
+            )
+    return aligned, alignment_metadata
+
+
+def _reduce_gene_expression_patterns_with_temporal_alignment(
+    matrices: Sequence[np.ndarray],
+    units_by_time: Sequence[Sequence[str]],
+    cfg: TemporalRunConfig,
+) -> tuple[List[np.ndarray], dict[str, object], List[str]]:
+    requested = int(cfg.compare_gene_expression_pca_components)
+    preprocessed = _preprocess_gene_expression_patterns(
+        matrices,
+        normalize=cfg.pure_expression_normalize,
+        log1p=cfg.pure_expression_log1p,
+        scale_factor=cfg.pure_expression_scale_factor,
+    )
+    reduced: List[np.ndarray] = []
+    pca_metadata: List[dict[str, object]] = []
+    for idx, matrix in enumerate(preprocessed):
+        transformed, meta = _fit_gene_pattern_pca(matrix, requested, cfg.nmf_seed)
+        meta.update(
+            {
+                "time_index": int(idx),
+                "input_shape": list(np.asarray(matrix).shape),
+                "output_shape": list(transformed.shape),
+            }
+        )
+        reduced.append(transformed)
+        pca_metadata.append(meta)
+    aligned, alignment_metadata = _align_gene_expression_pcs(reduced, units_by_time)
+    names = [f"gene_expression_pc_{idx + 1}" for idx in range(requested)]
+    return aligned, {
+        "gene_expression_source": "virtual_from_spot_h5ad",
+        "gene_expression_representation": "gene_by_spot_pca",
+        "gene_expression_pca_components": requested,
+        "gene_expression_temporal_alignment": "orthogonal_procrustes_to_first_timepoint",
+        "no_spatial_feature_used": True,
+        "normalization": {
+            "row_sum_normalize": bool(cfg.pure_expression_normalize),
+            "log1p": bool(cfg.pure_expression_log1p),
+            "scale_factor": float(cfg.pure_expression_scale_factor),
+        },
+        "pca_by_time": pca_metadata,
+        "temporal_alignment_by_time": alignment_metadata,
+    }, names
+
+
+def _build_regular_expression_side(
+    context: NetworkContext,
+    cfg: TemporalRunConfig,
+    side: str,
+) -> tuple[List[np.ndarray], List[str], dict[str, object]]:
+    resolver = LayerDataResolver(cfg.data_root)
+    raw: List[np.ndarray] = []
+    source_metadata: List[dict[str, object]] = []
+    genes = list(context.shared_genes)
+    use_context_fallback = False
+    for idx, stage in enumerate(map(str, context.time_points)):
+        paths = _paths_for_side(resolver, context, side, stage)
+        if not paths.h5ad.exists():
+            use_context_fallback = True
+            break
+        expression = read_expression_h5ad(paths.h5ad)
+        missing_genes = [gene for gene in genes if gene not in expression.expr.columns]
+        if missing_genes:
+            raise ValueError(f"Expression feature E is missing shared genes for {side} {stage}: missing={missing_genes[:5]}.")
+        units = _native_units(context, side, idx)
+        missing_units = [unit for unit in units if unit not in expression.expr.index]
+        if missing_units:
+            raise ValueError(
+                f"Expression feature E cannot align h5ad rows to {side} context units for {stage}: "
+                f"missing_units={missing_units[:5]}."
+            )
+        raw.append(expression.expr.loc[units, genes].to_numpy(dtype=float))
+        source_metadata.append(
+            {
+                "stage": stage,
+                "side": side,
+                "h5ad": str(paths.h5ad),
+                "genes": int(len(genes)),
+                "units": int(len(units)),
+            }
+        )
+    if use_context_fallback:
+        raw = [
+            np.asarray(matrix, dtype=float)
+            for matrix in (context.lower_mats if side == "lower" else context.upper_mats)
+        ]
+        genes = [f"context_feature_{idx + 1}" for idx in range(raw[0].shape[1] if raw else 0)]
+        source_metadata.append(
+            {
+                "side": side,
+                "source": "network_context_mats_fallback",
+                "reason": "one_or_more_h5ad_files_missing",
+                "feature_dim": int(raw[0].shape[1] if raw else 0),
+            }
+        )
+
+    pre = _preprocess_raw_mats(
+        raw,
+        normalize=cfg.pure_expression_normalize,
+        log1p=cfg.pure_expression_log1p,
+        scale_factor=cfg.pure_expression_scale_factor,
+    )
+    gene_indices, selected_genes, gene_selection_metadata = _select_gene_indices(
+        pre,
+        genes=genes,
+        max_genes=cfg.pure_expression_max_genes,
+        mode=cfg.pure_expression_gene_selection,
+    )
+    selected = [matrix[:, gene_indices] for matrix in pre]
+    scaled, _, scaler_metadata = _fit_transform_gene_scaler(selected, [], scaler_name=cfg.pure_expression_scaler)
+    aligned, alignment = _align_side_features(scaled, context, side)
+    reduced, _, reduction_metadata, feature_names = _reduce_aligned_features(
+        aligned,
+        [],
+        n_components=cfg.pij_feature_components,
+        seed=cfg.nmf_seed,
+    )
+    return reduced, [f"E:{name}" for name in feature_names], {
+        "feature_source": "expression",
+        "source_metadata": source_metadata,
+        "normalization": {
+            "library_size_normalize": bool(cfg.pure_expression_normalize),
+            "log1p": bool(cfg.pure_expression_log1p),
+            "scale_factor": float(cfg.pure_expression_scale_factor),
+        },
+        "gene_selection": gene_selection_metadata,
+        "selected_genes": selected_genes,
+        "gene_scaler": scaler_metadata,
+        "feature_reduction": reduction_metadata,
+        "alignment": alignment,
+    }
+
+
+def _build_expression_base_with_gene_side(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFeatureResult:
+    lower_meta: dict[str, object]
+    upper_meta: dict[str, object]
+    if _is_gene_side(context, "lower"):
+        lower_raw, lower_source_metadata, lower_units = _build_gene_expression_pattern_mats(context, cfg, "lower")
+        lower_features, lower_reduction_metadata, lower_names = _reduce_gene_expression_patterns_with_temporal_alignment(
+            lower_raw,
+            lower_units,
+            cfg,
+        )
+        lower_meta = {
+            **lower_reduction_metadata,
+            "source_metadata": lower_source_metadata,
+        }
+        lower_names = [f"E:{name}" for name in lower_names]
+    else:
+        lower_features, lower_names, lower_meta = _build_regular_expression_side(context, cfg, "lower")
+
+    if _is_gene_side(context, "upper"):
+        upper_raw, upper_source_metadata, upper_units = _build_gene_expression_pattern_mats(context, cfg, "upper")
+        upper_features, upper_reduction_metadata, upper_names = _reduce_gene_expression_patterns_with_temporal_alignment(
+            upper_raw,
+            upper_units,
+            cfg,
+        )
+        upper_meta = {
+            **upper_reduction_metadata,
+            "source_metadata": upper_source_metadata,
+        }
+        upper_names = [f"E:{name}" for name in upper_names]
+    else:
+        upper_features, upper_names, upper_meta = _build_regular_expression_side(context, cfg, "upper")
+
+    names = lower_names if _is_gene_side(context, "lower") else upper_names if _is_gene_side(context, "upper") else lower_names
+    return _BaseFeatureResult(
+        lower=lower_features,
+        upper=upper_features,
+        names=names,
+        metadata={
+            "feature_key": "E",
+            "feature_source": "expression",
+            "gene_pair_virtualization": True,
+            "lower": lower_meta,
+            "upper": upper_meta,
+            "no_spatial_feature_used": True,
+        },
+    )
+
+
 def _build_expression_base(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFeatureResult:
+    if _has_gene_pair(context):
+        return _build_expression_base_with_gene_side(context, cfg)
+
     resolver = LayerDataResolver(cfg.data_root)
     lower_raw: List[np.ndarray] = []
     upper_raw: List[np.ndarray] = []
@@ -575,27 +908,105 @@ def _select_sr_column(values: pd.DataFrame) -> str:
     raise ValueError(f"Sr feature requires 'sr' or 'potency_score'; available columns are {list(values.columns)}.")
 
 
+def _build_gene_sr_from_spot_expression(
+    context: NetworkContext,
+    cfg: TemporalRunConfig,
+    side: str,
+    time_index: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    if not _is_gene_side(context, side):
+        raise ValueError("_build_gene_sr_from_spot_expression can only be used for a gene layer side.")
+    if cfg.development_feature_root is None:
+        raise ValueError(f"{cfg.effective_pij_method()} requires development_feature_root.")
+    stage = str(context.time_points[time_index])
+    resolver = LayerDataResolver(cfg.data_root)
+    spot_paths = resolver.paths("spot", context.organ, stage)
+    if not spot_paths.h5ad.exists():
+        raise FileNotFoundError(f"Gene Sr feature requires spot h5ad: {spot_paths.h5ad}")
+    spot_expr = read_expression_h5ad(spot_paths.h5ad)
+    spot_table = load_developmental_features_for_layer(
+        development_feature_root=cfg.development_feature_root,
+        data_root=cfg.data_root,
+        layer="spot",
+        organ=context.organ,
+        stage=stage,
+        units=spot_expr.units,
+        aggregation=cfg.pij_feature_aggregation,
+        missing_policy=cfg.pij_missing_feature_policy,
+        spot_domain_map=spot_paths.spot_domain_map,
+    )
+    sr_column = _select_sr_column(spot_table.values)
+    sr_values = spot_table.values.loc[:, sr_column].to_numpy(dtype=float)
+    fallback_value = float(np.nanmean(sr_values)) if np.isfinite(sr_values).any() else 0.0
+    sr_values = np.nan_to_num(sr_values, nan=fallback_value, posinf=fallback_value, neginf=fallback_value)
+
+    gene_units = _native_units(context, side, time_index)
+    expression = spot_expr.expr.reindex(columns=gene_units, fill_value=0.0).to_numpy(dtype=float)
+    expression = np.maximum(expression, 0.0)
+    totals = expression.sum(axis=0)
+    weighted = expression.T @ sr_values
+    eps = 1e-12
+    gene_sr = np.divide(weighted, totals, out=np.full(len(gene_units), fallback_value, dtype=float), where=totals > eps)
+    spot_gene_set = set(map(str, spot_expr.expr.columns))
+    missing = [gene for gene in gene_units if gene not in spot_gene_set]
+    zero_expression = [gene for gene, total in zip(gene_units, totals) if float(total) <= eps]
+    return gene_sr.reshape(-1, 1), {
+        "stage": stage,
+        "side": side,
+        "feature_column_used": sr_column,
+        "feature_key": "Sr",
+        "feature_source": "developmental_sr",
+        "gene_sr_source": "expression_weighted_spot_sr",
+        "formula": "sum_s X_sg * Sr_s / (sum_s X_sg + eps)",
+        "spot_h5ad": str(spot_paths.h5ad),
+        "spot_developmental_feature_metadata": spot_table.metadata,
+        "spot_units": int(len(spot_expr.units)),
+        "gene_nodes": int(len(gene_units)),
+        "missing_gene_count": int(len(missing)),
+        "missing_gene_examples": missing[:10],
+        "zero_expression_gene_count": int(len(zero_expression)),
+        "zero_expression_gene_examples": zero_expression[:10],
+        "fallback_value": fallback_value,
+        "fallback_policy": "spot_sr_mean_for_missing_or_zero_expression_gene",
+        "no_sr_correlation_used": True,
+        "no_spatial_feature_used": True,
+    }
+
+
 def _build_sr_base(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFeatureResult:
     lower: List[np.ndarray] = []
     upper: List[np.ndarray] = []
     lower_meta: List[dict[str, object]] = []
     upper_meta: List[dict[str, object]] = []
     for idx, _stage in enumerate(map(str, context.time_points)):
-        lower_table = load_developmental_features_for_pij(context, cfg, idx, "lower")
-        upper_table = load_developmental_features_for_pij(context, cfg, idx, "upper")
-        lower_col = _select_sr_column(lower_table.values)
-        upper_col = _select_sr_column(upper_table.values)
-        lower.append(lower_table.values.loc[:, [lower_col]].to_numpy(dtype=float))
-        upper.append(upper_table.values.loc[:, [upper_col]].to_numpy(dtype=float))
-        lower_meta.append({**lower_table.metadata, "feature_column_used": lower_col})
-        upper_meta.append({**upper_table.metadata, "feature_column_used": upper_col})
+        if _is_gene_side(context, "lower"):
+            lower_values, lower_source = _build_gene_sr_from_spot_expression(context, cfg, "lower", idx)
+            lower.append(lower_values)
+            lower_meta.append(lower_source)
+        else:
+            lower_table = load_developmental_features_for_pij(context, cfg, idx, "lower")
+            lower_col = _select_sr_column(lower_table.values)
+            lower.append(lower_table.values.loc[:, [lower_col]].to_numpy(dtype=float))
+            lower_meta.append({**lower_table.metadata, "feature_column_used": lower_col})
+
+        if _is_gene_side(context, "upper"):
+            upper_values, upper_source = _build_gene_sr_from_spot_expression(context, cfg, "upper", idx)
+            upper.append(upper_values)
+            upper_meta.append(upper_source)
+        else:
+            upper_table = load_developmental_features_for_pij(context, cfg, idx, "upper")
+            upper_col = _select_sr_column(upper_table.values)
+            upper.append(upper_table.values.loc[:, [upper_col]].to_numpy(dtype=float))
+            upper_meta.append({**upper_table.metadata, "feature_column_used": upper_col})
+    name = "Sr:expression_weighted_sr" if _has_gene_pair(context) else "Sr:sr"
     return _BaseFeatureResult(
         lower=lower,
         upper=upper,
-        names=["Sr:sr"],
+        names=[name],
         metadata={
             "feature_key": "Sr",
             "feature_source": "developmental_sr",
+            "gene_pair_virtualization": bool(_has_gene_pair(context)),
             "lower_sources": lower_meta,
             "upper_sources": upper_meta,
         },
@@ -605,7 +1016,33 @@ def _build_sr_base(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFeat
 def _standardize_base(
     lower: Sequence[np.ndarray],
     upper: Sequence[np.ndarray],
+    *,
+    side_specific: bool = False,
 ) -> tuple[List[np.ndarray], List[np.ndarray], dict[str, object]]:
+    if side_specific:
+        def standardize_side(values: Sequence[np.ndarray]) -> tuple[List[np.ndarray], int]:
+            all_values = np.vstack([np.asarray(matrix, dtype=float) for matrix in values])
+            means = np.nanmean(all_values, axis=0, keepdims=True)
+            stds = np.nanstd(all_values, axis=0, keepdims=True)
+            out = [
+                np.divide(
+                    np.nan_to_num(matrix, nan=0.0) - means,
+                    stds,
+                    out=np.zeros_like(matrix, dtype=float),
+                    where=stds > 0,
+                )
+                for matrix in values
+            ]
+            return out, int(np.count_nonzero(np.squeeze(stds, axis=0) <= 0))
+
+        lower_out, lower_zero = standardize_side(lower)
+        upper_out, upper_zero = standardize_side(upper)
+        return lower_out, upper_out, {
+            "standardization": "side_specific_zscore_for_gene_pair",
+            "lower_zero_variance_columns": lower_zero,
+            "upper_zero_variance_columns": upper_zero,
+        }
+
     all_values = np.vstack([*lower, *upper])
     means = np.nanmean(all_values, axis=0, keepdims=True)
     stds = np.nanstd(all_values, axis=0, keepdims=True)
@@ -664,7 +1101,11 @@ def build_compare_feature_set(
 
     for key in keys:
         base = _build_base_feature(context, cfg, key)
-        lower_scaled, upper_scaled, standardization_metadata = _standardize_base(base.lower, base.upper)
+        lower_scaled, upper_scaled, standardization_metadata = _standardize_base(
+            base.lower,
+            base.upper,
+            side_specific=_has_gene_pair(context),
+        )
         weight = max(0.0, _feature_weight(key, cfg))
         scale = float(np.sqrt(weight))
         for idx in range(len(context.time_points)):

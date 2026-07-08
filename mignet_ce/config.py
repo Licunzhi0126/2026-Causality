@@ -303,6 +303,7 @@ class TemporalRunConfig:
     pij_feature_aggregation: str = "mean"
     pij_missing_feature_policy: str = "impute_mean"
     pij_feature_components: int | None = 30
+    compare_gene_expression_pca_components: int = 64
     pij_temperature: float = 1.0
     pij_expr_weight: float = 1.0
     pij_spatial_weight: float = 0.2
@@ -439,6 +440,8 @@ class TemporalRunConfig:
             raise ValueError("pij_feature_aggregation must be one of ['mean', 'median'].")
         if self.pij_missing_feature_policy not in {"error", "impute_mean", "ignore"}:
             raise ValueError("pij_missing_feature_policy must be one of ['error', 'impute_mean', 'ignore'].")
+        if self.compare_gene_expression_pca_components <= 0:
+            raise ValueError("compare_gene_expression_pca_components must be positive.")
         for field_name in (
             "pij_expr_weight",
             "pij_spatial_weight",

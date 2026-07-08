@@ -76,7 +76,41 @@ def _inspect_cci(paths) -> dict[str, object]:
     return row
 
 
-def _inspect_expression(paths) -> dict[str, object]:
+def _gene_units_from_grn(paths) -> list[str]:
+    if not paths.grn_edges.exists():
+        return []
+    frame = pd.read_csv(paths.grn_edges, usecols=["regulator", "target"])
+    return sorted(set(frame["regulator"].astype(str)) | set(frame["target"].astype(str)))
+
+
+def _inspect_expression(paths, *, gene_source_paths=None, gene_units: Sequence[str] | None = None, pca_components: int = 64) -> dict[str, object]:
+    if paths.layer == "gene":
+        source_paths = gene_source_paths or paths
+        row: dict[str, object] = {
+            "expression_input_mode": "virtual_from_spot_h5ad",
+            "h5ad": str(source_paths.h5ad),
+            "h5ad_exists": source_paths.h5ad.exists(),
+            "spot_h5ad": str(source_paths.h5ad),
+            "spot_h5ad_exists": source_paths.h5ad.exists(),
+            "gene_feature_requires_gene_h5ad": False,
+            "gene_expression_pca_components": int(pca_components),
+        }
+        if source_paths.h5ad.exists():
+            spot_genes = peek_h5ad_genes(source_paths.h5ad)
+            spot_gene_set = set(map(str, spot_genes))
+            genes = list(map(str, gene_units or []))
+            present = [gene for gene in genes if gene in spot_gene_set]
+            row.update(
+                {
+                    "spot_units": int(len(peek_h5ad_units(source_paths.h5ad))),
+                    "spot_genes": int(len(spot_genes)),
+                    "gene_graph_node_count": int(len(genes)),
+                    "gene_nodes_present_in_spot_h5ad": int(len(present)),
+                    "missing_gene_count": int(len(genes) - len(present)),
+                    "missing_gene_examples": [gene for gene in genes if gene not in spot_gene_set][:10],
+                }
+            )
+        return row
     row = {"h5ad": str(paths.h5ad), "h5ad_exists": paths.h5ad.exists()}
     if paths.h5ad.exists():
         row.update(
@@ -91,8 +125,17 @@ def _inspect_expression(paths) -> dict[str, object]:
 def _inspect_sr(root: Path | None, layer: str, organ: str, stage: str) -> dict[str, object]:
     if root is None:
         return {"development_feature_root": None, "exists": False}
-    path = Path(root) / layer / f"{organ}_{stage}_features.csv"
+    source_layer = "spot" if layer == "gene" else layer
+    path = Path(root) / source_layer / f"{organ}_{stage}_features.csv"
     row = {"path": str(path), "exists": path.exists()}
+    if layer == "gene":
+        row.update(
+            {
+                "sr_input_mode": "expression_weighted_spot_sr",
+                "sr_source_layer": "spot",
+                "gene_feature_requires_gene_developmental_features": False,
+            }
+        )
     if path.exists():
         frame = pd.read_csv(path, nrows=5)
         row.update({"columns": list(frame.columns), "preview_rows": int(len(frame))})
@@ -234,9 +277,22 @@ def _profile_root(
                 cci = _inspect_cci(paths)
                 grn_source_paths = resolver.paths("spot", organ, str(stage)) if layer == "gene" else None
                 lightcci = _inspect_lightcci_layer(paths, grn_source_paths=grn_source_paths)
+                gene_units = _gene_units_from_grn(grn_source_paths) if grn_source_paths is not None else None
                 adjacency_rows.append(cci)
                 lightcci_rows.append(lightcci)
-                expression_rows.append({"organ": organ, "layer": layer, "stage": str(stage), **_inspect_expression(paths)})
+                expression_rows.append(
+                    {
+                        "organ": organ,
+                        "layer": layer,
+                        "stage": str(stage),
+                        **_inspect_expression(
+                            paths,
+                            gene_source_paths=grn_source_paths,
+                            gene_units=gene_units,
+                            pca_components=cfg.compare_gene_expression_pca_components,
+                        ),
+                    }
+                )
                 sr_rows.append({"organ": organ, "layer": layer, "stage": str(stage), **_inspect_sr(development_feature_root, layer, organ, str(stage))})
                 graph_node_count = lightcci.get("graph_node_count")
                 if graph_node_count is not None:
@@ -370,6 +426,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--nmf-components", type=int, default=5)
     parser.add_argument("--laplacian-components", type=int, default=5)
+    parser.add_argument("--compare-gene-expression-pca-components", type=int, default=64)
     parser.add_argument("--ot-dist-k", type=int, default=50)
     parser.add_argument("--ot-sim-k", type=int, default=10)
     parser.add_argument("--profile-only", action="store_true")
@@ -396,6 +453,7 @@ def main() -> None:
         pij_method=args.pij_method,
         nmf_components=args.nmf_components,
         laplacian_components=args.laplacian_components,
+        compare_gene_expression_pca_components=args.compare_gene_expression_pca_components,
         ot_dist_k=args.ot_dist_k,
         ot_sim_k=args.ot_sim_k,
         development_feature_root=args.development_feature_root,

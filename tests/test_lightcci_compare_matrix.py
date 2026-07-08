@@ -7,11 +7,17 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
+if not hasattr(np, "unicode_"):
+    np.unicode_ = np.str_
+
+import anndata as ad
+
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.graph.builder import EDGE_COLUMNS, LayerGraph
 from mignet_ce.io.loaders import LayerDataResolver, read_commot_index
 from mignet_ce.mapping import OverlapMapping
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.networks.registry import get_network_builder
 from mignet_ce.pij.compare.features import read_compare_adjacency
 from mignet_ce.pij.registry import get_pij_method
 
@@ -166,6 +172,90 @@ def _cfg(tmp_path: Path, method: str, dev_root: Path | None = None) -> TemporalR
     )
 
 
+def _write_spot_h5ad(path: Path, units: list[str], genes: list[str], matrix: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    adata = ad.AnnData(
+        X=np.asarray(matrix, dtype=float),
+        obs=pd.DataFrame(index=pd.Index(units, name="unit_id")),
+        var=pd.DataFrame(index=pd.Index(genes, name="gene")),
+    )
+    adata.obsm["spatial"] = np.array([[float(idx), float(idx + 1)] for idx in range(len(units))])
+    adata.write_h5ad(path)
+
+
+def _write_spot_cci(data_root: Path, stage: str, units: list[str]) -> None:
+    cci_dir = data_root / "cci" / "spot"
+    cci_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"spot_heart_{stage}"
+    values = np.eye(len(units), dtype=float) + 0.1
+    sp.save_npz(cci_dir / f"{stem}_CCI_total.npz", sp.csr_matrix(values))
+    pd.DataFrame({"domain_id": units}).to_csv(cci_dir / f"{stem}_index.tsv", sep="\t", index=False)
+
+
+def _write_spot_grn(data_root: Path, stage: str) -> None:
+    grn_dir = data_root / "grn" / "spot" / f"spot_heart_{stage}"
+    grn_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "regulator": ["g1", "g_missing", "g2"],
+            "target": ["g2", "g1", "g1"],
+            "weight": [1.0, 0.5, 0.25],
+        }
+    ).to_csv(grn_dir / "grn_edges.csv", index=False)
+
+
+def _write_spot_sr(root: Path, stage: str, units: list[str], sr_values: list[float]) -> None:
+    path = root / "spot" / f"heart_{stage}_features.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"unit_id": units, "sr": sr_values}).to_csv(path, index=False)
+
+
+def _write_gene_spot_lightcci_inputs(tmp_path: Path) -> tuple[NetworkContext, TemporalRunConfig]:
+    data_root = tmp_path / "data"
+    dev_root = tmp_path / "developmental"
+    stages = ["11.5", "12.5"]
+    units = ["s1", "s2", "s3"]
+    genes = ["g1", "g2"]
+    expression_by_stage = {
+        "11.5": np.array([[10.0, 0.0], [0.0, 5.0], [1.0, 1.0]]),
+        "12.5": np.array([[5.0, 1.0], [2.0, 3.0], [0.0, 4.0]]),
+    }
+    sr_by_stage = {
+        "11.5": [0.1, 0.5, 0.9],
+        "12.5": [0.2, 0.6, 1.0],
+    }
+    for stage in stages:
+        _write_spot_h5ad(data_root / "spot" / "heart" / f"spot_heart_{stage}.h5ad", units, genes, expression_by_stage[stage])
+        _write_spot_cci(data_root, stage, units)
+        _write_spot_grn(data_root, stage)
+        _write_spot_sr(dev_root, stage, units, sr_by_stage[stage])
+
+    cfg = TemporalRunConfig(
+        data_root=data_root,
+        output_root=tmp_path / "out",
+        pij_archive_root=tmp_path / "pij",
+        organs=["heart"],
+        time_points=stages,
+        level_pairs=[VerticalPairSpec("gene", "spot")],
+        network_method="light_cci",
+        development_feature_root=dev_root,
+        pij_feature_components=2,
+        compare_gene_expression_pca_components=64,
+        pure_expression_max_genes=None,
+        pure_expression_gene_selection="all",
+        ot_dist_k=2,
+        ot_sim_k=2,
+        ot_max_iter=20,
+    )
+    context = get_network_builder("light_cci").build_pair_context(
+        "heart",
+        VerticalPairSpec("gene", "spot"),
+        cfg,
+        LayerDataResolver(data_root),
+    )
+    return context, cfg
+
+
 def test_sample_cci_total_npz_and_index_are_readable() -> None:
     sample_root = Path("data/mouse_embyro/E1S1_domain_factory_sample")
     if not sample_root.exists():
@@ -259,6 +349,58 @@ def test_compare_L_Sr_sot_cost_uses_joined_L_Sr_features(tmp_path: Path) -> None
     assert kernels is not None
     assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_source_feature_keys"] == ["L", "Sr"]
     assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_gene_spot_compare_E_uses_virtual_gene_expression_from_spot_h5ad(tmp_path: Path) -> None:
+    context, cfg = _write_gene_spot_lightcci_inputs(tmp_path)
+    cfg.pij_method = "compare_E_cos"
+
+    result, kernels = get_pij_method("compare_E_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.lower_features[0].shape == (3, 64)
+    assert result.upper_features[0].shape[0] == 3
+    metadata = result.method_metadata["feature_metadata"]["base_features"]["E"]
+    assert metadata["standardization"] == "side_specific_zscore_for_gene_pair"
+    assert metadata["lower"]["gene_expression_source"] == "virtual_from_spot_h5ad"
+    assert metadata["lower"]["gene_expression_representation"] == "gene_by_spot_pca"
+    assert metadata["lower"]["gene_expression_pca_components"] == 64
+    assert metadata["lower"]["gene_expression_temporal_alignment"] == "orthogonal_procrustes_to_first_timepoint"
+    assert metadata["lower"]["source_metadata"][0]["missing_gene_count"] == 1
+    assert Path(metadata["lower"]["source_metadata"][0]["spot_h5ad"]).parts[-3] == "spot"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])
+
+
+def test_gene_spot_compare_Sr_uses_expression_weighted_spot_sr(tmp_path: Path) -> None:
+    context, cfg = _write_gene_spot_lightcci_inputs(tmp_path)
+    cfg.pij_method = "compare_Sr_cos"
+
+    result, kernels = get_pij_method("compare_Sr_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.lower_features[0].shape == (3, 1)
+    metadata = result.method_metadata["feature_metadata"]["base_features"]["Sr"]
+    assert metadata["standardization"] == "side_specific_zscore_for_gene_pair"
+    assert metadata["lower_sources"][0]["gene_sr_source"] == "expression_weighted_spot_sr"
+    assert metadata["lower_sources"][0]["missing_gene_count"] == 1
+    assert metadata["lower_sources"][0]["zero_expression_gene_count"] == 1
+    assert Path(metadata["lower_sources"][0]["spot_developmental_feature_metadata"]["feature_path"]).parts[-2] == "spot"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_gene_spot_compare_E_Sr_runs_with_virtual_gene_features(tmp_path: Path) -> None:
+    context, cfg = _write_gene_spot_lightcci_inputs(tmp_path)
+    cfg.pij_method = "compare_E_Sr_cos"
+
+    result, kernels = get_pij_method("compare_E_Sr_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.lower_features[0].shape == (3, 65)
+    assert result.method_metadata["feature_metadata"]["base_features"]["E"]["lower"]["gene_expression_source"] == "virtual_from_spot_h5ad"
+    assert result.method_metadata["feature_metadata"]["base_features"]["Sr"]["lower_sources"][0]["gene_sr_source"] == "expression_weighted_spot_sr"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])
 
 
 def test_compare_main_lap_sr_spatial_sot_runs_on_lightcci_context(tmp_path: Path) -> None:
