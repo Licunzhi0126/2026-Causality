@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 import numpy as np
 import pandas as pd
@@ -24,6 +24,13 @@ from mignet_ce.mapping import (
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.clean_grn_cci_mix import CleanGRNCCIMixBuilder
 from mignet_ce.utils.coords import align_coords
+from mignet_ce.utils.progress import (
+    NullProgressReporter,
+    QueueProgressReporter,
+    emit_progress,
+    get_progress_queue_or_none,
+    set_progress_reporter,
+)
 
 
 def _build_expression_block(
@@ -47,6 +54,8 @@ class LayerBuildTask:
     graph_kwargs: dict[str, object]
     feature_log1p: bool
     cci_workers: int = 1
+    progress_queue: Any | None = None
+    progress_scope: dict[str, object] | None = None
 
 
 @dataclass
@@ -71,8 +80,31 @@ def _run_with_single_blas_thread(fn):
 
 def build_clean_expression_layer_task(task: LayerBuildTask) -> LayerBuildResult:
     def _build() -> LayerBuildResult:
+        if task.progress_queue is not None:
+            set_progress_reporter(QueueProgressReporter(task.progress_queue, default_scope=task.progress_scope))
+        else:
+            set_progress_reporter(NullProgressReporter())
+
+        emit_progress("layer_build_start", status="start", phase="network", stage=task.stage, layer=task.layer_name)
+        emit_progress("expression_read_start", phase="expression", stage=task.stage, layer=task.layer_name)
         expr = read_expression_h5ad(task.paths.h5ad)
+        emit_progress(
+            "expression_read_done",
+            phase="expression",
+            stage=task.stage,
+            layer=task.layer_name,
+            extra={"n_units": len(expr.units), "n_genes": len(expr.genes)},
+        )
+        emit_progress("assignment_load_start", phase="expression", stage=task.stage, layer=task.layer_name)
         assignments = load_unit_assignments(task.layer_name, expr, task.paths.spot_domain_map)
+        emit_progress(
+            "assignment_load_done",
+            phase="expression",
+            stage=task.stage,
+            layer=task.layer_name,
+            extra={"rows": int(len(assignments.rows))},
+        )
+        emit_progress("cci_graph_start", phase="network", stage=task.stage, layer=task.layer_name)
         graph = build_layer_cci_graph(
             layer_name=task.layer_name,
             time_point=task.stage,
@@ -81,13 +113,28 @@ def build_clean_expression_layer_task(task: LayerBuildTask) -> LayerBuildResult:
             cci_workers=task.cci_workers,
             **task.graph_kwargs,
         )
+        emit_progress(
+            "cci_graph_done",
+            phase="network",
+            stage=task.stage,
+            layer=task.layer_name,
+            extra={"units": len(graph.units), "inter_edges": int(len(graph.inter_edges))},
+        )
+        emit_progress("expression_block_start", phase="expression", stage=task.stage, layer=task.layer_name)
         expr_block = _build_expression_block(
             expr.expr,
             graph.units,
             task.shared_genes,
             task.feature_log1p,
         )
-        return LayerBuildResult(
+        emit_progress(
+            "expression_block_done",
+            phase="expression",
+            stage=task.stage,
+            layer=task.layer_name,
+            shape=list(expr_block.shape),
+        )
+        result = LayerBuildResult(
             stage=task.stage,
             layer_name=task.layer_name,
             expr_units=list(expr.units),
@@ -96,8 +143,29 @@ def build_clean_expression_layer_task(task: LayerBuildTask) -> LayerBuildResult:
             expr_block=expr_block,
             coords=align_coords(expr.coords, graph.units),
         )
+        emit_progress(
+            "layer_build_done",
+            status="done",
+            phase="network",
+            stage=task.stage,
+            layer=task.layer_name,
+            advance=1,
+            unit="layer",
+        )
+        return result
 
-    return _run_with_single_blas_thread(_build)
+    try:
+        return _run_with_single_blas_thread(_build)
+    except Exception as exc:
+        emit_progress(
+            "layer_build_error",
+            status="error",
+            phase="network",
+            stage=task.stage,
+            layer=task.layer_name,
+            message=f"{type(exc).__name__}: {exc}",
+        )
+        raise
 
 
 def _run_layer_build_tasks(tasks: list[LayerBuildTask], max_workers: int) -> list[LayerBuildResult]:
@@ -180,8 +248,22 @@ class CleanExpressionCCIMixBuilder(CleanGRNCCIMixBuilder):
                         graph_kwargs=dict(graph_kwargs),
                         feature_log1p=cfg.feature_log1p,
                         cci_workers=cci_workers,
+                        progress_queue=get_progress_queue_or_none(),
+                        progress_scope={
+                            "organ": organ,
+                            "pair": pair.label(),
+                            "lower_layer": pair.lower_layer,
+                            "upper_layer": pair.upper_layer,
+                        },
                     )
                 )
+        emit_progress(
+            "network_layers_total",
+            phase="network",
+            total=len(tasks),
+            unit="layer",
+            message=f"{pair.label()} has {len(tasks)} unique stage/layer tasks",
+        )
         layer_results = _run_layer_build_tasks(tasks, max_workers=cfg.max_workers)
         result_by_key = {
             (result.stage, result.layer_name): result

@@ -10,6 +10,7 @@ import pandas as pd
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.pij.base import TransitionKernels
 from mignet_ce.utils.matrix import save_transition_npz, serialize_metadata, transition_topk_table
+from mignet_ce.utils.progress import emit_progress
 
 
 def _json_default(value):
@@ -54,6 +55,9 @@ def export_pij_sparse_archive(
     native_units = feature_alignment_space == "native_units"
     units = list(map(str, stable_upper_units))
     unit_mapping_files: dict[str, dict[str, str]] = {}
+    matrix_total = len(kernels.p_lower) + len(kernels.p_upper)
+    emit_progress("pij_export_total", phase="export", total=matrix_total, unit="matrix", extra={"archive_dir": str(archive_dir)})
+    emit_progress("pij_export_units_start", phase="export", status="start", extra={"archive_dir": str(archive_dir)})
     if native_units:
         if lower_units_by_time is None or upper_units_by_time is None:
             raise ValueError("Native Pij export requires lower_units_by_time and upper_units_by_time.")
@@ -78,11 +82,18 @@ def export_pij_sparse_archive(
                     "unit": list(map(str, upper_stage_units)),
                 }
             ).to_csv(units_dir / f"upper_{stage}_units.csv", index=False)
+        emit_progress(
+            "pij_export_units_done",
+            phase="export",
+            status="done",
+            extra={"files": int(len(cfg.time_points) * 2)},
+        )
     else:
         pd.DataFrame({"index": range(len(units)), "unit": units}).to_csv(
             archive_dir / "units.csv",
             index=False,
         )
+        emit_progress("pij_export_units_done", phase="export", status="done", extra={"files": 1})
 
     for space, matrices in (("lower", kernels.p_lower), ("upper", kernels.p_upper)):
         diagnostics_by_pair = kernels.kernel_diagnostics.get(space, {})
@@ -113,9 +124,36 @@ def export_pij_sparse_archive(
             if not np.all(np.isfinite(matrix_array)):
                 raise ValueError(f"{space} Pij matrix for {source_stage}->{target_stage} contains non-finite values.")
 
-            save_transition_npz(archive_dir / f"{label}_{space}_P.npz", matrix_array)
+            matrix_path = archive_dir / f"{label}_{space}_P.npz"
+            emit_progress(
+                "pij_export_matrix_start",
+                phase="export",
+                space=space,
+                time_pair=f"{source_stage}->{target_stage}",
+                shape=list(matrix_array.shape),
+                extra={"path": str(matrix_path)},
+            )
+            save_transition_npz(matrix_path, matrix_array)
+            emit_progress(
+                "pij_export_matrix_done",
+                phase="export",
+                status="done",
+                space=space,
+                time_pair=f"{source_stage}->{target_stage}",
+                shape=list(matrix_array.shape),
+                advance=1,
+                unit="matrix",
+            )
 
             if int(cfg.export_pij_topk) > 0:
+                topk_path = archive_dir / f"{label}_{space}_P_topk.csv"
+                emit_progress(
+                    "pij_export_topk_start",
+                    phase="export",
+                    space=space,
+                    time_pair=f"{source_stage}->{target_stage}",
+                    extra={"path": str(topk_path), "top_k": int(cfg.export_pij_topk)},
+                )
                 transition_topk_table(
                     matrix_array,
                     source_units=source_units,
@@ -125,12 +163,21 @@ def export_pij_sparse_archive(
                     top_k=cfg.export_pij_topk,
                     pij_method=cfg.effective_pij_method(),
                     diagnostic_costs=diagnostics_by_pair.get((t0, t1)),
-                ).to_csv(archive_dir / f"{label}_{space}_P_topk.csv", index=False)
+                ).to_csv(topk_path, index=False)
+                emit_progress(
+                    "pij_export_topk_done",
+                    phase="export",
+                    status="done",
+                    space=space,
+                    time_pair=f"{source_stage}->{target_stage}",
+                    extra={"path": str(topk_path)},
+                )
             unit_mapping_files[f"{label}_{space}_P.npz"] = {
                 "source_units": source_mapping,
                 "target_units": target_mapping,
             }
 
+    emit_progress("pij_export_metadata_start", phase="export", status="start", extra={"path": str(archive_dir / "kernel_metadata.json")})
     metadata = {
         "archive_root": str(cfg.effective_pij_archive_root()),
         "data_root": str(cfg.data_root),
@@ -160,6 +207,7 @@ def export_pij_sparse_archive(
     }
     with (archive_dir / "kernel_metadata.json").open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, ensure_ascii=False, indent=2, default=_json_default)
+    emit_progress("pij_export_metadata_done", phase="export", status="done", extra={"path": str(archive_dir / "kernel_metadata.json")})
     return archive_dir
 
 

@@ -149,3 +149,31 @@ def build_entropic_ot_kernel(
         else:
             transport = _balanced_sinkhorn(kernel, max_iter=max_iter)
     return safe_row_normalize(transport)
+
+
+def build_entropic_ot_kernel_backend(
+    cost,
+    *,
+    cfg,
+    backend: str,
+) -> np.ndarray:
+    if backend == "cuda":
+        from mignet_ce.transition.gpu_backend import build_entropic_ot_kernel_gpu
+
+        return build_entropic_ot_kernel_gpu(
+            cost,
+            epsilon=cfg.pij_entropy_epsilon,
+            max_iter=cfg.ot_max_iter,
+            unbalanced=cfg.pij_use_unbalanced_ot,
+            mass_reg=cfg.pij_unbalanced_mass,
+        )
+    if backend != "cpu":
+        raise ValueError("backend must be one of: cpu, cuda")
+    return build_entropic_ot_kernel(
+        np.asarray(cost, dtype=float),
+        epsilon=cfg.pij_entropy_epsilon,
+        use_pot=True,
+        unbalanced=cfg.pij_use_unbalanced_ot,
+        mass_reg=cfg.pij_unbalanced_mass,
+        max_iter=cfg.ot_max_iter,
+    )

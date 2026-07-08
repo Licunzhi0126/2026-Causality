@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import traceback
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +19,14 @@ from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.registry import get_network_builder
 from mignet_ce.pij.base import MethodResult, TransitionKernels
 from mignet_ce.pij.registry import build_method_result_and_kernels
+from mignet_ce.utils.progress import (
+    ProgressMonitor,
+    QueueProgressReporter,
+    emit_progress,
+    get_progress_queue_or_none,
+    get_progress_reporter,
+    set_progress_reporter,
+)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -47,35 +56,66 @@ class VerticalMIGNetPipeline:
         _ensure_dir(self.cfg.output_root)
         summary_rows: List[Dict[str, object]] = []
         metrics_tables: List[pd.DataFrame] = []
-        for organ in self.cfg.organs:
-            for pair in self.cfg.normalized_pairs():
-                try:
-                    metrics = self.run_pair(organ=str(organ), pair=pair)
-                    metrics_tables.append(metrics)
-                    summary_rows.append(
-                        {
-                            "organ": organ,
-                            "lower_layer": pair.lower_layer,
-                            "upper_layer": pair.upper_layer,
-                            "network_method": self.cfg.network_method,
-                            "pij_method": self.cfg.effective_pij_method(),
-                            "status": "written",
-                            "metrics_rows": int(len(metrics)),
-                        }
-                    )
-                except Exception as exc:
-                    summary_rows.append(
-                        {
-                            "organ": organ,
-                            "lower_layer": pair.lower_layer,
-                            "upper_layer": pair.upper_layer,
-                            "network_method": self.cfg.network_method,
-                            "pij_method": self.cfg.effective_pij_method(),
-                            "status": "error",
-                            "reason": f"{type(exc).__name__}: {exc}",
-                            "traceback": traceback.format_exc(limit=8),
-                        }
-                    )
+        pairs = self.cfg.normalized_pairs()
+        progress_log = self.cfg.progress_log or (self.cfg.output_root / "progress.jsonl")
+        with ProgressMonitor(
+            enabled=self.cfg.progress,
+            total_pairs=len(self.cfg.organs) * len(pairs),
+            log_path=progress_log if self.cfg.progress else None,
+            refresh_interval=self.cfg.progress_refresh_interval,
+            process_safe=self.cfg.max_workers > 1,
+        ):
+            for organ in self.cfg.organs:
+                for pair in pairs:
+                    pair_start = time.perf_counter()
+                    emit_progress("pair_start", status="start", phase="pair", organ=str(organ), pair=pair.label())
+                    try:
+                        metrics = self.run_pair(organ=str(organ), pair=pair)
+                        metrics_tables.append(metrics)
+                        summary_rows.append(
+                            {
+                                "organ": organ,
+                                "lower_layer": pair.lower_layer,
+                                "upper_layer": pair.upper_layer,
+                                "network_method": self.cfg.network_method,
+                                "pij_method": self.cfg.effective_pij_method(),
+                                "status": "written",
+                                "metrics_rows": int(len(metrics)),
+                            }
+                        )
+                    except Exception as exc:
+                        emit_progress(
+                            "pair_error",
+                            status="error",
+                            phase="pair",
+                            organ=str(organ),
+                            pair=pair.label(),
+                            message=f"{type(exc).__name__}: {exc}",
+                            elapsed_seconds=time.perf_counter() - pair_start,
+                        )
+                        summary_rows.append(
+                            {
+                                "organ": organ,
+                                "lower_layer": pair.lower_layer,
+                                "upper_layer": pair.upper_layer,
+                                "network_method": self.cfg.network_method,
+                                "pij_method": self.cfg.effective_pij_method(),
+                                "status": "error",
+                                "reason": f"{type(exc).__name__}: {exc}",
+                                "traceback": traceback.format_exc(limit=8),
+                            }
+                        )
+                    else:
+                        emit_progress(
+                            "pair_done",
+                            status="done",
+                            phase="pair",
+                            organ=str(organ),
+                            pair=pair.label(),
+                            advance=1,
+                            unit="pair",
+                            elapsed_seconds=time.perf_counter() - pair_start,
+                        )
 
         metrics = pd.concat(metrics_tables, ignore_index=True) if metrics_tables else self._empty_metrics()
         metrics.to_csv(self.cfg.output_root / "metrics.csv", index=False)
@@ -118,71 +158,162 @@ class VerticalMIGNetPipeline:
         )
 
     def run_pair(self, organ: str, pair: VerticalPairSpec) -> pd.DataFrame:
-        context = self._build_pair_context(organ, pair)
+        scope = {
+            "organ": organ,
+            "pair": pair.label(),
+            "lower_layer": pair.lower_layer,
+            "upper_layer": pair.upper_layer,
+        }
+        previous_reporter = get_progress_reporter()
+        progress_queue = get_progress_queue_or_none()
+        if progress_queue is not None:
+            set_progress_reporter(QueueProgressReporter(progress_queue, default_scope=scope))
+        try:
+            return self._run_pair_scoped(organ=organ, pair=pair)
+        finally:
+            set_progress_reporter(previous_reporter)
+
+    def _emit_phase_start(self, stage: str) -> float:
+        emit_progress("pair_phase_start", status="start", phase="pair", stage=stage)
+        return time.perf_counter()
+
+    def _emit_phase_done(self, stage: str, started: float) -> None:
+        emit_progress(
+            "pair_phase_done",
+            status="done",
+            phase="pair",
+            stage=stage,
+            advance=1,
+            unit="phase",
+            elapsed_seconds=time.perf_counter() - started,
+        )
+
+    def _emit_phase_skip(self, stage: str, message: str) -> None:
+        emit_progress(
+            "pair_phase_skip",
+            status="skip",
+            phase="pair",
+            stage=stage,
+            message=message,
+            advance=1,
+            unit="phase",
+        )
+
+    def _emit_phase_error(self, stage: str, started: float, exc: Exception) -> None:
+        emit_progress(
+            "pair_phase_error",
+            status="error",
+            phase="pair",
+            stage=stage,
+            message=f"{type(exc).__name__}: {exc}",
+            elapsed_seconds=time.perf_counter() - started,
+        )
+
+    def _run_pair_scoped(self, organ: str, pair: VerticalPairSpec) -> pd.DataFrame:
+        phase_started = self._emit_phase_start("network_context")
+        try:
+            context = self._build_pair_context(organ, pair)
+        except Exception as exc:
+            self._emit_phase_error("network_context", phase_started, exc)
+            raise
+        self._emit_phase_done("network_context", phase_started)
+
         time_points = list(map(str, self.cfg.time_points))
         pairs = self.metrics_engine.build_time_pairs_all(time_points)
-        method_result, kernels = build_method_result_and_kernels(context, self.cfg, pairs)
-        export_kernels = kernels
-        if self.cfg.export_pij and export_kernels is None:
-            export_kernels = self._build_feature_transition_kernels(
-                method_result=method_result,
-                pairs=pairs,
-            )
 
-        metrics = self.metrics_engine.calculate_metrics_for_pairs(
-            lower_feat=method_result.lower_features,
-            upper_feat=method_result.upper_features,
-            time_points=time_points,
-            pairs=pairs,
-            organ=organ,
-            lower_layer=pair.lower_layer,
-            upper_layer=pair.upper_layer,
-            pij_method=self.cfg.effective_pij_method(),
-            pij_temperature=self.cfg.pij_temperature,
-            kraskov_k=self.cfg.kraskov_k,
-            precomputed_p_lower=export_kernels.p_lower if export_kernels is not None else None,
-            precomputed_p_upper=export_kernels.p_upper if export_kernels is not None else None,
-            pairwise_lower_features=method_result.pairwise_lower_features,
-            pairwise_upper_features=method_result.pairwise_upper_features,
-            feature_alignment_space=context.feature_alignment_space,
-        )
+        phase_started = self._emit_phase_start("pij")
+        try:
+            method_result, kernels = build_method_result_and_kernels(context, self.cfg, pairs)
+            export_kernels = kernels
+            if self.cfg.export_pij and export_kernels is None:
+                export_kernels = self._build_feature_transition_kernels(
+                    method_result=method_result,
+                    pairs=pairs,
+                )
+        except Exception as exc:
+            self._emit_phase_error("pij", phase_started, exc)
+            raise
+        self._emit_phase_done("pij", phase_started)
+
+        phase_started = self._emit_phase_start("metrics")
+        emit_progress("metrics_start", phase="metrics", status="start", total=len(pairs), unit="time_pair")
+        try:
+            metrics = self.metrics_engine.calculate_metrics_for_pairs(
+                lower_feat=method_result.lower_features,
+                upper_feat=method_result.upper_features,
+                time_points=time_points,
+                pairs=pairs,
+                organ=organ,
+                lower_layer=pair.lower_layer,
+                upper_layer=pair.upper_layer,
+                pij_method=self.cfg.effective_pij_method(),
+                pij_temperature=self.cfg.pij_temperature,
+                kraskov_k=self.cfg.kraskov_k,
+                precomputed_p_lower=export_kernels.p_lower if export_kernels is not None else None,
+                precomputed_p_upper=export_kernels.p_upper if export_kernels is not None else None,
+                pairwise_lower_features=method_result.pairwise_lower_features,
+                pairwise_upper_features=method_result.pairwise_upper_features,
+                feature_alignment_space=context.feature_alignment_space,
+            )
+        except Exception as exc:
+            emit_progress("metrics_error", phase="metrics", status="error", message=f"{type(exc).__name__}: {exc}")
+            self._emit_phase_error("metrics", phase_started, exc)
+            raise
+        emit_progress("metrics_done", phase="metrics", status="done", extra={"rows": int(len(metrics))})
+        self._emit_phase_done("metrics", phase_started)
         if "network_method" not in metrics.columns:
             metrics.insert(0, "network_method", context.network_method)
 
+        phase_started = self._emit_phase_start("pij_export")
         if self.cfg.export_pij and export_kernels is not None:
-            export_pij_sparse_archive(
-                cfg=self.cfg,
-                organ=organ,
-                pair=pair,
-                stable_upper_units=context.stable_upper_units,
-                kernels=export_kernels,
-                lower_units_by_time=context.lower_units_by_time,
-                upper_units_by_time=context.upper_units_by_time,
-                feature_alignment_space=context.feature_alignment_space,
-            )
+            try:
+                export_pij_sparse_archive(
+                    cfg=self.cfg,
+                    organ=organ,
+                    pair=pair,
+                    stable_upper_units=context.stable_upper_units,
+                    kernels=export_kernels,
+                    lower_units_by_time=context.lower_units_by_time,
+                    upper_units_by_time=context.upper_units_by_time,
+                    feature_alignment_space=context.feature_alignment_space,
+                )
+            except Exception as exc:
+                self._emit_phase_error("pij_export", phase_started, exc)
+                raise
+            self._emit_phase_done("pij_export", phase_started)
+        else:
+            self._emit_phase_skip("pij_export", "PIJ export is disabled.")
 
+        phase_started = self._emit_phase_start("pair_artifacts")
         if (
             self.cfg.export_pair_artifacts
             or self.cfg.export_graphs
             or self.cfg.export_raw_native_features
             or self.cfg.export_feature_diagnostics
         ):
-            self._export_pair_outputs(
-                organ=organ,
-                pair=pair,
-                network_context=context,
-                stable_upper_units=context.stable_upper_units,
-                shared_genes=context.shared_genes,
-                metrics=metrics,
-                coverage_tables=context.coverage_tables,
-                graph_summaries=context.graph_summaries,
-                method_result=method_result,
-                spot_correspondence_tables=context.spot_correspondence_tables,
-                overlap_edge_tables=context.overlap_edge_tables,
-                overlap_quality_summaries=context.overlap_quality_summaries,
-                upper_units_by_time=context.upper_units_by_time,
-                lower_units_by_time=context.lower_units_by_time,
-            )
+            try:
+                self._export_pair_outputs(
+                    organ=organ,
+                    pair=pair,
+                    network_context=context,
+                    stable_upper_units=context.stable_upper_units,
+                    shared_genes=context.shared_genes,
+                    metrics=metrics,
+                    coverage_tables=context.coverage_tables,
+                    graph_summaries=context.graph_summaries,
+                    method_result=method_result,
+                    spot_correspondence_tables=context.spot_correspondence_tables,
+                    overlap_edge_tables=context.overlap_edge_tables,
+                    overlap_quality_summaries=context.overlap_quality_summaries,
+                    upper_units_by_time=context.upper_units_by_time,
+                    lower_units_by_time=context.lower_units_by_time,
+                )
+            except Exception as exc:
+                self._emit_phase_error("pair_artifacts", phase_started, exc)
+                raise
+            self._emit_phase_done("pair_artifacts", phase_started)
+        else:
+            self._emit_phase_skip("pair_artifacts", "Pair artifact export is disabled.")
         return metrics
 
     def _build_feature_transition_kernels(

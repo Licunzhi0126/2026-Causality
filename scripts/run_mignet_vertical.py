@@ -133,6 +133,52 @@ def build_argparser() -> argparse.ArgumentParser:
         default=1,
         help="Global worker budget inside one organ/pair. Pair parallelism remains disabled.",
     )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Show progress bars and structured progress messages during vertical MIGNet runs.",
+    )
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        default=None,
+        help="Optional JSONL progress log path. If --progress is enabled and this is omitted, write output_root/progress.jsonl.",
+    )
+    parser.add_argument(
+        "--progress-refresh-interval",
+        type=float,
+        default=0.5,
+        help="Minimum refresh interval in seconds for tqdm progress bars.",
+    )
+    parser.add_argument(
+        "--pij-device",
+        choices=["cpu", "cuda", "auto"],
+        default="cpu",
+        help=(
+            "Device backend for PIJ dense expression cost and Sinkhorn OT. "
+            "cpu keeps current behavior; cuda forces CUDA if available; "
+            "auto uses CUDA only for large PIJ kernels when CUDA is available."
+        ),
+    )
+    parser.add_argument(
+        "--pij-gpu-dtype",
+        choices=["float32", "float64"],
+        default="float32",
+        help="CUDA dtype for PIJ expression cost and Sinkhorn. float32 is recommended to save VRAM.",
+    )
+    parser.add_argument(
+        "--pij-gpu-min-entries",
+        type=int,
+        default=5_000_000,
+        help="Use CUDA in auto mode only when n_source * n_target is at least this value.",
+    )
+    parser.add_argument(
+        "--no-pij-gpu-fallback-cpu",
+        dest="pij_gpu_fallback_cpu",
+        action="store_false",
+        default=True,
+        help="Disable CPU fallback when CUDA is unavailable or CUDA OOM happens.",
+    )
     return parser
 
 
@@ -221,6 +267,13 @@ def main() -> None:
         export_raw_native_features=args.export_raw_native_features,
         export_feature_diagnostics=args.export_feature_diagnostics,
         max_workers=args.max_workers,
+        progress=args.progress,
+        progress_log=args.progress_log,
+        progress_refresh_interval=args.progress_refresh_interval,
+        pij_device=args.pij_device,
+        pij_gpu_dtype=args.pij_gpu_dtype,
+        pij_gpu_min_entries=args.pij_gpu_min_entries,
+        pij_gpu_fallback_cpu=args.pij_gpu_fallback_cpu,
     )
     metrics = VerticalMIGNetPipeline(cfg).run()
     if metrics.empty:

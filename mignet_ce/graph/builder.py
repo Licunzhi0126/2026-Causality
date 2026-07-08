@@ -18,6 +18,7 @@ from mignet_ce.io.loaders import (
     read_grn_edges,
     read_unit_grn_edges,
 )
+from mignet_ce.utils.progress import emit_progress
 
 
 EDGE_COLUMNS = [
@@ -185,44 +186,17 @@ def _manifest_chunks(manifest: pd.DataFrame, chunk_size: int) -> List[pd.DataFra
     ]
 
 
-def _scan_commot_score_range(
+def _scan_commot_score_range_chunk(
     manifest: pd.DataFrame,
     lr_dir: Path,
     cci_min: float,
-    workers: int = 1,
-    chunk_size: int = 64,
-) -> Tuple[Optional[float], Optional[float], int]:
-    if workers > 1 and len(manifest) > 1:
-        chunks = _manifest_chunks(manifest, chunk_size)
-        actual_workers = max(1, min(int(workers), len(chunks)))
-        results: list[Tuple[Optional[float], Optional[float], int] | None] = [None] * len(chunks)
-        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
-            future_to_index = {
-                pool.submit(
-                    _scan_commot_score_range,
-                    chunk,
-                    lr_dir,
-                    cci_min,
-                    1,
-                    chunk_size,
-                ): index
-                for index, chunk in enumerate(chunks)
-            }
-            for future in as_completed(future_to_index):
-                results[future_to_index[future]] = future.result()
-        vmins = [result[0] for result in results if result is not None and result[0] is not None]
-        vmaxs = [result[1] for result in results if result is not None and result[1] is not None]
-        kept_nnz = sum(result[2] for result in results if result is not None)
-        return (
-            min(vmins) if vmins else None,
-            max(vmaxs) if vmaxs else None,
-            int(kept_nnz),
-        )
-
+) -> Tuple[Optional[float], Optional[float], int, int]:
     vmin: Optional[float] = None
     vmax: Optional[float] = None
     kept_nnz = 0
+    processed_files = 0
     for row in manifest.itertuples(index=False):
+        processed_files += 1
         matrix_path = lr_dir / str(row.filename)
         mat = sp.load_npz(matrix_path)
         if mat.nnz == 0:
@@ -237,6 +211,58 @@ def _scan_commot_score_range(
         current_max = float(data.max())
         vmin = current_min if vmin is None else min(vmin, current_min)
         vmax = current_max if vmax is None else max(vmax, current_max)
+    return vmin, vmax, kept_nnz, processed_files
+
+
+def _scan_commot_score_range(
+    manifest: pd.DataFrame,
+    lr_dir: Path,
+    cci_min: float,
+    workers: int = 1,
+    chunk_size: int = 64,
+) -> Tuple[Optional[float], Optional[float], int]:
+    if workers > 1 and len(manifest) > 1:
+        chunks = _manifest_chunks(manifest, chunk_size)
+        actual_workers = max(1, min(int(workers), len(chunks)))
+        results: list[Tuple[Optional[float], Optional[float], int, int] | None] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
+            future_to_index = {
+                pool.submit(
+                    _scan_commot_score_range_chunk,
+                    chunk,
+                    lr_dir,
+                    cci_min,
+                ): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(future_to_index):
+                result = future.result()
+                results[future_to_index[future]] = result
+                emit_progress(
+                    "cci_scan_advance",
+                    phase="cci_scan",
+                    advance=int(result[3]),
+                    unit="file",
+                    nnz=int(result[2]),
+                )
+        vmins = [result[0] for result in results if result is not None and result[0] is not None]
+        vmaxs = [result[1] for result in results if result is not None and result[1] is not None]
+        kept_nnz = sum(result[2] for result in results if result is not None)
+        return (
+            min(vmins) if vmins else None,
+            max(vmaxs) if vmaxs else None,
+            int(kept_nnz),
+        )
+
+    vmin, vmax, kept_nnz, processed_files = _scan_commot_score_range_chunk(manifest, lr_dir, cci_min)
+    if processed_files:
+        emit_progress(
+            "cci_scan_advance",
+            phase="cci_scan",
+            advance=int(processed_files),
+            unit="file",
+            nnz=int(kept_nnz),
+        )
     return vmin, vmax, kept_nnz
 
 
@@ -407,7 +433,7 @@ def _build_intra_edges(
     return (edge_table, metadata) if return_metadata else edge_table
 
 
-def _build_commot_inter_edges(
+def _build_commot_inter_edges_chunk(
     layer_name: str,
     manifest: pd.DataFrame,
     lr_dir: Path,
@@ -427,51 +453,11 @@ def _build_commot_inter_edges(
     inter_grn_pair_policy: str,
     use_expression_mask: bool = True,
     require_coords: bool = True,
-    workers: int = 1,
-    chunk_size: int = 64,
-) -> pd.DataFrame:
-    if workers > 1 and len(manifest) > 1:
-        chunks = _manifest_chunks(manifest, chunk_size)
-        actual_workers = max(1, min(int(workers), len(chunks)))
-        parts: list[pd.DataFrame | None] = [None] * len(chunks)
-        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
-            future_to_index = {
-                pool.submit(
-                    _build_commot_inter_edges,
-                    layer_name=layer_name,
-                    manifest=chunk,
-                    lr_dir=lr_dir,
-                    index_names=index_names,
-                    expr=expr,
-                    coords=coords,
-                    active_mask=active_mask,
-                    unit_index=unit_index,
-                    gene_to_idx=gene_to_idx,
-                    pair_lookup=pair_lookup,
-                    score_range=score_range,
-                    cci_min=cci_min,
-                    require_target_expression=require_target_expression,
-                    inter_influence_mode=inter_influence_mode,
-                    inter_additive_cci_weight=inter_additive_cci_weight,
-                    inter_additive_grn_weight=inter_additive_grn_weight,
-                    inter_grn_pair_policy=inter_grn_pair_policy,
-                    use_expression_mask=use_expression_mask,
-                    require_coords=require_coords,
-                    workers=1,
-                    chunk_size=chunk_size,
-                ): index
-                for index, chunk in enumerate(chunks)
-            }
-            for future in as_completed(future_to_index):
-                parts[future_to_index[future]] = future.result()
-        non_empty = [part for part in parts if part is not None and not part.empty]
-        if not non_empty:
-            return pd.DataFrame(columns=EDGE_COLUMNS)
-        return pd.concat(non_empty, ignore_index=True)
-
+) -> Tuple[pd.DataFrame, int]:
+    processed_files = int(len(manifest))
     vmin, vmax, kept_nnz = score_range
     if kept_nnz == 0 or vmin is None or vmax is None:
-        return pd.DataFrame(columns=EDGE_COLUMNS)
+        return pd.DataFrame(columns=EDGE_COLUMNS), processed_files
 
     records: List[Tuple] = []
     for row in manifest.itertuples(index=False):
@@ -567,7 +553,107 @@ def _build_commot_inter_edges(
                             influence_score,
                         )
                     )
-    return pd.DataFrame.from_records(records, columns=EDGE_COLUMNS)
+    return pd.DataFrame.from_records(records, columns=EDGE_COLUMNS), processed_files
+
+
+def _build_commot_inter_edges(
+    layer_name: str,
+    manifest: pd.DataFrame,
+    lr_dir: Path,
+    index_names: Sequence[str],
+    expr: pd.DataFrame,
+    coords: pd.DataFrame,
+    active_mask: np.ndarray,
+    unit_index: Dict[str, int],
+    gene_to_idx: Dict[str, int],
+    pair_lookup: Dict[Tuple[str, str], Tuple[float, float]],
+    score_range: Tuple[Optional[float], Optional[float], int],
+    cci_min: float,
+    require_target_expression: bool,
+    inter_influence_mode: str,
+    inter_additive_cci_weight: float,
+    inter_additive_grn_weight: float,
+    inter_grn_pair_policy: str,
+    use_expression_mask: bool = True,
+    require_coords: bool = True,
+    workers: int = 1,
+    chunk_size: int = 64,
+) -> pd.DataFrame:
+    if workers > 1 and len(manifest) > 1:
+        chunks = _manifest_chunks(manifest, chunk_size)
+        actual_workers = max(1, min(int(workers), len(chunks)))
+        parts: list[pd.DataFrame | None] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=actual_workers) as pool:
+            future_to_index = {
+                pool.submit(
+                    _build_commot_inter_edges_chunk,
+                    layer_name=layer_name,
+                    manifest=chunk,
+                    lr_dir=lr_dir,
+                    index_names=index_names,
+                    expr=expr,
+                    coords=coords,
+                    active_mask=active_mask,
+                    unit_index=unit_index,
+                    gene_to_idx=gene_to_idx,
+                    pair_lookup=pair_lookup,
+                    score_range=score_range,
+                    cci_min=cci_min,
+                    require_target_expression=require_target_expression,
+                    inter_influence_mode=inter_influence_mode,
+                    inter_additive_cci_weight=inter_additive_cci_weight,
+                    inter_additive_grn_weight=inter_additive_grn_weight,
+                    inter_grn_pair_policy=inter_grn_pair_policy,
+                    use_expression_mask=use_expression_mask,
+                    require_coords=require_coords,
+                ): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(future_to_index):
+                part, processed_files = future.result()
+                parts[future_to_index[future]] = part
+                emit_progress(
+                    "cci_build_advance",
+                    phase="cci_build",
+                    advance=int(processed_files),
+                    unit="file",
+                    nnz=int(len(part)),
+                )
+        non_empty = [part for part in parts if part is not None and not part.empty]
+        if not non_empty:
+            return pd.DataFrame(columns=EDGE_COLUMNS)
+        return pd.concat(non_empty, ignore_index=True)
+
+    edge_table, processed_files = _build_commot_inter_edges_chunk(
+        layer_name=layer_name,
+        manifest=manifest,
+        lr_dir=lr_dir,
+        index_names=index_names,
+        expr=expr,
+        coords=coords,
+        active_mask=active_mask,
+        unit_index=unit_index,
+        gene_to_idx=gene_to_idx,
+        pair_lookup=pair_lookup,
+        score_range=score_range,
+        cci_min=cci_min,
+        require_target_expression=require_target_expression,
+        inter_influence_mode=inter_influence_mode,
+        inter_additive_cci_weight=inter_additive_cci_weight,
+        inter_additive_grn_weight=inter_additive_grn_weight,
+        inter_grn_pair_policy=inter_grn_pair_policy,
+        use_expression_mask=use_expression_mask,
+        require_coords=require_coords,
+    )
+    if processed_files:
+        emit_progress(
+            "cci_build_advance",
+            phase="cci_build",
+            advance=int(processed_files),
+            unit="file",
+            nnz=int(len(edge_table)),
+        )
+    return edge_table
 
 
 def build_layer_cci_graph(
@@ -586,8 +672,27 @@ def build_layer_cci_graph(
 ) -> LayerGraph:
     expr = expression.expr.loc[:, list(shared_genes)].copy()
     active = expr.to_numpy() > expr_threshold
+    emit_progress("cci_manifest_read_start", phase="cci_scan", stage=time_point, layer=layer_name)
     manifest = read_commot_manifest(paths.cci_manifest)
     index_names = read_commot_index(paths.cci_index)
+    emit_progress(
+        "cci_manifest_read_done",
+        phase="cci_scan",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        extra={"index_size": len(index_names)},
+    )
+    emit_progress(
+        "cci_scan_total",
+        phase="cci_scan",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        workers=cci_workers,
+    )
     score_range = _scan_commot_score_range(
         manifest,
         paths.cci_lr_dir,
@@ -595,8 +700,18 @@ def build_layer_cci_graph(
         workers=cci_workers,
         chunk_size=cci_chunk_size,
     )
+    emit_progress("cci_scan_done", phase="cci_scan", stage=time_point, layer=layer_name, nnz=score_range[2])
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
+    emit_progress(
+        "cci_build_total",
+        phase="cci_build",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        workers=cci_workers,
+    )
     inter = _build_commot_inter_edges(
         layer_name=layer_name,
         manifest=manifest,
@@ -620,6 +735,7 @@ def build_layer_cci_graph(
         workers=cci_workers,
         chunk_size=cci_chunk_size,
     )
+    emit_progress("cci_build_done", phase="cci_build", stage=time_point, layer=layer_name, nnz=len(inter))
     return LayerGraph(
         layer=layer_name,
         time_point=time_point,
@@ -695,8 +811,27 @@ def build_layer_graph(
     regulator_to_targets = _make_regulator_dict(grn)
     unit_regulator_to_targets = None if unit_grn is None else _make_unit_regulator_dict(unit_grn)
     pair_lookup = _make_pair_lookup(grn)
+    emit_progress("cci_manifest_read_start", phase="cci_scan", stage=time_point, layer=layer_name)
     manifest = read_commot_manifest(paths.cci_manifest)
     index_names = read_commot_index(paths.cci_index)
+    emit_progress(
+        "cci_manifest_read_done",
+        phase="cci_scan",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        extra={"index_size": len(index_names)},
+    )
+    emit_progress(
+        "cci_scan_total",
+        phase="cci_scan",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        workers=cci_workers,
+    )
     score_range = _scan_commot_score_range(
         manifest,
         paths.cci_lr_dir,
@@ -704,6 +839,7 @@ def build_layer_graph(
         workers=cci_workers,
         chunk_size=cci_chunk_size,
     )
+    emit_progress("cci_scan_done", phase="cci_scan", stage=time_point, layer=layer_name, nnz=score_range[2])
     unit_index = {unit: idx for idx, unit in enumerate(expr.index.tolist())}
     gene_to_idx = {gene: idx for idx, gene in enumerate(expr.columns.tolist())}
 
@@ -731,6 +867,15 @@ def build_layer_graph(
     else:
         intra = pd.DataFrame(columns=EDGE_COLUMNS)
         intra_metadata = {}
+    emit_progress(
+        "cci_build_total",
+        phase="cci_build",
+        stage=time_point,
+        layer=layer_name,
+        total=len(manifest),
+        unit="file",
+        workers=cci_workers,
+    )
     inter = _build_commot_inter_edges(
         layer_name=layer_name,
         manifest=manifest,
@@ -754,6 +899,7 @@ def build_layer_graph(
         workers=cci_workers,
         chunk_size=cci_chunk_size,
     )
+    emit_progress("cci_build_done", phase="cci_build", stage=time_point, layer=layer_name, nnz=len(inter))
     return LayerGraph(
         layer=layer_name,
         time_point=time_point,

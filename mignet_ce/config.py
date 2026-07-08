@@ -303,6 +303,13 @@ class TemporalRunConfig:
     export_feature_diagnostics: bool = False
     export_pij_topk: int = 0
     max_workers: int = 1
+    progress: bool = False
+    progress_log: Path | None = None
+    progress_refresh_interval: float = 0.5
+    pij_device: str = "cpu"
+    pij_gpu_dtype: str = "float32"
+    pij_gpu_min_entries: int = 5_000_000
+    pij_gpu_fallback_cpu: bool = True
 
     def normalized_pairs(self) -> List[VerticalPairSpec]:
         return [pair if isinstance(pair, VerticalPairSpec) else VerticalPairSpec.parse(str(pair)) for pair in self.level_pairs]
@@ -325,6 +332,14 @@ class TemporalRunConfig:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
+        if self.progress_refresh_interval <= 0:
+            raise ValueError("progress_refresh_interval must be positive.")
+        if self.pij_device not in {"cpu", "cuda", "auto"}:
+            raise ValueError("pij_device must be one of: cpu, cuda, auto")
+        if self.pij_gpu_dtype not in {"float32", "float64"}:
+            raise ValueError("pij_gpu_dtype must be one of: float32, float64")
+        if self.pij_gpu_min_entries < 0:
+            raise ValueError("pij_gpu_min_entries must be non-negative")
         if not isinstance(self.native_intra_use_expression_mask, bool):
             raise ValueError("native_intra_use_expression_mask must be bool.")
         if not isinstance(self.native_cci_inter_use_expression_mask, bool):
