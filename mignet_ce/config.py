@@ -117,6 +117,39 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
     ),
 }
 
+COMPARE_PIJ_METHODS: Tuple[str, ...] = (
+    "compare_E_cos",
+    "compare_E_kl",
+    "compare_E_sot",
+    "compare_N_cos",
+    "compare_N_kl",
+    "compare_N_sot",
+    "compare_L_cos",
+    "compare_L_kl",
+    "compare_L_sot",
+    "compare_Sr_cos",
+    "compare_Sr_kl",
+    "compare_Sr_sot",
+    "compare_E_N_cos",
+    "compare_E_N_kl",
+    "compare_E_N_sot",
+    "compare_E_L_cos",
+    "compare_E_L_kl",
+    "compare_E_L_sot",
+    "compare_E_Sr_cos",
+    "compare_E_Sr_kl",
+    "compare_E_Sr_sot",
+    "compare_N_L_cos",
+    "compare_N_L_kl",
+    "compare_N_L_sot",
+    "compare_N_Sr_cos",
+    "compare_N_Sr_kl",
+    "compare_N_Sr_sot",
+    "compare_L_Sr_cos",
+    "compare_L_Sr_kl",
+    "compare_L_Sr_sot",
+)
+
 PIJ_METHODS = {
     "joint_nmf",
     "laplacian",
@@ -139,6 +172,7 @@ PIJ_METHODS = {
     "expr_pseudotime_sr_energy_spatial_ot",
     "velocity_ot",
     "development_ot",
+    *COMPARE_PIJ_METHODS,
 }
 PIJ_METHOD_PRESETS = {
     "core": ("joint_nmf", "laplacian", "3dot", "slat"),
@@ -174,6 +208,7 @@ PIJ_METHOD_PRESETS = {
         "sr_expression_ot",
         "pseudotime_expression_ot",
     ),
+    "lightcci_compare_matrix": COMPARE_PIJ_METHODS,
     "all": (
         "joint_nmf",
         "laplacian",
@@ -196,6 +231,7 @@ PIJ_METHOD_PRESETS = {
         "expr_pseudotime_sr_energy_spatial_ot",
         "velocity_ot",
         "development_ot",
+        *COMPARE_PIJ_METHODS,
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
@@ -223,6 +259,7 @@ DEVELOPMENT_PIJ_METHODS = {
     "expr_pseudotime_sr_energy_spatial_ot",
     "velocity_ot",
     "development_ot",
+    *(method for method in COMPARE_PIJ_METHODS if "_Sr" in method),
 }
 
 
