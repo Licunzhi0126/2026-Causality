@@ -23,6 +23,7 @@ from mignet_ce.pij.compare.compare_L_Sr_cos import CompareLSrCosPijMethod
 from mignet_ce.pij.compare.compare_L_Sr_kl import CompareLSrKlPijMethod
 from mignet_ce.pij.compare.compare_L_Sr_sot import CompareLSrSotPijMethod
 from mignet_ce.pij.compare.compare_L_sot import CompareLSotPijMethod
+from mignet_ce.pij.compare.compare_main_lap_sr_spatial_sot import CompareMainLapSrSpatialSotPijMethod
 from mignet_ce.pij.compare.compare_N_cos import CompareNCosPijMethod
 from mignet_ce.pij.compare.compare_N_kl import CompareNKlPijMethod
 from mignet_ce.pij.compare.compare_N_L_cos import CompareNLCosPijMethod
@@ -110,6 +111,7 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_L_Sr_cos": CompareLSrCosPijMethod,
     "compare_L_Sr_kl": CompareLSrKlPijMethod,
     "compare_L_Sr_sot": CompareLSrSotPijMethod,
+    "compare_main_lap_sr_spatial_sot": CompareMainLapSrSpatialSotPijMethod,
 }
 
 

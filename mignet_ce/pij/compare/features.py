@@ -11,6 +11,7 @@ from scipy.sparse.linalg import ArpackNoConvergence, eigsh
 
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.features import aggregate_lower_features_to_upper, align_upper_features
+from mignet_ce.graph.builder import LayerGraph
 from mignet_ce.io.developmental_features import load_developmental_features_for_pij
 from mignet_ce.io.loaders import (
     LayerDataResolver,
@@ -134,6 +135,66 @@ def read_compare_adjacency(
     }
 
 
+def adjacency_from_lightcci_graph(
+    graph: LayerGraph,
+    units: Sequence[str] | None = None,
+    *,
+    cci_min: float = 0.0,
+) -> tuple[sp.csr_matrix, dict[str, object]]:
+    graph_units = list(map(str, graph.units))
+    target_units = list(map(str, units if units is not None else graph_units))
+    stored = graph.metadata.get("adjacency_csr")
+    if stored is not None:
+        matrix = stored if sp.issparse(stored) else sp.csr_matrix(stored)
+        if matrix.shape != (len(graph_units), len(graph_units)):
+            raise ValueError(
+                f"LightCCI graph adjacency shape {matrix.shape} does not match graph units {len(graph_units)} "
+                f"for {graph.layer} {graph.time_point}."
+            )
+        aligned = _align_square_matrix(matrix, graph_units, target_units)
+    else:
+        index = {unit: idx for idx, unit in enumerate(target_units)}
+        rows: list[int] = []
+        cols: list[int] = []
+        data: list[float] = []
+        for table in (graph.intra_edges, graph.inter_edges):
+            if table.empty or not {"src_unit", "dst_unit", "influence_score"}.issubset(table.columns):
+                continue
+            work = table.loc[:, ["src_unit", "dst_unit", "influence_score"]].copy()
+            work["src_unit"] = work["src_unit"].astype(str)
+            work["dst_unit"] = work["dst_unit"].astype(str)
+            work["influence_score"] = pd.to_numeric(work["influence_score"], errors="coerce")
+            work = work.dropna(subset=["influence_score"])
+            for row in work.itertuples(index=False):
+                src = index.get(str(row.src_unit))
+                dst = index.get(str(row.dst_unit))
+                if src is None or dst is None:
+                    continue
+                value = float(row.influence_score)
+                if value <= 0:
+                    continue
+                rows.append(src)
+                cols.append(dst)
+                data.append(value)
+        aligned = sp.coo_matrix((data, (rows, cols)), shape=(len(target_units), len(target_units)), dtype=float).tocsr()
+    aligned = _as_nonnegative_csr(aligned, cci_min=cci_min)
+    return aligned, {
+        "source": "light_cci_graph",
+        "layer": graph.layer,
+        "stage": str(graph.time_point),
+        "edge_source": graph.metadata.get("edge_source"),
+        "adjacency_source": graph.metadata.get("adjacency_source"),
+        "adjacency_path": graph.metadata.get("adjacency_path"),
+        "layer_semantics": graph.metadata.get("layer_semantics"),
+        "uses_grn": bool(graph.metadata.get("uses_grn", False)),
+        "uses_cci": bool(graph.metadata.get("uses_cci", False)),
+        "shape": list(aligned.shape),
+        "nnz": int(aligned.nnz),
+        "requested_units": int(len(target_units)),
+        "graph_units": int(len(graph_units)),
+    }
+
+
 def _context_units(context: NetworkContext, side: str, time_index: int) -> List[str]:
     if context.feature_alignment_space != "native_units":
         return list(map(str, context.stable_upper_units))
@@ -198,7 +259,7 @@ def _build_expression_base(context: NetworkContext, cfg: TemporalRunConfig) -> _
     upper_raw: List[np.ndarray] = []
     source_metadata: List[dict[str, object]] = []
     use_context_fallback = False
-    for stage in map(str, context.time_points):
+    for idx, stage in enumerate(map(str, context.time_points)):
         lower_paths = _paths_for_side(resolver, context, "lower", stage)
         upper_paths = _paths_for_side(resolver, context, "upper", stage)
         if not lower_paths.h5ad.exists() or not upper_paths.h5ad.exists():
@@ -214,8 +275,17 @@ def _build_expression_base(context: NetworkContext, cfg: TemporalRunConfig) -> _
                 f"Expression feature E is missing shared genes for {stage}: "
                 f"lower_missing={missing_lower[:5]}, upper_missing={missing_upper[:5]}."
             )
-        lower_raw.append(lower_expr.expr.loc[:, genes].to_numpy(dtype=float))
-        upper_raw.append(upper_expr.expr.loc[:, genes].to_numpy(dtype=float))
+        lower_units = _native_units(context, "lower", idx)
+        upper_units = _native_units(context, "upper", idx)
+        missing_lower_units = [unit for unit in lower_units if unit not in lower_expr.expr.index]
+        missing_upper_units = [unit for unit in upper_units if unit not in upper_expr.expr.index]
+        if missing_lower_units or missing_upper_units:
+            raise ValueError(
+                f"Expression feature E cannot align h5ad rows to context units for {stage}: "
+                f"lower_missing_units={missing_lower_units[:5]}, upper_missing_units={missing_upper_units[:5]}."
+            )
+        lower_raw.append(lower_expr.expr.loc[lower_units, genes].to_numpy(dtype=float))
+        upper_raw.append(upper_expr.expr.loc[upper_units, genes].to_numpy(dtype=float))
         source_metadata.append(
             {
                 "stage": stage,
@@ -297,6 +367,21 @@ def _adjacency_lists_for_side(
     cfg: TemporalRunConfig,
     side: str,
 ) -> tuple[List[sp.csr_matrix], List[dict[str, object]]]:
+    graph_list = context.lower_graphs if side == "lower" else context.upper_graphs
+    if context.network_method == "light_cci" and graph_list:
+        matrices: List[sp.csr_matrix] = []
+        metadata: List[dict[str, object]] = []
+        if len(graph_list) < len(context.time_points):
+            raise ValueError(
+                f"LightCCI context has {len(graph_list)} {side} graphs for {len(context.time_points)} time points."
+            )
+        for idx, graph in enumerate(graph_list[: len(context.time_points)]):
+            units = _native_units(context, side, idx)
+            matrix, matrix_metadata = adjacency_from_lightcci_graph(graph, units, cci_min=cfg.cci_min)
+            matrices.append(matrix)
+            metadata.append(matrix_metadata)
+        return matrices, metadata
+
     resolver = LayerDataResolver(cfg.data_root)
     matrices: List[sp.csr_matrix] = []
     metadata: List[dict[str, object]] = []

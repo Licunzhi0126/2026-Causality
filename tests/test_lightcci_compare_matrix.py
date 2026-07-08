@@ -8,6 +8,7 @@ import pytest
 import scipy.sparse as sp
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
+from mignet_ce.graph.builder import EDGE_COLUMNS, LayerGraph
 from mignet_ce.io.loaders import LayerDataResolver, read_commot_index
 from mignet_ce.mapping import OverlapMapping
 from mignet_ce.networks.base import NetworkContext
@@ -104,6 +105,46 @@ def _write_sr_features(root: Path, context: NetworkContext) -> None:
         pd.DataFrame({"unit_id": upper_units, "sr": np.linspace(0.2, 0.8, len(upper_units))}).to_csv(upper_path, index=False)
 
 
+def _empty_edges() -> pd.DataFrame:
+    return pd.DataFrame(columns=EDGE_COLUMNS)
+
+
+def _lightcci_graph(layer: str, stage: str, units: list[str], values: np.ndarray, edge_source: str = "cci") -> LayerGraph:
+    adjacency = sp.csr_matrix(values)
+    return LayerGraph(
+        layer=layer,
+        time_point=stage,
+        units=list(units),
+        genes=["g1", "g2", "g3", "g4"],
+        intra_edges=_empty_edges(),
+        inter_edges=_empty_edges(),
+        shared_genes=["g1", "g2", "g3", "g4"],
+        metadata={
+            "network_method": "light_cci",
+            "edge_source": edge_source,
+            "adjacency_source": "test_graph_adjacency",
+            "adjacency_shape": list(adjacency.shape),
+            "adjacency_nnz": int(adjacency.nnz),
+            "adjacency_csr": adjacency,
+            "uses_grn": edge_source == "grn",
+            "uses_cci": edge_source == "cci",
+        },
+    )
+
+
+def _mark_lightcci_context(context: NetworkContext) -> NetworkContext:
+    context.network_method = "light_cci"
+    context.lower_graphs = [
+        _lightcci_graph("louvain_k150", "11.5", context.lower_units_by_time[0], np.eye(3) + 0.2),
+        _lightcci_graph("louvain_k150", "12.5", context.lower_units_by_time[1], np.array([[1.0, 0.1, 0.0], [0.1, 1.0, 0.2], [0.0, 0.2, 1.0]])),
+    ]
+    context.upper_graphs = [
+        _lightcci_graph("seurat_k40", "11.5", context.upper_units_by_time[0], np.eye(2) + 0.3),
+        _lightcci_graph("seurat_k40", "12.5", context.upper_units_by_time[1], np.array([[1.0, 0.4], [0.4, 1.0]])),
+    ]
+    return context
+
+
 def _cfg(tmp_path: Path, method: str, dev_root: Path | None = None) -> TemporalRunConfig:
     return TemporalRunConfig(
         data_root=tmp_path / "data",
@@ -176,6 +217,23 @@ def test_compare_N_cos_reports_column_mismatch(tmp_path: Path) -> None:
         get_pij_method("compare_N_cos").run(context, cfg, [(0, 1)])
 
 
+def test_compare_N_uses_lightcci_graph_adjacency_without_cci_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _mark_lightcci_context(_context())
+    cfg = _cfg(tmp_path, "compare_N_cos")
+
+    def fail_read_compare_adjacency(*_args, **_kwargs):
+        raise AssertionError("read_compare_adjacency should not be called for light_cci graph context")
+
+    monkeypatch.setattr("mignet_ce.pij.compare.features.read_compare_adjacency", fail_read_compare_adjacency)
+    result, kernels = get_pij_method("compare_N_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    metadata = result.method_metadata["feature_metadata"]["base_features"]["N"]
+    assert metadata["lower_adjacency_sources"][0]["source"] == "light_cci_graph"
+    assert metadata["lower_adjacency_sources"][0]["edge_source"] == "cci"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
 def test_compare_L_sot_cost_uses_only_L_features(tmp_path: Path) -> None:
     context = _context()
     _write_all_cci(tmp_path / "data", context)
@@ -201,6 +259,23 @@ def test_compare_L_Sr_sot_cost_uses_joined_L_Sr_features(tmp_path: Path) -> None
     assert kernels is not None
     assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_source_feature_keys"] == ["L", "Sr"]
     assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_compare_main_lap_sr_spatial_sot_runs_on_lightcci_context(tmp_path: Path) -> None:
+    context = _mark_lightcci_context(_context())
+    dev_root = tmp_path / "developmental"
+    _write_sr_features(dev_root, context)
+    cfg = _cfg(tmp_path, "compare_main_lap_sr_spatial_sot", dev_root=dev_root)
+
+    result, kernels = get_pij_method("compare_main_lap_sr_spatial_sot").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["method_role"] == "lightcci_main_method"
+    assert result.method_metadata["not_part_of_30_cell_compare_matrix"] is True
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_components"] == ["laplacian_hks", "sr", "spatial"]
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["sparse_ot"]["cost_source"] == "lightcci_main_laplacian_hks_sr_spatial_pre_cost"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])
 
 
 def test_compare_export_writes_required_artifacts(tmp_path: Path) -> None:

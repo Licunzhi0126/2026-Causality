@@ -16,6 +16,7 @@ def test_network_registry_matches_configured_methods() -> None:
         "unit_specific_clean_grn_cci_mix",
         "cross_cell_multilayer",
         "expression_only",
+        "light_cci",
     }
     assert set(NETWORK_BUILDERS) == NETWORK_METHODS
     assert NETWORK_BUILDERS["legacy_mixed_grn_cci"].__module__ == "mignet_ce.networks.legacy_mixed_grn_cci"
@@ -37,6 +38,7 @@ def test_network_registry_matches_configured_methods() -> None:
         NETWORK_BUILDERS["legacy_inter_additive_grn_cci"].__module__
         == "mignet_ce.networks.legacy_inter_additive_grn_cci"
     )
+    assert NETWORK_BUILDERS["light_cci"].__module__ == "mignet_ce.networks.light_cci"
     assert LEGACY_NETWORK_METHODS == {
         "legacy_mixed_grn_cci",
         "legacy_inter_cci_only",

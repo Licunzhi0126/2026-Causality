@@ -11,13 +11,13 @@ import scipy.sparse as sp
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
-from mignet_ce.pij.compare.distances import (
+from mignet_ce.pij.compare.cosine import (
     matrix_summary,
     pairwise_cosine_distance,
-    pairwise_feature_kl,
     row_normalized_kernel_from_cost,
 )
 from mignet_ce.pij.compare.features import CompareFeatureSet, build_compare_feature_set
+from mignet_ce.pij.compare.kl import pairwise_feature_kl
 from mignet_ce.pij.compare.sparse_ot import SparseOTResult, run_sparse_semi_relaxed_ot
 
 

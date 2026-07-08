@@ -385,7 +385,8 @@ class VerticalMIGNetPipeline:
         _ensure_dir(pair_dir)
         metrics.to_csv(pair_dir / "metrics.csv", index=False)
         pd.DataFrame({"shared_gene": list(shared_genes)}).to_csv(pair_dir / "shared_genes.csv", index=False)
-        pd.concat(coverage_tables, ignore_index=True).to_csv(pair_dir / "coverage.csv", index=False)
+        coverage = pd.concat(coverage_tables, ignore_index=True) if coverage_tables else pd.DataFrame()
+        coverage.to_csv(pair_dir / "coverage.csv", index=False)
         with (pair_dir / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(
                 {

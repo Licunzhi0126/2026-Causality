@@ -56,6 +56,7 @@ class VerticalPairSpec:
 
 
 LAYER_SPECS: Dict[str, LayerSpec] = {
+    "gene": LayerSpec(name="gene", sample_prefix="gene", unit_kind="gene"),
     "spot": LayerSpec(name="spot", sample_prefix="spot", unit_kind="spot"),
     "seurat_less_than5": LayerSpec(name="seurat_less_than5", sample_prefix="seuratLessThan5"),
     "seurat_k150": LayerSpec(name="seurat_k150", sample_prefix="seurat150"),
@@ -149,6 +150,7 @@ COMPARE_PIJ_METHODS: Tuple[str, ...] = (
     "compare_L_Sr_kl",
     "compare_L_Sr_sot",
 )
+MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 
 PIJ_METHODS = {
     "joint_nmf",
@@ -173,6 +175,7 @@ PIJ_METHODS = {
     "velocity_ot",
     "development_ot",
     *COMPARE_PIJ_METHODS,
+    MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
     "core": ("joint_nmf", "laplacian", "3dot", "slat"),
@@ -209,6 +212,8 @@ PIJ_METHOD_PRESETS = {
         "pseudotime_expression_ot",
     ),
     "lightcci_compare_matrix": COMPARE_PIJ_METHODS,
+    "lightcci_main": (MAIN_LIGHTCCI_PIJ_METHOD,),
+    "lightcci_all": (*COMPARE_PIJ_METHODS, MAIN_LIGHTCCI_PIJ_METHOD),
     "all": (
         "joint_nmf",
         "laplacian",
@@ -232,6 +237,7 @@ PIJ_METHOD_PRESETS = {
         "velocity_ot",
         "development_ot",
         *COMPARE_PIJ_METHODS,
+        MAIN_LIGHTCCI_PIJ_METHOD,
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
@@ -245,6 +251,7 @@ NETWORK_METHODS = {
     "unit_specific_clean_grn_cci_mix",
     "cross_cell_multilayer",
     "expression_only",
+    "light_cci",
 }
 DEVELOPMENT_PIJ_METHODS = {
     "pseudotime_ot",
@@ -260,6 +267,7 @@ DEVELOPMENT_PIJ_METHODS = {
     "velocity_ot",
     "development_ot",
     *(method for method in COMPARE_PIJ_METHODS if "_Sr" in method),
+    MAIN_LIGHTCCI_PIJ_METHOD,
 }
 
 

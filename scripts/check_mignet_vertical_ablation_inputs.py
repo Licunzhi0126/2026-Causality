@@ -24,6 +24,7 @@ GRN_CCI_NETWORK_METHODS = {*LEGACY_NETWORK_METHODS, "clean_grn_cci_mix"}
 GRN_CCI_NETWORK_METHODS.update({"clean_grn_cci_expr_mix", "unit_specific_clean_grn_cci_mix"})
 EXPRESSION_CCI_NETWORK_METHODS = {"clean_expression_cci_mix"}
 UNIT_SPECIFIC_NETWORK_METHODS = {"unit_specific_clean_grn_cci_mix"}
+LIGHT_CCI_NETWORK_METHODS = {"light_cci"}
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -69,7 +70,14 @@ def _path_rows(paths: LayerPaths) -> list[dict[str, object]]:
 def _missing_for_method(paths_by_key: dict[tuple[str, str, str], LayerPaths], method: str) -> list[str]:
     missing: list[str] = []
     for paths in paths_by_key.values():
-        if method in EXPRESSION_CCI_NETWORK_METHODS:
+        if method in LIGHT_CCI_NETWORK_METHODS:
+            if paths.layer == "gene":
+                required = [paths.grn_edges]
+            else:
+                required = [paths.h5ad, paths.cci_index]
+                if not paths.cci_total.exists():
+                    required.extend([paths.cci_manifest, paths.cci_lr_dir])
+        elif method in EXPRESSION_CCI_NETWORK_METHODS:
             required = [paths.h5ad, paths.cci_manifest, paths.cci_index, paths.cci_lr_dir]
             if paths.spot_domain_map is not None:
                 required.append(paths.spot_domain_map)

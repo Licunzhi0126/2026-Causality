@@ -26,7 +26,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the vertical MIGNet network_method x pij_method ablation matrix.")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_ABLATION_OUTPUT_ROOT)
-    parser.add_argument("--network-methods", nargs="+", choices=sorted(NETWORK_METHODS), default=["legacy_mixed_grn_cci", "cross_cell_multilayer", "expression_only"])
+    parser.add_argument("--network-method", action="append", choices=sorted(NETWORK_METHODS), default=None)
+    parser.add_argument("--network-methods", nargs="+", choices=sorted(NETWORK_METHODS), default=None)
+    parser.add_argument("--pij-method", action="append", choices=sorted(PIJ_METHODS), default=None)
     parser.add_argument("--pij-methods", nargs="+", choices=sorted(PIJ_METHODS), default=None)
     parser.add_argument("--pij-method-preset", choices=sorted(PIJ_METHOD_PRESETS), default=None)
     parser.add_argument("--organs", nargs="+", default=["heart", "brain", "lung"])
@@ -126,6 +128,10 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--export-raw-native-features", action="store_true")
     parser.add_argument("--export-graphs", action="store_true")
     parser.add_argument("--export-feature-diagnostics", action="store_true")
+    parser.add_argument("--max-workers", type=int, default=1)
+    parser.add_argument("--progress", action="store_true")
+    parser.add_argument("--progress-log", type=Path, default=None)
+    parser.add_argument("--progress-refresh-interval", type=float, default=0.5)
     parser.add_argument("--fail-fast", action="store_true")
     return parser
 
@@ -138,7 +144,22 @@ def main() -> None:
         if args.level_pairs is not None
         else list(PAIR_PRESETS[args.pair_preset])
     )
-    if args.pij_methods is not None:
+    if args.network_method is not None and args.network_methods is not None:
+        parser.error("Use either --network-method or --network-methods, not both.")
+    network_methods = args.network_method or args.network_methods or [
+        "legacy_mixed_grn_cci",
+        "cross_cell_multilayer",
+        "expression_only",
+    ]
+    if args.pij_method is not None and args.pij_methods is not None:
+        parser.error("Use either --pij-method or --pij-methods, not both.")
+    if args.pij_method is not None and args.pij_method_preset is not None:
+        parser.error("Use either --pij-method or --pij-method-preset, not both.")
+    if args.pij_methods is not None and args.pij_method_preset is not None:
+        parser.error("Use either --pij-methods or --pij-method-preset, not both.")
+    if args.pij_method is not None:
+        pij_methods = args.pij_method
+    elif args.pij_methods is not None:
         pij_methods = args.pij_methods
     elif args.pij_method_preset is not None:
         pij_methods = list(PIJ_METHOD_PRESETS[args.pij_method_preset])
@@ -213,10 +234,14 @@ def main() -> None:
         export_graphs=args.export_graphs,
         export_raw_native_features=args.export_raw_native_features,
         export_feature_diagnostics=args.export_feature_diagnostics,
+        max_workers=args.max_workers,
+        progress=args.progress,
+        progress_log=args.progress_log,
+        progress_refresh_interval=args.progress_refresh_interval,
     )
     metrics = VerticalAblationPipeline(
         base_cfg=base_cfg,
-        network_methods=args.network_methods,
+        network_methods=network_methods,
         pij_methods=pij_methods,
         output_root=args.output_root,
         fail_fast=args.fail_fast,

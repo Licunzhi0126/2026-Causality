@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from mignet_ce.pij.compare.distances import pairwise_cosine_distance
+from mignet_ce.pij.compare.cosine import pairwise_cosine_distance
 
 
 @dataclass
@@ -80,6 +80,35 @@ def run_sparse_semi_relaxed_ot(
     source = np.asarray(source_features, dtype=float)
     target = np.asarray(target_features, dtype=float)
     dense_cost = pairwise_cosine_distance(source, target)
+    return run_sparse_semi_relaxed_ot_from_cost(
+        dense_cost,
+        epsilon=epsilon,
+        gamma=gamma,
+        max_iter=max_iter,
+        source_k=source_k,
+        target_k=target_k,
+        tol=tol,
+        raw_cost_column="raw_cosine_distance",
+        cost_source="cosine_distance_on_current_compare_features",
+    )
+
+
+def run_sparse_semi_relaxed_ot_from_cost(
+    dense_cost: np.ndarray,
+    *,
+    epsilon: float,
+    gamma: float,
+    max_iter: int,
+    source_k: int,
+    target_k: int,
+    tol: float = 1e-6,
+    raw_cost_column: str = "raw_cost",
+    cost_source: str = "precomputed_dense_cost",
+) -> SparseOTResult:
+    dense_cost = np.asarray(dense_cost, dtype=float)
+    if dense_cost.ndim != 2:
+        raise ValueError(f"Expected a 2D dense cost matrix, got {dense_cost.shape}.")
+    dense_cost = np.nan_to_num(dense_cost, nan=np.inf, posinf=np.inf, neginf=0.0)
     n_source, n_target = dense_cost.shape
     row, col = _topk_candidates(dense_cost, source_k=source_k, target_k=target_k)
     raw_values = dense_cost[row, col] if row.size else np.array([], dtype=float)
@@ -137,7 +166,7 @@ def run_sparse_semi_relaxed_ot(
         {
             "source_index": row.astype(int),
             "target_index": col.astype(int),
-            "raw_cosine_distance": raw_values.astype(float),
+            raw_cost_column: raw_values.astype(float),
             "normalized_cost": cost_values.astype(float),
         }
     )
@@ -159,7 +188,7 @@ def run_sparse_semi_relaxed_ot(
         "source_k": int(source_k),
         "target_k": int(target_k),
         "candidate_edges": int(cost_sparse.nnz),
-        "cost_source": "cosine_distance_on_current_compare_features",
+        "cost_source": cost_source,
     }
     return SparseOTResult(
         candidate_edges=candidate_edges,
