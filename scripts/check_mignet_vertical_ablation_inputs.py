@@ -67,12 +67,17 @@ def _path_rows(paths: LayerPaths) -> list[dict[str, object]]:
     ]
 
 
-def _missing_for_method(paths_by_key: dict[tuple[str, str, str], LayerPaths], method: str) -> list[str]:
+def _missing_for_method(
+    paths_by_key: dict[tuple[str, str, str], LayerPaths],
+    method: str,
+    resolver: LayerDataResolver | None = None,
+) -> list[str]:
     missing: list[str] = []
     for paths in paths_by_key.values():
         if method in LIGHT_CCI_NETWORK_METHODS:
             if paths.layer == "gene":
-                required = [paths.grn_edges]
+                grn_paths = resolver.paths("spot", paths.organ, str(paths.stage)) if resolver is not None else paths
+                required = [grn_paths.grn_edges]
             else:
                 required = [paths.h5ad, paths.cci_index]
                 if not paths.cci_total.exists():
@@ -120,7 +125,7 @@ def main() -> None:
                     paths_by_key[(str(stage), layer, paths.sample_stem)] = paths
                     availability_rows.extend(_path_rows(paths))
             for method in args.network_methods:
-                missing = _missing_for_method(paths_by_key, method)
+                missing = _missing_for_method(paths_by_key, method, resolver=resolver)
                 feasibility_rows.append(
                     {
                         "network_method": method,

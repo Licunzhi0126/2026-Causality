@@ -132,12 +132,17 @@ def _inspect_grn(paths) -> dict[str, object]:
     return row
 
 
-def _inspect_lightcci_layer(paths) -> dict[str, object]:
+def _inspect_lightcci_layer(paths, grn_source_paths=None) -> dict[str, object]:
     if paths.layer == "gene":
-        grn = _inspect_grn(paths)
+        source_paths = grn_source_paths or paths
+        grn = _inspect_grn(source_paths)
         return {
             **grn,
+            "layer": paths.layer,
+            "sample_stem": paths.sample_stem,
             "edge_source": "grn",
+            "grn_source_layer": source_paths.layer,
+            "grn_source_sample_stem": source_paths.sample_stem,
             "can_build_lightcci_graph": bool(grn.get("grn_edges_exists") and grn.get("has_required_columns", False)),
             "graph_node_count": grn.get("node_count"),
             "graph_edge_count": grn.get("edge_count"),
@@ -227,7 +232,8 @@ def _profile_root(
             for stage in time_points:
                 paths = resolver.paths(layer, organ, str(stage))
                 cci = _inspect_cci(paths)
-                lightcci = _inspect_lightcci_layer(paths)
+                grn_source_paths = resolver.paths("spot", organ, str(stage)) if layer == "gene" else None
+                lightcci = _inspect_lightcci_layer(paths, grn_source_paths=grn_source_paths)
                 adjacency_rows.append(cci)
                 lightcci_rows.append(lightcci)
                 expression_rows.append({"organ": organ, "layer": layer, "stage": str(stage), **_inspect_expression(paths)})

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import anndata as ad
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+
+if not hasattr(np, "unicode_"):
+    np.unicode_ = np.str_
+
+import anndata as ad
 
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.io.loaders import LayerDataResolver
@@ -31,9 +35,9 @@ def _write_cci(data_root: Path, layer: str, stage: str, units: list[str], matrix
     pd.DataFrame({"domain_id": units}).to_csv(cci_dir / f"{stem}_index.tsv", sep="\t", index=False)
 
 
-def _write_gene_grn(data_root: Path, stage: str) -> None:
-    stem = f"gene_heart_{stage}"
-    grn_dir = data_root / "grn" / "gene" / stem
+def _write_spot_grn_for_gene_layer(data_root: Path, stage: str) -> None:
+    stem = f"spot_heart_{stage}"
+    grn_dir = data_root / "grn" / "spot" / stem
     grn_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
@@ -51,7 +55,7 @@ def test_lightcci_builder_reads_gene_grn_and_spot_cci(tmp_path: Path) -> None:
     for stage in stages:
         _write_h5ad(data_root / "spot" / "heart" / f"spot_heart_{stage}.h5ad", ["s2", "s1"], genes)
         _write_cci(data_root, "spot", stage, ["s1", "s2"], np.array([[0.0, 2.0], [3.0, 0.0]]))
-        _write_gene_grn(data_root, stage)
+        _write_spot_grn_for_gene_layer(data_root, stage)
 
     cfg = TemporalRunConfig(
         data_root=data_root,
@@ -67,6 +71,9 @@ def test_lightcci_builder_reads_gene_grn_and_spot_cci(tmp_path: Path) -> None:
     assert context.feature_alignment_space == "native_units"
     assert context.metadata["feature_source"] == "light_cci_graph_only"
     assert context.lower_graphs[0].metadata["edge_source"] == "grn"
+    assert context.lower_graphs[0].metadata["grn_source_layer"] == "spot"
+    assert context.lower_graphs[0].metadata["grn_source_sample_stem"] == "spot_heart_11.5"
+    assert Path(str(context.lower_graphs[0].metadata["adjacency_path"])).parts[-4:-2] == ("grn", "spot")
     assert context.upper_graphs[0].metadata["edge_source"] == "cci"
     assert set(context.lower_units_by_time[0]) == {"g1", "g2", "g3"}
     assert context.upper_units_by_time[0] == ["s1", "s2"]

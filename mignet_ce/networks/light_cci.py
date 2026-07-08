@@ -274,7 +274,13 @@ class LightCCINetworkBuilder:
     ) -> tuple[LayerGraph, np.ndarray, List[str]]:
         paths = resolver.paths(layer, organ, stage)
         if layer == "gene":
-            return self._build_gene_graph(paths=paths, layer=layer, stage=stage)
+            grn_paths = resolver.paths("spot", organ, stage)
+            return self._build_gene_graph(
+                paths=grn_paths,
+                layer=layer,
+                stage=stage,
+                grn_source_layer="spot",
+            )
         return self._build_cci_graph(paths=paths, layer=layer, stage=stage, cfg=cfg)
 
     def _build_cci_graph(
@@ -347,10 +353,18 @@ class LightCCINetworkBuilder:
         )
         return graph, coords, expression.genes
 
-    def _build_gene_graph(self, *, paths: LayerPaths, layer: str, stage: str) -> tuple[LayerGraph, np.ndarray, List[str]]:
+    def _build_gene_graph(
+        self,
+        *,
+        paths: LayerPaths,
+        layer: str,
+        stage: str,
+        grn_source_layer: str,
+    ) -> tuple[LayerGraph, np.ndarray, List[str]]:
         if not paths.grn_edges.exists():
             raise FileNotFoundError(
-                "LightCCI gene layer requires a GRN edge file with regulator,target,weight columns; "
+                f"LightCCI gene layer requires the {grn_source_layer!r} GRN edge file "
+                "with regulator,target,weight columns; "
                 f"tried {paths.grn_edges}."
             )
         grn = read_grn_edges(paths.grn_edges, top_k_targets_per_regulator=None)
@@ -375,6 +389,8 @@ class LightCCINetworkBuilder:
                 "edge_source": "grn",
                 "adjacency_source": "grn_edges",
                 "adjacency_path": str(paths.grn_edges),
+                "grn_source_layer": grn_source_layer,
+                "grn_source_sample_stem": paths.sample_stem,
                 "adjacency_shape": list(adjacency.shape),
                 "adjacency_nnz": int(adjacency.nnz),
                 "adjacency_csr": adjacency,
