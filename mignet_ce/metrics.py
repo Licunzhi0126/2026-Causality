@@ -13,6 +13,121 @@ from mignet_ce.pij.base import PairFeatures
 from mignet_ce.transition.cosine import build_cosine_transition_kernel
 
 
+def _as_clean_nonnegative_array(matrix: np.ndarray, *, name: str) -> np.ndarray:
+    arr = np.asarray(matrix, dtype=float)
+    if arr.ndim != 2:
+        raise ValueError(f"{name} must be a 2D matrix, got shape {arr.shape}.")
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.maximum(arr, 0.0)
+    return arr
+
+
+def _stabilize_nonnegative_factor(factor: np.ndarray, eps: float) -> np.ndarray:
+    factor = np.nan_to_num(factor, nan=eps, posinf=eps, neginf=eps)
+    return np.maximum(factor, eps)
+
+
+def pairwise_joint_nmf(
+    X_source: np.ndarray,
+    X_target: np.ndarray,
+    n_components: int = 5,
+    max_iter: int = 300,
+    seed: int = 42,
+    eps: float = 1e-10,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Factorize two matrices with a pair-specific shared H.
+
+    X_source ~= W_source H and X_target ~= W_target H.
+    """
+    if n_components <= 0:
+        raise ValueError("n_components must be positive.")
+    if max_iter < 0:
+        raise ValueError("max_iter must be non-negative.")
+    eps = max(float(eps), 1e-12)
+    source = _as_clean_nonnegative_array(X_source, name="X_source")
+    target = _as_clean_nonnegative_array(X_target, name="X_target")
+    if source.shape[1] != target.shape[1]:
+        raise ValueError(
+            "pairwise_joint_nmf requires source and target matrices with identical column counts; "
+            f"got {source.shape[1]} and {target.shape[1]}."
+        )
+
+    rng = np.random.default_rng(seed)
+    w_source = rng.random((source.shape[0], n_components), dtype=float) + eps
+    w_target = rng.random((target.shape[0], n_components), dtype=float) + eps
+    h_matrix = rng.random((n_components, source.shape[1]), dtype=float) + eps
+    for _ in range(max_iter):
+        w_source *= (source @ h_matrix.T) / (w_source @ h_matrix @ h_matrix.T + eps)
+        w_target *= (target @ h_matrix.T) / (w_target @ h_matrix @ h_matrix.T + eps)
+        w_source = _stabilize_nonnegative_factor(w_source, eps)
+        w_target = _stabilize_nonnegative_factor(w_target, eps)
+
+        numerator = w_source.T @ source + w_target.T @ target
+        denominator = (w_source.T @ w_source + w_target.T @ w_target) @ h_matrix + eps
+        h_matrix *= numerator / denominator
+        h_matrix = _stabilize_nonnegative_factor(h_matrix, eps)
+    return w_source, w_target, h_matrix
+
+
+def pairwise_shared_core_directed_nmf(
+    A_source: np.ndarray,
+    A_target: np.ndarray,
+    n_components: int = 5,
+    max_iter: int = 300,
+    seed: int = 42,
+    eps: float = 1e-10,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Factorize two directed square adjacency matrices with a shared core B.
+
+    A_source ~= U_source B V_source.T and A_target ~= U_target B V_target.T.
+    """
+    if n_components <= 0:
+        raise ValueError("n_components must be positive.")
+    if max_iter < 0:
+        raise ValueError("max_iter must be non-negative.")
+    eps = max(float(eps), 1e-12)
+    source = _as_clean_nonnegative_array(A_source, name="A_source")
+    target = _as_clean_nonnegative_array(A_target, name="A_target")
+    if source.shape[0] != source.shape[1]:
+        raise ValueError(f"A_source must be square, got shape {source.shape}.")
+    if target.shape[0] != target.shape[1]:
+        raise ValueError(f"A_target must be square, got shape {target.shape}.")
+
+    rng = np.random.default_rng(seed)
+    u_source = rng.random((source.shape[0], n_components), dtype=float) + eps
+    v_source = rng.random((source.shape[0], n_components), dtype=float) + eps
+    u_target = rng.random((target.shape[0], n_components), dtype=float) + eps
+    v_target = rng.random((target.shape[0], n_components), dtype=float) + eps
+    core = rng.random((n_components, n_components), dtype=float) + eps
+
+    for _ in range(max_iter):
+        source_vtv = v_source.T @ v_source
+        source_utu = u_source.T @ u_source
+        target_vtv = v_target.T @ v_target
+        target_utu = u_target.T @ u_target
+
+        u_source *= (source @ v_source @ core.T) / (u_source @ core @ source_vtv @ core.T + eps)
+        u_target *= (target @ v_target @ core.T) / (u_target @ core @ target_vtv @ core.T + eps)
+        u_source = _stabilize_nonnegative_factor(u_source, eps)
+        u_target = _stabilize_nonnegative_factor(u_target, eps)
+
+        source_utu = u_source.T @ u_source
+        target_utu = u_target.T @ u_target
+        v_source *= (source.T @ u_source @ core) / (v_source @ core.T @ source_utu @ core + eps)
+        v_target *= (target.T @ u_target @ core) / (v_target @ core.T @ target_utu @ core + eps)
+        v_source = _stabilize_nonnegative_factor(v_source, eps)
+        v_target = _stabilize_nonnegative_factor(v_target, eps)
+
+        source_vtv = v_source.T @ v_source
+        target_vtv = v_target.T @ v_target
+        numerator = u_source.T @ source @ v_source + u_target.T @ target @ v_target
+        denominator = source_utu @ core @ source_vtv + target_utu @ core @ target_vtv + eps
+        core *= numerator / denominator
+        core = _stabilize_nonnegative_factor(core, eps)
+
+    return u_source, v_source, u_target, v_target, core
+
+
 def effective_information(P, eps: float = 1e-12) -> float:
     P = np.asarray(P, dtype=float)
     if P.size == 0:

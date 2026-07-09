@@ -120,12 +120,52 @@ def _sparse_summary(matrix: sp.spmatrix) -> dict[str, object]:
 def _export_nmf_artifacts(
     directory: Path,
     feature_set: CompareFeatureSet,
+    context: NetworkContext,
     side: str,
     pair: TimePair,
 ) -> None:
     artifact = feature_set.artifacts.get(side, {}).get("N")
     if artifact is None:
         return
+    if "pairwise" in artifact:
+        pair_label = f"{context.time_points[pair[0]]}->{context.time_points[pair[1]]}"
+        pair_artifact = artifact.get("pairwise", {}).get(pair_label)
+        if pair_artifact is None:
+            return
+        array_keys = {
+            "H",
+            "B",
+            "W_source",
+            "W_target",
+            "U_source",
+            "V_source",
+            "U_target",
+            "V_target",
+            "features_source",
+            "features_target",
+        }
+        model_payload = {key: value for key, value in pair_artifact.items() if key not in array_keys}
+        _write_json(directory / "pairwise_nmf_model.json", model_payload)
+        model_type = str(pair_artifact.get("model_type", ""))
+        if model_type == "ordinary_pairwise_joint_nmf":
+            np.save(directory / "pairwise_joint_nmf_H.npy", np.asarray(pair_artifact["H"], dtype=float))
+            np.save(directory / "pairwise_joint_nmf_W_source.npy", np.asarray(pair_artifact["W_source"], dtype=float))
+            np.save(directory / "pairwise_joint_nmf_W_target.npy", np.asarray(pair_artifact["W_target"], dtype=float))
+            np.save(directory / "joint_nmf_H.npy", np.asarray(pair_artifact["H"], dtype=float))
+            np.save(directory / "joint_nmf_W_source.npy", np.asarray(pair_artifact["W_source"], dtype=float))
+            np.save(directory / "joint_nmf_W_target.npy", np.asarray(pair_artifact["W_target"], dtype=float))
+        elif model_type == "spot_shared_core_directed_nmf":
+            np.save(directory / "shared_core_B.npy", np.asarray(pair_artifact["B"], dtype=float))
+            np.save(directory / "shared_core_U_source.npy", np.asarray(pair_artifact["U_source"], dtype=float))
+            np.save(directory / "shared_core_V_source.npy", np.asarray(pair_artifact["V_source"], dtype=float))
+            np.save(directory / "shared_core_U_target.npy", np.asarray(pair_artifact["U_target"], dtype=float))
+            np.save(directory / "shared_core_V_target.npy", np.asarray(pair_artifact["V_target"], dtype=float))
+            np.save(directory / "shared_core_features_source.npy", np.asarray(pair_artifact["features_source"], dtype=float))
+            np.save(directory / "shared_core_features_target.npy", np.asarray(pair_artifact["features_target"], dtype=float))
+        _write_json(directory / "joint_nmf_shapes.json", model_payload)
+        _write_json(directory / "joint_nmf_diagnostics.json", pair_artifact.get("diagnostics", {}))
+        return
+
     np.save(directory / "joint_nmf_H.npy", np.asarray(artifact["H"], dtype=float))
     w_list = artifact["W"]
     np.save(directory / "joint_nmf_W_source.npy", np.asarray(w_list[pair[0]], dtype=float))
@@ -187,7 +227,7 @@ def export_compare_pair_artifacts(
     _write_json(directory / "cost_or_kernel_diagnostics.json", diagnostics)
     sp.save_npz(directory / "pij_sparse.npz", raw_sparse.tocsr())
     sp.save_npz(directory / "pij_row_normalized_sparse.npz", pij_sparse.tocsr())
-    _export_nmf_artifacts(directory, feature_set, side, pair)
+    _export_nmf_artifacts(directory, feature_set, context, side, pair)
 
     if sparse_ot_result is not None:
         sparse_ot_result.candidate_edges.to_parquet(directory / "candidate_edges.parquet", index=False)
@@ -229,8 +269,16 @@ class ComparePijMethodBase:
                 ("lower", feature_set.lower_features, kernels.p_lower),
                 ("upper", feature_set.upper_features, kernels.p_upper),
             ):
-                source = feature_lists[pair[0]]
-                target = feature_lists[pair[1]]
+                pairwise_used = False
+                if side == "lower" and feature_set.pairwise_lower_features is not None and pair in feature_set.pairwise_lower_features:
+                    source, target = feature_set.pairwise_lower_features[pair]
+                    pairwise_used = True
+                elif side == "upper" and feature_set.pairwise_upper_features is not None and pair in feature_set.pairwise_upper_features:
+                    source, target = feature_set.pairwise_upper_features[pair]
+                    pairwise_used = True
+                else:
+                    source = feature_lists[pair[0]]
+                    target = feature_lists[pair[1]]
                 raw_sparse, pij_sparse, dense_pij, diagnostics, sparse_result = self._build_pair_kernel(
                     source=source,
                     target=target,
@@ -242,6 +290,8 @@ class ComparePijMethodBase:
                     "pij_method": self.pij_key,
                     "cost_source_feature_keys": list(self.feature_keys),
                     "cost_source": "current_compare_feature_cosine_distance" if self.pij_key in {"cos", "sot"} else "current_compare_feature_kl",
+                    "feature_source": "pairwise_compare_features" if pairwise_used else "timewise_compare_features",
+                    "pairwise_features_used": bool(pairwise_used),
                     "source_shape": list(source.shape),
                     "target_shape": list(target.shape),
                     "raw_matrix": _sparse_summary(raw_sparse),
@@ -279,6 +329,8 @@ class ComparePijMethodBase:
             upper_features=feature_set.upper_features,
             lower_coords=context.lower_coords_by_time if context.feature_alignment_space == "native_units" else context.upper_coords_by_time,
             upper_coords=context.upper_coords_by_time,
+            pairwise_lower_features=feature_set.pairwise_lower_features,
+            pairwise_upper_features=feature_set.pairwise_upper_features,
             method_metadata={
                 "pij_method": self.name,
                 "representation": "lightcci_compare_matrix",

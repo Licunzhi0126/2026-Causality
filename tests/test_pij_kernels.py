@@ -8,7 +8,7 @@ import types
 import numpy as np
 import pytest
 
-from mignet_ce.metrics import TemporalMetricsEngine
+from mignet_ce.metrics import TemporalMetricsEngine, pairwise_joint_nmf, pairwise_shared_core_directed_nmf
 from mignet_ce.transition.cosine import build_cosine_transition_kernel
 from mignet_ce.transition.sinkhorn_3dot import build_3dot_transition_kernel
 from mignet_ce.transition.slat_adapter import build_slat_transition_kernel
@@ -77,6 +77,47 @@ def test_metrics_accept_precomputed_pij() -> None:
     )
     assert metrics.loc[0, "pij_method"] == "test"
     assert metrics.loc[0, "EI_gain"] == pytest.approx(0.0)
+
+
+def test_pairwise_joint_nmf_shapes() -> None:
+    source = np.array([[1.0, 0.2, 0.0], [0.1, 0.8, 0.3], [0.0, 0.4, 1.0]])
+    target = np.array([[0.8, 0.1, 0.2], [0.2, 1.0, 0.5]])
+
+    w_source, w_target, h_matrix = pairwise_joint_nmf(source, target, n_components=2, max_iter=4, seed=7)
+
+    assert w_source.shape == (3, 2)
+    assert w_target.shape == (2, 2)
+    assert h_matrix.shape == (2, 3)
+    assert np.all(w_source >= 0)
+    assert np.all(w_target >= 0)
+    assert np.all(h_matrix >= 0)
+
+
+def test_pairwise_joint_nmf_reports_column_mismatch() -> None:
+    with pytest.raises(ValueError, match="identical column counts"):
+        pairwise_joint_nmf(np.ones((3, 3)), np.ones((2, 4)), n_components=2, max_iter=1)
+
+
+def test_pairwise_shared_core_directed_nmf_shapes_with_different_node_counts() -> None:
+    source = np.eye(8, dtype=float) + 0.1
+    target = np.eye(5, dtype=float) + 0.2
+
+    u_source, v_source, u_target, v_target, core = pairwise_shared_core_directed_nmf(
+        source,
+        target,
+        n_components=3,
+        max_iter=4,
+        seed=11,
+    )
+
+    assert u_source.shape == (8, 3)
+    assert v_source.shape == (8, 3)
+    assert u_target.shape == (5, 3)
+    assert v_target.shape == (5, 3)
+    assert core.shape == (3, 3)
+    assert np.hstack([u_source, v_source]).shape == (8, 6)
+    assert np.hstack([u_target, v_target]).shape == (5, 6)
+    assert np.all(core >= 0)
 
 
 def test_slat_adapter_uses_slat_edges_features_return(monkeypatch: pytest.MonkeyPatch) -> None:

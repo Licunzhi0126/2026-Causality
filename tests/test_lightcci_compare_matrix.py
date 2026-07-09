@@ -295,16 +295,68 @@ def test_compare_N_cos_runs_when_adjacency_columns_match(tmp_path: Path) -> None
     assert kernels is not None
     assert result.method_metadata["compare_feature_keys"] == ["N"]
     assert_row_stochastic(kernels.p_lower[(0, 1)])
-    assert result.method_metadata["feature_metadata"]["base_features"]["N"]["feature_source"] == "adjacency_temporal_joint_nmf"
+    metadata = result.method_metadata["feature_metadata"]["base_features"]["N"]
+    assert metadata["feature_source"] == "pairwise_nmf"
+    assert metadata["lower_model_type"] == "ordinary_pairwise_joint_nmf"
+    assert metadata["uses_only_pair_timepoints"] is True
+    assert metadata["uses_domain_anchor"] is False
+    assert result.pairwise_lower_features is not None
+    assert result.pairwise_lower_features[(0, 1)][0].shape == (3, 2)
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["pairwise_features_used"] is True
 
 
-def test_compare_N_cos_reports_column_mismatch(tmp_path: Path) -> None:
+def test_compare_N_cos_reports_fixed_layer_column_mismatch(tmp_path: Path) -> None:
     context = _context(lower_units_by_time=[["l1", "l2", "l3"], ["l1", "l2", "l3", "l4"]])
     _write_all_cci(tmp_path / "data", context)
     cfg = _cfg(tmp_path, "compare_N_cos")
 
     with pytest.raises(ValueError, match="identical column counts"):
         get_pij_method("compare_N_cos").run(context, cfg, [(0, 1)])
+
+
+def test_compare_N_cos_spot_uses_shared_core_for_variable_node_counts(tmp_path: Path) -> None:
+    context = _context(lower_units_by_time=[["s1", "s2", "s3"], ["s1", "s2", "s3", "s4"]])
+    context.pair = VerticalPairSpec("spot", "seurat_k40")
+    context.network_method = "light_cci"
+    context.lower_graphs = [
+        _lightcci_graph("spot", "11.5", context.lower_units_by_time[0], np.eye(3) + 0.2),
+        _lightcci_graph("spot", "12.5", context.lower_units_by_time[1], np.eye(4) + 0.3),
+    ]
+    context.upper_graphs = [
+        _lightcci_graph("seurat_k40", "11.5", context.upper_units_by_time[0], np.eye(2) + 0.3),
+        _lightcci_graph("seurat_k40", "12.5", context.upper_units_by_time[1], np.array([[1.0, 0.4], [0.4, 1.0]])),
+    ]
+    cfg = _cfg(tmp_path, "compare_N_cos")
+
+    result, kernels = get_pij_method("compare_N_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    metadata = result.method_metadata["feature_metadata"]["base_features"]["N"]
+    assert metadata["lower_model_type"] == "spot_shared_core_directed_nmf"
+    assert metadata["upper_model_type"] == "ordinary_pairwise_joint_nmf"
+    assert result.pairwise_lower_features is not None
+    source, target = result.pairwise_lower_features[(0, 1)]
+    assert source.shape == (3, 4)
+    assert target.shape == (4, 4)
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["pairwise_features_used"] is True
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+
+
+def test_compare_E_N_cos_concatenates_timewise_and_pairwise_features(tmp_path: Path) -> None:
+    context = _context()
+    _write_all_cci(tmp_path / "data", context)
+    cfg = _cfg(tmp_path, "compare_E_N_cos")
+
+    result, kernels = get_pij_method("compare_E_N_cos").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.pairwise_lower_features is not None
+    source, target = result.pairwise_lower_features[(0, 1)]
+    assert source.shape == (3, 6)
+    assert target.shape == (3, 6)
+    assert result.method_metadata["feature_metadata"]["pairwise_features"]["enabled"] is True
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["source_shape"] == [3, 6]
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
 
 
 def test_compare_N_uses_lightcci_graph_adjacency_without_cci_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,6 +373,7 @@ def test_compare_N_uses_lightcci_graph_adjacency_without_cci_files(tmp_path: Pat
     metadata = result.method_metadata["feature_metadata"]["base_features"]["N"]
     assert metadata["lower_adjacency_sources"][0]["source"] == "light_cci_graph"
     assert metadata["lower_adjacency_sources"][0]["edge_source"] == "cci"
+    assert metadata["feature_source"] == "pairwise_nmf"
     assert_row_stochastic(kernels.p_lower[(0, 1)])
 
 
@@ -444,5 +497,7 @@ def test_compare_export_writes_required_artifacts(tmp_path: Path) -> None:
     assert (artifact_dir / "features_source.npy").exists()
     assert (artifact_dir / "pij_sparse.npz").exists()
     assert (artifact_dir / "pij_row_normalized_sparse.npz").exists()
+    assert (artifact_dir / "pairwise_nmf_model.json").exists()
+    assert (artifact_dir / "pairwise_joint_nmf_H.npy").exists()
     assert (artifact_dir / "joint_nmf_shapes.json").exists()
     assert (artifact_dir / "joint_nmf_H.npy").exists()

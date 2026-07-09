@@ -360,14 +360,51 @@ def _profile_root(
                         }
                     )
 
-    n_checks = [
+    legacy_n_checks = [
         {
             "organ_layer": key,
             "columns": values,
             "temporal_joint_nmf_columns_consistent": len(set(values)) <= 1,
+            "status": "legacy_check_not_required_for_compare_N_pairwise_nmf",
         }
         for key, values in sorted(n_columns.items())
     ]
+    compare_n_pairwise_checks = []
+    for organ in organs:
+        for pair in level_pairs:
+            for source_stage, target_stage in combinations(map(str, time_points), 2):
+                for side, layer in (("lower", pair.lower_layer), ("upper", pair.upper_layer)):
+                    n_source = unit_counts.get((organ, layer, source_stage))
+                    n_target = unit_counts.get((organ, layer, target_stage))
+                    if n_source is None or n_target is None:
+                        continue
+                    is_spot = layer == "spot"
+                    compare_n_pairwise_checks.append(
+                        {
+                            "organ": organ,
+                            "pair": pair.label(),
+                            "side": side,
+                            "layer": layer,
+                            "time_pair": f"{source_stage}->{target_stage}",
+                            "model_type": (
+                                "spot_shared_core_directed_nmf"
+                                if is_spot
+                                else "ordinary_pairwise_joint_nmf"
+                            ),
+                            "source_units": int(n_source),
+                            "target_units": int(n_target),
+                            "expected_feature_dim": int(2 * cfg.nmf_components if is_spot else cfg.nmf_components),
+                            "estimated_dense_adjacency_gib": _memory_gib(
+                                int(n_source) * int(n_source) + int(n_target) * int(n_target),
+                                8,
+                            ),
+                            "requires_equal_column_count": bool(not is_spot),
+                            "source_target_counts_match": bool(n_source == n_target),
+                            "uses_domain_anchor": False,
+                            "uses_only_pair_timepoints": True,
+                            "no_all_time_temporal_leakage": True,
+                        }
+                    )
     l_checks = [
         {
             "organ": row["organ"],
@@ -402,7 +439,8 @@ def _profile_root(
         "time_points": list(map(str, time_points)),
         "adjacency": adjacency_rows,
         "lightcci_graph_inputs": lightcci_rows,
-        "joint_nmf_column_checks": n_checks,
+        "compare_N_pairwise_checks": compare_n_pairwise_checks,
+        "legacy_temporal_joint_nmf_column_checks": legacy_n_checks,
         "laplacian_hks_eigensolver_checks": l_checks,
         "expression_feature_inputs": expression_rows,
         "sr_feature_inputs": sr_rows,

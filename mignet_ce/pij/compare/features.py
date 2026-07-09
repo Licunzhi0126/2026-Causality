@@ -22,8 +22,9 @@ from mignet_ce.io.loaders import (
     read_commot_manifest,
     read_expression_h5ad,
 )
-from mignet_ce.metrics import TemporalMetricsEngine
+from mignet_ce.metrics import TemporalMetricsEngine, pairwise_joint_nmf, pairwise_shared_core_directed_nmf
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.pij.base import PairFeatures
 from mignet_ce.representations.expression_only import (
     _fit_transform_gene_scaler,
     _preprocess_raw_mats,
@@ -39,6 +40,8 @@ class CompareFeatureSet:
     feature_names: List[str]
     metadata: dict[str, object]
     artifacts: dict[str, dict[str, dict[str, object]]] = field(default_factory=dict)
+    pairwise_lower_features: PairFeatures | None = None
+    pairwise_upper_features: PairFeatures | None = None
 
 
 @dataclass
@@ -48,6 +51,9 @@ class _BaseFeatureResult:
     names: List[str]
     metadata: dict[str, object]
     artifacts: dict[str, dict[str, object]] = field(default_factory=lambda: {"lower": {}, "upper": {}})
+    pairwise_lower: PairFeatures | None = None
+    pairwise_upper: PairFeatures | None = None
+    is_pairwise: bool = False
 
 
 def _as_nonnegative_csr(matrix: sp.spmatrix, cci_min: float) -> sp.csr_matrix:
@@ -261,6 +267,32 @@ def _align_side_features(
                 }
             )
     return aligned, metadata
+
+
+def _align_side_feature_for_time(
+    matrix: np.ndarray,
+    context: NetworkContext,
+    side: str,
+    time_index: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    values = np.asarray(matrix, dtype=float)
+    if context.feature_alignment_space == "native_units":
+        return values, {"time_index": int(time_index), "aligned_to": "native_units"}
+    if side == "lower":
+        aligned, coverage = aggregate_lower_features_to_upper(values, context.overlaps[time_index])
+        return aligned, {
+            "time_index": int(time_index),
+            "aligned_to": "stable_upper_units",
+            "lower_aggregation": "overlap_weighted_average",
+            "covered_units": int(np.count_nonzero(coverage > 0)),
+        }
+    if side == "upper":
+        return align_upper_features(values, context.upper_units_by_time[time_index], context.stable_upper_units), {
+            "time_index": int(time_index),
+            "aligned_to": "stable_upper_units",
+            "upper_alignment": "zero_fill_missing_units",
+        }
+    raise ValueError("side must be one of 'lower' or 'upper'.")
 
 
 def _preprocess_gene_expression_patterns(
@@ -727,74 +759,180 @@ def _adjacency_lists_for_side(
     return matrices, metadata
 
 
-def _build_nmf_side(
+def _time_pair_label(context: NetworkContext, pair: tuple[int, int]) -> str:
+    return f"{context.time_points[pair[0]]}->{context.time_points[pair[1]]}"
+
+
+def _nmf_model_type_for_layer(layer: str) -> str:
+    return "spot_shared_core_directed_nmf" if layer == "spot" else "ordinary_pairwise_joint_nmf"
+
+
+def _build_pairwise_nmf_side(
     matrices: List[sp.csr_matrix],
+    context: NetworkContext,
     side: str,
     cfg: TemporalRunConfig,
     metadata: List[dict[str, object]],
-) -> tuple[List[np.ndarray], dict[str, object]]:
-    shapes = [tuple(matrix.shape) for matrix in matrices]
-    col_counts = [shape[1] for shape in shapes]
-    if len(set(col_counts)) > 1:
-        detail = {
-            "side": side,
-            "shapes": [list(shape) for shape in shapes],
-            "columns": col_counts,
-            "sources": metadata,
+    pairs: Sequence[tuple[int, int]],
+) -> tuple[PairFeatures, dict[str, object]]:
+    layer = _layer_for_side(context, side)
+    model_type = _nmf_model_type_for_layer(layer)
+    pairwise: PairFeatures = {}
+    artifact_pairs: dict[str, dict[str, object]] = {}
+    pair_summaries: List[dict[str, object]] = []
+
+    for pair in pairs:
+        source_index, target_index = pair
+        source_matrix = matrices[source_index]
+        target_matrix = matrices[target_index]
+        source_dense = source_matrix.toarray().astype(float, copy=False)
+        target_dense = target_matrix.toarray().astype(float, copy=False)
+        pair_label = _time_pair_label(context, pair)
+
+        if layer == "spot":
+            u_source, v_source, u_target, v_target, core = pairwise_shared_core_directed_nmf(
+                source_dense,
+                target_dense,
+                n_components=cfg.nmf_components,
+                max_iter=cfg.nmf_max_iter,
+                seed=cfg.nmf_seed + source_index * 1009 + target_index,
+            )
+            raw_source = np.hstack([u_source, v_source])
+            raw_target = np.hstack([u_target, v_target])
+            model_artifact: dict[str, object] = {
+                "model_type": model_type,
+                "B": core,
+                "U_source": u_source,
+                "V_source": v_source,
+                "U_target": u_target,
+                "V_target": v_target,
+                "features_source": raw_source,
+                "features_target": raw_target,
+                "feature_definition": "concat(outgoing_U, incoming_V)",
+            }
+        else:
+            w_source, w_target, h_matrix = pairwise_joint_nmf(
+                source_dense,
+                target_dense,
+                n_components=cfg.nmf_components,
+                max_iter=cfg.nmf_max_iter,
+                seed=cfg.nmf_seed + source_index * 1009 + target_index,
+            )
+            raw_source = w_source
+            raw_target = w_target
+            model_artifact = {
+                "model_type": model_type,
+                "H": h_matrix,
+                "W_source": w_source,
+                "W_target": w_target,
+                "feature_definition": "W row factor",
+            }
+
+        aligned_source, source_alignment = _align_side_feature_for_time(raw_source, context, side, source_index)
+        aligned_target, target_alignment = _align_side_feature_for_time(raw_target, context, side, target_index)
+        pairwise[pair] = (aligned_source, aligned_target)
+        summary = {
+            "time_pair": pair_label,
+            "model_type": model_type,
+            "source_stage": str(context.time_points[source_index]),
+            "target_stage": str(context.time_points[target_index]),
+            "source_shape": list(source_matrix.shape),
+            "target_shape": list(target_matrix.shape),
+            "source_nnz": int(source_matrix.nnz),
+            "target_nnz": int(target_matrix.nnz),
+            "raw_feature_source_shape": list(raw_source.shape),
+            "raw_feature_target_shape": list(raw_target.shape),
+            "feature_source_shape": list(aligned_source.shape),
+            "feature_target_shape": list(aligned_target.shape),
+            "source_alignment": source_alignment,
+            "target_alignment": target_alignment,
+            "uses_only_pair_timepoints": True,
+            "uses_domain_anchor": False,
+            "requires_equal_column_count": bool(layer != "spot"),
         }
-        raise ValueError(
-            "compare N feature requires temporal joint NMF inputs with identical column counts; "
-            f"got {detail}."
-        )
-    dense = [matrix.toarray().astype(float, copy=False) for matrix in matrices]
-    engine = TemporalMetricsEngine()
-    w_list, h_matrix = engine.temporal_joint_nmf(
-        dense,
-        n_components=cfg.nmf_components,
-        max_iter=cfg.nmf_max_iter,
-        seed=cfg.nmf_seed,
-    )
-    return [np.asarray(w, dtype=float) for w in w_list], {
-        "H": np.asarray(h_matrix, dtype=float),
-        "W": [np.asarray(w, dtype=float) for w in w_list],
-        "shapes": {
-            "input_shapes": [list(shape) for shape in shapes],
-            "W_shapes": [list(w.shape) for w in w_list],
-            "H_shape": list(h_matrix.shape),
-        },
-        "diagnostics": {
-            "side": side,
-            "n_components": int(cfg.nmf_components),
-            "max_iter": int(cfg.nmf_max_iter),
-            "seed": int(cfg.nmf_seed),
-            "input_nnz": [int(matrix.nnz) for matrix in matrices],
-            "adjacency_sources": metadata,
-        },
+        pair_summaries.append(summary)
+        artifact_pairs[pair_label] = {
+            **model_artifact,
+            **summary,
+            "diagnostics": {
+                "side": side,
+                "layer": layer,
+                "n_components": int(cfg.nmf_components),
+                "max_iter": int(cfg.nmf_max_iter),
+                "seed": int(cfg.nmf_seed + source_index * 1009 + target_index),
+                "source_adjacency": metadata[source_index],
+                "target_adjacency": metadata[target_index],
+                "dtype": str(raw_source.dtype),
+            },
+        }
+
+    return pairwise, {
+        "model_scope": "pairwise_time_pair",
+        "side": side,
+        "layer": layer,
+        "model_type": model_type,
+        "n_components": int(cfg.nmf_components),
+        "max_iter": int(cfg.nmf_max_iter),
+        "seed": int(cfg.nmf_seed),
+        "uses_only_pair_timepoints": True,
+        "uses_domain_anchor": False,
+        "adjacency_sources": metadata,
+        "pair_summaries": pair_summaries,
+        "pairwise": artifact_pairs,
     }
 
 
 def _build_nmf_base(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFeatureResult:
     lower_adj, lower_sources = _adjacency_lists_for_side(context, cfg, "lower")
     upper_adj, upper_sources = _adjacency_lists_for_side(context, cfg, "upper")
-    lower_raw, lower_artifact = _build_nmf_side(lower_adj, "lower", cfg, lower_sources)
-    upper_raw, upper_artifact = _build_nmf_side(upper_adj, "upper", cfg, upper_sources)
-    lower_aligned, lower_alignment = _align_side_features(lower_raw, context, "lower")
-    upper_aligned, upper_alignment = _align_side_features(upper_raw, context, "upper")
-    names = [f"N:nmf_component_{idx + 1}" for idx in range(cfg.nmf_components)]
+    pairs = TemporalMetricsEngine.build_time_pairs_all(context.time_points)
+    lower_pairwise, lower_artifact = _build_pairwise_nmf_side(
+        lower_adj,
+        context,
+        "lower",
+        cfg,
+        lower_sources,
+        pairs,
+    )
+    upper_pairwise, upper_artifact = _build_pairwise_nmf_side(
+        upper_adj,
+        context,
+        "upper",
+        cfg,
+        upper_sources,
+        pairs,
+    )
+    lower_empty = [np.zeros((len(_context_units(context, "lower", idx)), 0), dtype=float) for idx in range(len(context.time_points))]
+    upper_empty = [np.zeros((len(_context_units(context, "upper", idx)), 0), dtype=float) for idx in range(len(context.time_points))]
+    max_dim = max(
+        [features.shape[1] for pair_features in (*lower_pairwise.values(), *upper_pairwise.values()) for features in pair_features],
+        default=0,
+    )
+    names = [f"N:pairwise_nmf_component_{idx + 1}" for idx in range(max_dim)]
     return _BaseFeatureResult(
-        lower=lower_aligned,
-        upper=upper_aligned,
+        lower=lower_empty,
+        upper=upper_empty,
         names=names,
         metadata={
             "feature_key": "N",
-            "feature_source": "adjacency_temporal_joint_nmf",
-            "definition": "X_t^N = A_t from COMMOT/CCI adjacency; output feature is W_t row factor.",
+            "feature_source": "pairwise_nmf",
+            "definition": (
+                "N is built independently for each time-pair from adjacency matrices. "
+                "Spot sides use shared-core directed NMF; fixed-node sides use ordinary pairwise joint NMF."
+            ),
+            "uses_only_pair_timepoints": True,
+            "uses_domain_anchor": False,
+            "lower_model_type": lower_artifact["model_type"],
+            "upper_model_type": upper_artifact["model_type"],
             "lower_adjacency_sources": lower_sources,
             "upper_adjacency_sources": upper_sources,
-            "lower_alignment": lower_alignment,
-            "upper_alignment": upper_alignment,
+            "lower_pair_summaries": lower_artifact["pair_summaries"],
+            "upper_pair_summaries": upper_artifact["pair_summaries"],
         },
         artifacts={"lower": {"N": lower_artifact}, "upper": {"N": upper_artifact}},
+        pairwise_lower=lower_pairwise,
+        pairwise_upper=upper_pairwise,
+        is_pairwise=True,
     )
 
 
@@ -1060,6 +1198,62 @@ def _standardize_base(
     }
 
 
+def _standardize_pairwise_features(
+    pairwise: PairFeatures,
+    context: NetworkContext,
+) -> tuple[PairFeatures, dict[str, object]]:
+    out: PairFeatures = {}
+    summaries: List[dict[str, object]] = []
+    for pair, (source, target) in pairwise.items():
+        source_arr = np.asarray(source, dtype=float)
+        target_arr = np.asarray(target, dtype=float)
+        if source_arr.shape[1] != target_arr.shape[1]:
+            raise ValueError(
+                f"Pairwise feature dimensions differ for {_time_pair_label(context, pair)}: "
+                f"{source_arr.shape[1]} vs {target_arr.shape[1]}."
+            )
+        if source_arr.shape[1] == 0 or source_arr.shape[0] + target_arr.shape[0] == 0:
+            out[pair] = (np.zeros_like(source_arr, dtype=float), np.zeros_like(target_arr, dtype=float))
+            summaries.append(
+                {
+                    "time_pair": _time_pair_label(context, pair),
+                    "zero_variance_columns": int(source_arr.shape[1]),
+                    "source_shape": list(source_arr.shape),
+                    "target_shape": list(target_arr.shape),
+                }
+            )
+            continue
+        all_values = np.vstack([source_arr, target_arr])
+        means = np.nanmean(all_values, axis=0, keepdims=True)
+        stds = np.nanstd(all_values, axis=0, keepdims=True)
+        source_out = np.divide(
+            np.nan_to_num(source_arr, nan=0.0) - means,
+            stds,
+            out=np.zeros_like(source_arr, dtype=float),
+            where=stds > 0,
+        )
+        target_out = np.divide(
+            np.nan_to_num(target_arr, nan=0.0) - means,
+            stds,
+            out=np.zeros_like(target_arr, dtype=float),
+            where=stds > 0,
+        )
+        out[pair] = (source_out, target_out)
+        summaries.append(
+            {
+                "time_pair": _time_pair_label(context, pair),
+                "zero_variance_columns": int(np.count_nonzero(np.squeeze(stds, axis=0) <= 0)),
+                "source_shape": list(source_arr.shape),
+                "target_shape": list(target_arr.shape),
+            }
+        )
+    return out, {
+        "standardization": "pairwise_side_specific_zscore",
+        "fit_scope": "per_time_pair_per_side_on_concat_source_target",
+        "pairwise_standardization": summaries,
+    }
+
+
 def _feature_weight(feature_key: str, cfg: TemporalRunConfig) -> float:
     if feature_key == "E":
         return float(cfg.pij_expr_weight)
@@ -1090,6 +1284,8 @@ def build_compare_feature_set(
         raise ValueError("feature_keys cannot be empty.")
     lower_parts_by_time: List[List[np.ndarray]] = [[] for _ in context.time_points]
     upper_parts_by_time: List[List[np.ndarray]] = [[] for _ in context.time_points]
+    lower_pairwise_parts: dict[tuple[int, int], tuple[List[np.ndarray], List[np.ndarray]]] = {}
+    upper_pairwise_parts: dict[tuple[int, int], tuple[List[np.ndarray], List[np.ndarray]]] = {}
     names: List[str] = []
     metadata: dict[str, object] = {
         "feature_keys": list(keys),
@@ -1101,27 +1297,97 @@ def build_compare_feature_set(
 
     for key in keys:
         base = _build_base_feature(context, cfg, key)
-        lower_scaled, upper_scaled, standardization_metadata = _standardize_base(
-            base.lower,
-            base.upper,
-            side_specific=_has_gene_pair(context),
-        )
         weight = max(0.0, _feature_weight(key, cfg))
         scale = float(np.sqrt(weight))
-        for idx in range(len(context.time_points)):
-            lower_parts_by_time[idx].append(lower_scaled[idx] * scale)
-            upper_parts_by_time[idx].append(upper_scaled[idx] * scale)
         names.extend(base.names)
         base_metadata = dict(base.metadata)
-        base_metadata.update(standardization_metadata)
+
+        if base.is_pairwise:
+            if base.pairwise_lower is None or base.pairwise_upper is None:
+                raise ValueError(f"Base feature {key!r} marked pairwise but did not provide pairwise features.")
+            lower_scaled_pairwise, lower_standardization = _standardize_pairwise_features(base.pairwise_lower, context)
+            upper_scaled_pairwise, upper_standardization = _standardize_pairwise_features(base.pairwise_upper, context)
+            for pair, (source, target) in lower_scaled_pairwise.items():
+                source_parts, target_parts = lower_pairwise_parts.setdefault(pair, ([], []))
+                source_parts.append(source * scale)
+                target_parts.append(target * scale)
+            for pair, (source, target) in upper_scaled_pairwise.items():
+                source_parts, target_parts = upper_pairwise_parts.setdefault(pair, ([], []))
+                source_parts.append(source * scale)
+                target_parts.append(target * scale)
+            base_metadata.update(
+                {
+                    "standardization": "pairwise_side_specific_zscore",
+                    "lower_standardization": lower_standardization,
+                    "upper_standardization": upper_standardization,
+                }
+            )
+        else:
+            lower_scaled, upper_scaled, standardization_metadata = _standardize_base(
+                base.lower,
+                base.upper,
+                side_specific=_has_gene_pair(context),
+            )
+            for idx in range(len(context.time_points)):
+                lower_parts_by_time[idx].append(lower_scaled[idx] * scale)
+                upper_parts_by_time[idx].append(upper_scaled[idx] * scale)
+            base_metadata.update(standardization_metadata)
+
         base_metadata["weight"] = float(weight)
         metadata["base_features"][key] = base_metadata
         for side in ("lower", "upper"):
             artifacts[side].update(base.artifacts.get(side, {}))
 
-    lower_features = [np.hstack(parts) if parts else np.zeros((0, 0), dtype=float) for parts in lower_parts_by_time]
-    upper_features = [np.hstack(parts) if parts else np.zeros((0, 0), dtype=float) for parts in upper_parts_by_time]
+    lower_features = [
+        np.hstack(parts) if parts else np.zeros((len(_context_units(context, "lower", idx)), 0), dtype=float)
+        for idx, parts in enumerate(lower_parts_by_time)
+    ]
+    upper_features = [
+        np.hstack(parts) if parts else np.zeros((len(_context_units(context, "upper", idx)), 0), dtype=float)
+        for idx, parts in enumerate(upper_parts_by_time)
+    ]
+
+    pairwise_lower_features: PairFeatures | None = None
+    pairwise_upper_features: PairFeatures | None = None
+    if lower_pairwise_parts or upper_pairwise_parts:
+        pairwise_lower_features = {}
+        pairwise_upper_features = {}
+        pair_keys = sorted(set(lower_pairwise_parts) | set(upper_pairwise_parts))
+        for pair in pair_keys:
+            source_index, target_index = pair
+            lower_source_parts = [*lower_parts_by_time[source_index], *lower_pairwise_parts.get(pair, ([], []))[0]]
+            lower_target_parts = [*lower_parts_by_time[target_index], *lower_pairwise_parts.get(pair, ([], []))[1]]
+            upper_source_parts = [*upper_parts_by_time[source_index], *upper_pairwise_parts.get(pair, ([], []))[0]]
+            upper_target_parts = [*upper_parts_by_time[target_index], *upper_pairwise_parts.get(pair, ([], []))[1]]
+            pairwise_lower_features[pair] = (
+                np.hstack(lower_source_parts)
+                if lower_source_parts
+                else np.zeros((len(_context_units(context, "lower", source_index)), 0), dtype=float),
+                np.hstack(lower_target_parts)
+                if lower_target_parts
+                else np.zeros((len(_context_units(context, "lower", target_index)), 0), dtype=float),
+            )
+            pairwise_upper_features[pair] = (
+                np.hstack(upper_source_parts)
+                if upper_source_parts
+                else np.zeros((len(_context_units(context, "upper", source_index)), 0), dtype=float),
+                np.hstack(upper_target_parts)
+                if upper_target_parts
+                else np.zeros((len(_context_units(context, "upper", target_index)), 0), dtype=float),
+            )
+
     metadata["feature_dim"] = int(lower_features[0].shape[1] if lower_features else 0)
+    metadata["timewise_feature_dim"] = int(lower_features[0].shape[1] if lower_features else 0)
+    if pairwise_lower_features:
+        first_pair = sorted(pairwise_lower_features)[0]
+        metadata["pairwise_feature_dim"] = int(pairwise_lower_features[first_pair][0].shape[1])
+        metadata["pairwise_features"] = {
+            "enabled": True,
+            "time_pairs": [_time_pair_label(context, pair) for pair in sorted(pairwise_lower_features)],
+            "source": "pairwise_base_features_preferred_for_kernel_and_metrics",
+        }
+    else:
+        metadata["pairwise_features"] = {"enabled": False}
     metadata["feature_names"] = names
     return CompareFeatureSet(
         lower_features=lower_features,
@@ -1129,6 +1395,8 @@ def build_compare_feature_set(
         feature_names=names,
         metadata=metadata,
         artifacts=artifacts,
+        pairwise_lower_features=pairwise_lower_features,
+        pairwise_upper_features=pairwise_upper_features,
     )
 
 
