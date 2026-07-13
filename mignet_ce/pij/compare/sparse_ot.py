@@ -108,22 +108,37 @@ def run_sparse_semi_relaxed_ot_from_cost(
     dense_cost = np.asarray(dense_cost, dtype=float)
     if dense_cost.ndim != 2:
         raise ValueError(f"Expected a 2D dense cost matrix, got {dense_cost.shape}.")
-    dense_cost = np.nan_to_num(dense_cost, nan=np.inf, posinf=np.inf, neginf=0.0)
+    finite_mask = np.isfinite(dense_cost)
+    if np.any(dense_cost[finite_mask] < 0.0):
+        minimum = float(dense_cost[finite_mask].min())
+        raise ValueError(f"Dense OT cost contains negative finite values (minimum={minimum}).")
+    dense_cost = np.where(finite_mask, dense_cost, np.inf)
     n_source, n_target = dense_cost.shape
     row, col = _topk_candidates(dense_cost, source_k=source_k, target_k=target_k)
     raw_values = dense_cost[row, col] if row.size else np.array([], dtype=float)
+    if raw_values.size and not np.all(np.isfinite(raw_values)):
+        raise ValueError("Sparse OT candidate raw costs must all be finite.")
     cost_values = _normalize_cost(raw_values)
+    if cost_values.size and not np.all(np.isfinite(cost_values)):
+        raise ValueError("Sparse OT normalized candidate costs must all be finite.")
     cost_sparse = sp.coo_matrix((cost_values, (row, col)), shape=(n_source, n_target), dtype=float).tocsr()
 
     if n_source == 0 or n_target == 0:
         empty = sp.csr_matrix((n_source, n_target), dtype=float)
         return SparseOTResult(
-            candidate_edges=pd.DataFrame(columns=["source_index", "target_index", "raw_cosine_distance", "normalized_cost"]),
+            candidate_edges=pd.DataFrame(columns=["source_index", "target_index", raw_cost_column, "normalized_cost"]),
             cost_sparse=empty,
             transport_sparse=empty,
             pij_row_normalized_sparse=empty,
             source_mass_diagnostics=pd.DataFrame(columns=["source_index", "target_mass", "source_prior", "mass_ratio"]),
-            convergence={"iterations": 0, "converged": True, "reason": "empty_matrix"},
+            convergence={
+                "iterations": 0,
+                "converged": True,
+                "reason": "empty_matrix",
+                "candidate_edges": 0,
+                "cost_source": cost_source,
+                "raw_cost_column": raw_cost_column,
+            },
         )
 
     if cost_sparse.nnz == 0:
@@ -189,6 +204,7 @@ def run_sparse_semi_relaxed_ot_from_cost(
         "target_k": int(target_k),
         "candidate_edges": int(cost_sparse.nnz),
         "cost_source": cost_source,
+        "raw_cost_column": raw_cost_column,
     }
     return SparseOTResult(
         candidate_edges=candidate_edges,

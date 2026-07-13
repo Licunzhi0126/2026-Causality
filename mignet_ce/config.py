@@ -150,6 +150,32 @@ COMPARE_PIJ_METHODS: Tuple[str, ...] = (
     "compare_L_Sr_kl",
     "compare_L_Sr_sot",
 )
+COST_FUSION_NEW_PIJ_METHODS: Tuple[str, ...] = (
+    "compare_L_euc_sot",
+    "compare_L_E_costmix_cos_sot",
+    "compare_L_E_costmix_euc_sot",
+    "compare_L_Sr_costmix_cos_sot",
+    "compare_L_Sr_costmix_euc_sot",
+    "compare_L_E_Sr_costmix_cos_sot",
+    "compare_L_E_Sr_costmix_euc_sot",
+    "compare_E_euc_sot",
+    "compare_E_Sr_costmix_cos_sot",
+    "compare_E_Sr_costmix_euc_sot",
+)
+COST_FUSION_EXPERIMENT_PIJ_METHODS: Tuple[str, ...] = (
+    "compare_L_sot",
+    "compare_L_euc_sot",
+    "compare_L_E_costmix_cos_sot",
+    "compare_L_E_costmix_euc_sot",
+    "compare_L_Sr_costmix_cos_sot",
+    "compare_L_Sr_costmix_euc_sot",
+    "compare_L_E_Sr_costmix_cos_sot",
+    "compare_L_E_Sr_costmix_euc_sot",
+    "compare_E_sot",
+    "compare_E_euc_sot",
+    "compare_E_Sr_costmix_cos_sot",
+    "compare_E_Sr_costmix_euc_sot",
+)
 MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 
 PIJ_METHODS = {
@@ -175,6 +201,7 @@ PIJ_METHODS = {
     "velocity_ot",
     "development_ot",
     *COMPARE_PIJ_METHODS,
+    *COST_FUSION_NEW_PIJ_METHODS,
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
@@ -212,6 +239,8 @@ PIJ_METHOD_PRESETS = {
         "pseudotime_expression_ot",
     ),
     "lightcci_compare_matrix": COMPARE_PIJ_METHODS,
+    "lightcci_cost_fusion": COST_FUSION_EXPERIMENT_PIJ_METHODS,
+    "lightcci_cost_fusion_new_only": COST_FUSION_NEW_PIJ_METHODS,
     "lightcci_main": (MAIN_LIGHTCCI_PIJ_METHOD,),
     "lightcci_all": (*COMPARE_PIJ_METHODS, MAIN_LIGHTCCI_PIJ_METHOD),
     "all": (
@@ -237,6 +266,7 @@ PIJ_METHOD_PRESETS = {
         "velocity_ot",
         "development_ot",
         *COMPARE_PIJ_METHODS,
+        *COST_FUSION_NEW_PIJ_METHODS,
         MAIN_LIGHTCCI_PIJ_METHOD,
     ),
 }
@@ -267,6 +297,7 @@ DEVELOPMENT_PIJ_METHODS = {
     "velocity_ot",
     "development_ot",
     *(method for method in COMPARE_PIJ_METHODS if "_Sr" in method),
+    *(method for method in COST_FUSION_NEW_PIJ_METHODS if "_Sr_costmix" in method),
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
 
@@ -310,6 +341,9 @@ class TemporalRunConfig:
     pij_graph_energy_weight: float = 0.2
     pij_pseudotime_weight: float = 0.5
     pij_sr_weight: float = 0.5
+    compare_cost_weight_l: float = 1.0
+    compare_cost_weight_e: float = 1.0
+    compare_cost_weight_sr: float = 1.0
     pij_potency_weight: float = 0.5
     pij_velocity_weight: float = 0.5
     pij_backward_pseudotime_weight: float = 0.0
@@ -452,6 +486,9 @@ class TemporalRunConfig:
             "pij_velocity_weight",
             "pij_backward_pseudotime_weight",
             "pij_reverse_potency_weight",
+            "compare_cost_weight_l",
+            "compare_cost_weight_e",
+            "compare_cost_weight_sr",
         ):
             if getattr(self, field_name) < 0:
                 raise ValueError(f"{field_name} must be nonnegative.")

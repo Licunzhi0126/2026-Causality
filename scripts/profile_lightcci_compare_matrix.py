@@ -360,6 +360,28 @@ def _profile_root(
                         }
                     )
 
+    method_cls = PIJ_METHOD_REGISTRY.get(pij_method)
+    component_keys = tuple(getattr(method_cls, "component_keys", ())) if method_cls is not None else ()
+    vector_metric = getattr(method_cls, "vector_metric", None) if method_cls is not None else None
+    cost_fusion_estimates = []
+    if component_keys and vector_metric in {"cosine", "euclidean"}:
+        for row in main_estimates:
+            dense_gib = float(row["dense_pre_cost_float64_gib"])
+            cost_fusion_estimates.append(
+                {
+                    **row,
+                    "component_keys": list(component_keys),
+                    "component_count": len(component_keys),
+                    "vector_metric": vector_metric,
+                    "one_dense_cost_float64_gib": dense_gib,
+                    "sequential_accumulation_peak_float64_gib": 2.0 * dense_gib,
+                    "sequential_accumulation_model": "fused_accumulator_plus_one_current_component_cost",
+                    "topk_dense_diagnostics_memory_note": (
+                        "Retaining final fused B for diagnostics adds one dense matrix; component matrices are not retained."
+                    ),
+                }
+            )
+
     legacy_n_checks = [
         {
             "organ_layer": key,
@@ -446,6 +468,14 @@ def _profile_root(
         "sr_feature_inputs": sr_rows,
         "time_pair_size_and_memory_estimates": pair_estimates,
         "main_method_size_and_memory_estimates": main_estimates,
+        "cost_fusion_method_profile": {
+            "enabled": bool(component_keys and vector_metric in {"cosine", "euclidean"}),
+            "pij_method": pij_method,
+            "component_keys": list(component_keys),
+            "component_count": len(component_keys),
+            "vector_metric": vector_metric,
+            "estimates": cost_fusion_estimates,
+        },
     }
 
 

@@ -17,12 +17,22 @@ from mignet_ce.pij.compare.compare_E_Sr_cos import CompareESrCosPijMethod
 from mignet_ce.pij.compare.compare_E_Sr_kl import CompareESrKlPijMethod
 from mignet_ce.pij.compare.compare_E_Sr_sot import CompareESrSotPijMethod
 from mignet_ce.pij.compare.compare_E_sot import CompareESotPijMethod
+from mignet_ce.pij.compare.compare_E_euc_sot import CompareEEucSotPijMethod
+from mignet_ce.pij.compare.compare_E_Sr_costmix_cos_sot import CompareESrCostMixCosSotPijMethod
+from mignet_ce.pij.compare.compare_E_Sr_costmix_euc_sot import CompareESrCostMixEucSotPijMethod
 from mignet_ce.pij.compare.compare_L_cos import CompareLCosPijMethod
 from mignet_ce.pij.compare.compare_L_kl import CompareLKlPijMethod
 from mignet_ce.pij.compare.compare_L_Sr_cos import CompareLSrCosPijMethod
 from mignet_ce.pij.compare.compare_L_Sr_kl import CompareLSrKlPijMethod
 from mignet_ce.pij.compare.compare_L_Sr_sot import CompareLSrSotPijMethod
 from mignet_ce.pij.compare.compare_L_sot import CompareLSotPijMethod
+from mignet_ce.pij.compare.compare_L_euc_sot import CompareLEucSotPijMethod
+from mignet_ce.pij.compare.compare_L_E_costmix_cos_sot import CompareLECostMixCosSotPijMethod
+from mignet_ce.pij.compare.compare_L_E_costmix_euc_sot import CompareLECostMixEucSotPijMethod
+from mignet_ce.pij.compare.compare_L_E_Sr_costmix_cos_sot import CompareLESrCostMixCosSotPijMethod
+from mignet_ce.pij.compare.compare_L_E_Sr_costmix_euc_sot import CompareLESrCostMixEucSotPijMethod
+from mignet_ce.pij.compare.compare_L_Sr_costmix_cos_sot import CompareLSrCostMixCosSotPijMethod
+from mignet_ce.pij.compare.compare_L_Sr_costmix_euc_sot import CompareLSrCostMixEucSotPijMethod
 from mignet_ce.pij.compare.compare_main_lap_sr_spatial_sot import CompareMainLapSrSpatialSotPijMethod
 from mignet_ce.pij.compare.compare_N_cos import CompareNCosPijMethod
 from mignet_ce.pij.compare.compare_N_kl import CompareNKlPijMethod
@@ -84,12 +94,14 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_E_cos": CompareECosPijMethod,
     "compare_E_kl": CompareEKlPijMethod,
     "compare_E_sot": CompareESotPijMethod,
+    "compare_E_euc_sot": CompareEEucSotPijMethod,
     "compare_N_cos": CompareNCosPijMethod,
     "compare_N_kl": CompareNKlPijMethod,
     "compare_N_sot": CompareNSotPijMethod,
     "compare_L_cos": CompareLCosPijMethod,
     "compare_L_kl": CompareLKlPijMethod,
     "compare_L_sot": CompareLSotPijMethod,
+    "compare_L_euc_sot": CompareLEucSotPijMethod,
     "compare_Sr_cos": CompareSrCosPijMethod,
     "compare_Sr_kl": CompareSrKlPijMethod,
     "compare_Sr_sot": CompareSrSotPijMethod,
@@ -111,6 +123,14 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_L_Sr_cos": CompareLSrCosPijMethod,
     "compare_L_Sr_kl": CompareLSrKlPijMethod,
     "compare_L_Sr_sot": CompareLSrSotPijMethod,
+    "compare_L_E_costmix_cos_sot": CompareLECostMixCosSotPijMethod,
+    "compare_L_E_costmix_euc_sot": CompareLECostMixEucSotPijMethod,
+    "compare_L_Sr_costmix_cos_sot": CompareLSrCostMixCosSotPijMethod,
+    "compare_L_Sr_costmix_euc_sot": CompareLSrCostMixEucSotPijMethod,
+    "compare_L_E_Sr_costmix_cos_sot": CompareLESrCostMixCosSotPijMethod,
+    "compare_L_E_Sr_costmix_euc_sot": CompareLESrCostMixEucSotPijMethod,
+    "compare_E_Sr_costmix_cos_sot": CompareESrCostMixCosSotPijMethod,
+    "compare_E_Sr_costmix_euc_sot": CompareESrCostMixEucSotPijMethod,
     "compare_main_lap_sr_spatial_sot": CompareMainLapSrSpatialSotPijMethod,
 }
 

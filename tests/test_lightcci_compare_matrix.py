@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -386,7 +387,7 @@ def test_compare_L_sot_cost_uses_only_L_features(tmp_path: Path) -> None:
 
     assert kernels is not None
     assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_source_feature_keys"] == ["L"]
-    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_source"] == "current_compare_feature_cosine_distance"
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["cost_source"] == "cosine_distance_on_current_compare_features"
     assert_row_stochastic(kernels.p_lower[(0, 1)])
 
 
@@ -471,6 +472,79 @@ def test_compare_main_lap_sr_spatial_sot_runs_on_lightcci_context(tmp_path: Path
     assert kernels.kernel_metadata["11.5->12.5"]["lower"]["sparse_ot"]["cost_source"] == "lightcci_main_laplacian_hks_sr_spatial_pre_cost"
     assert_row_stochastic(kernels.p_lower[(0, 1)])
     assert_row_stochastic(kernels.p_upper[(0, 1)])
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "compare_L_euc_sot",
+        "compare_E_euc_sot",
+        "compare_L_E_costmix_cos_sot",
+        "compare_L_E_costmix_euc_sot",
+        "compare_L_Sr_costmix_cos_sot",
+        "compare_L_Sr_costmix_euc_sot",
+        "compare_L_E_Sr_costmix_cos_sot",
+        "compare_L_E_Sr_costmix_euc_sot",
+        "compare_E_Sr_costmix_cos_sot",
+        "compare_E_Sr_costmix_euc_sot",
+    ],
+)
+def test_cost_fusion_methods_run_on_lightcci_context(tmp_path: Path, method: str) -> None:
+    context = _mark_lightcci_context(_context())
+    _write_all_cci(tmp_path / "data", context)
+    dev_root = tmp_path / "developmental"
+    _write_sr_features(dev_root, context)
+    cfg = _cfg(tmp_path, method, dev_root=dev_root)
+    cfg.network_method = "light_cci"
+
+    result, kernels = get_pij_method(method).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["fusion_mode"] == "cost_mix"
+    assert result.method_metadata["method_result_features_used_for_P"] is False
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["candidate_edges"] > 0
+    assert kernels.kernel_metadata["11.5->12.5"]["lower"]["component_normalization"] == "robust_5_95_before_fusion"
+    assert_row_stochastic(kernels.p_lower[(0, 1)])
+    assert_row_stochastic(kernels.p_upper[(0, 1)])
+
+
+def test_cost_fusion_export_records_traceable_metadata_and_sparse_ot_artifacts(tmp_path: Path) -> None:
+    method = "compare_L_E_Sr_costmix_euc_sot"
+    context = _mark_lightcci_context(_context())
+    _write_all_cci(tmp_path / "data", context)
+    dev_root = tmp_path / "developmental"
+    _write_sr_features(dev_root, context)
+    cfg = _cfg(tmp_path, method, dev_root=dev_root)
+    cfg.network_method = "light_cci"
+    cfg.export_pij = True
+
+    get_pij_method(method).run(context, cfg, [(0, 1)])
+
+    artifact_dir = (
+        tmp_path
+        / "pij"
+        / "compare"
+        / f"method={method}"
+        / "organ=heart"
+        / "pair=louvain_k150_to_seurat_k40"
+        / "time=11.5_to_12.5"
+        / "side=lower"
+    )
+    metadata = json.loads((artifact_dir / "metadata.json").read_text(encoding="utf-8"))
+    diagnostics = json.loads((artifact_dir / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+    assert metadata["fusion_mode"] == "cost_mix"
+    assert metadata["component_keys"] == ["L", "E", "Sr"]
+    assert metadata["component_distance_rules"]["Sr"] == "scalar_absolute_difference"
+    assert metadata["fused_pre_cost_summary"]["nonfinite_count"] == 0
+    assert diagnostics["ot_convergence"]["raw_cost_column"] == "raw_fused_pre_cost"
+    for name in (
+        "candidate_edges.parquet",
+        "cost_sparse.npz",
+        "pij_transport_sparse.npz",
+        "source_mass_diagnostics.csv",
+        "ot_convergence.json",
+    ):
+        assert (artifact_dir / name).is_file()
 
 
 def test_compare_export_writes_required_artifacts(tmp_path: Path) -> None:

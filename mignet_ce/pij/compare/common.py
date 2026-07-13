@@ -190,6 +190,7 @@ def export_compare_pair_artifacts(
     pij_sparse: sp.spmatrix,
     diagnostics: dict[str, object],
     sparse_ot_result: SparseOTResult | None = None,
+    metadata_extra: dict[str, object] | None = None,
 ) -> Path:
     directory = compare_artifact_directory(cfg, context, method_name, pair, side)
     directory.mkdir(parents=True, exist_ok=True)
@@ -198,9 +199,7 @@ def export_compare_pair_artifacts(
     source_units = side_units(context, side, pair[0])
     target_units = side_units(context, side, pair[1])
 
-    _write_json(
-        directory / "metadata.json",
-        {
+    metadata_payload: dict[str, object] = {
             "pij_method": method_name,
             "compare_feature_keys": list(feature_keys),
             "compare_pij_method": pij_key,
@@ -217,8 +216,10 @@ def export_compare_pair_artifacts(
             "target_feature_shape": list(np.asarray(target_features).shape),
             "raw_sparse": _sparse_summary(raw_sparse),
             "pij_row_normalized_sparse": _sparse_summary(pij_sparse),
-        },
-    )
+        }
+    if metadata_extra:
+        metadata_payload.update(metadata_extra)
+    _write_json(directory / "metadata.json", metadata_payload)
     _write_json(directory / "feature_source.json", feature_set.metadata)
     pd.DataFrame({"index": range(len(source_units)), "unit": source_units}).to_csv(directory / "units_source.csv", index=False)
     pd.DataFrame({"index": range(len(target_units)), "unit": target_units}).to_csv(directory / "units_target.csv", index=False)
@@ -250,11 +251,13 @@ class ComparePijMethodBase:
         pairs: Sequence[TimePair],
     ) -> tuple[MethodResult, TransitionKernels | None]:
         feature_set = build_compare_feature_set(context, cfg, self.feature_keys)
+        fusion_mode = "single_feature_distance" if len(self.feature_keys) == 1 else "feature_concat"
         kernels = TransitionKernels(
             kernel_metadata={
                 "pij_method": self.name,
                 "compare_feature_keys": list(self.feature_keys),
                 "compare_pij_method": self.pij_key,
+                "fusion_mode": fusion_mode,
                 "feature_metadata": feature_set.metadata,
                 "row_stochastic": True,
                 "matrix_convention": "P[i,j] maps source-stage row i to target-stage row j.",
@@ -288,8 +291,15 @@ class ComparePijMethodBase:
                 kernels.kernel_metadata[pair_label][side] = {
                     "feature_keys": list(self.feature_keys),
                     "pij_method": self.pij_key,
+                    "fusion_mode": fusion_mode,
                     "cost_source_feature_keys": list(self.feature_keys),
-                    "cost_source": "current_compare_feature_cosine_distance" if self.pij_key in {"cos", "sot"} else "current_compare_feature_kl",
+                    "cost_source": (
+                        "cosine_distance_on_current_compare_features"
+                        if self.pij_key == "sot"
+                        else "current_compare_feature_cosine_distance"
+                        if self.pij_key == "cos"
+                        else "current_compare_feature_kl"
+                    ),
                     "feature_source": "pairwise_compare_features" if pairwise_used else "timewise_compare_features",
                     "pairwise_features_used": bool(pairwise_used),
                     "source_shape": list(source.shape),
@@ -322,6 +332,12 @@ class ComparePijMethodBase:
                         pij_sparse=pij_sparse,
                         diagnostics=export_diagnostics,
                         sparse_ot_result=sparse_result,
+                        metadata_extra={
+                            "fusion_mode": fusion_mode,
+                            "transition_construction": (
+                                "single_feature_distance" if len(self.feature_keys) == 1 else "feature_concat"
+                            ),
+                        },
                     )
 
         result = MethodResult(
@@ -336,6 +352,7 @@ class ComparePijMethodBase:
                 "representation": "lightcci_compare_matrix",
                 "compare_feature_keys": list(self.feature_keys),
                 "compare_pij_method": self.pij_key,
+                "fusion_mode": fusion_mode,
                 "feature_names": feature_set.feature_names,
                 "feature_metadata": feature_set.metadata,
             },

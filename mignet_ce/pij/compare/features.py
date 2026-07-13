@@ -1278,6 +1278,8 @@ def build_compare_feature_set(
     context: NetworkContext,
     cfg: TemporalRunConfig,
     feature_keys: Sequence[str],
+    *,
+    apply_feature_weights: bool = True,
 ) -> CompareFeatureSet:
     keys = tuple(feature_keys)
     if not keys:
@@ -1290,14 +1292,20 @@ def build_compare_feature_set(
     metadata: dict[str, object] = {
         "feature_keys": list(keys),
         "base_features": {},
-        "combination_rule": "standardize_each_base_then_concat_sqrt_weighted",
+        "combination_rule": (
+            "standardize_each_base_then_concat_sqrt_weighted"
+            if apply_feature_weights
+            else "standardize_each_base_then_concat_unweighted"
+        ),
+        "feature_weight_applied": bool(apply_feature_weights),
         "feature_alignment_space": context.feature_alignment_space,
     }
     artifacts: dict[str, dict[str, dict[str, object]]] = {"lower": {}, "upper": {}}
 
     for key in keys:
         base = _build_base_feature(context, cfg, key)
-        weight = max(0.0, _feature_weight(key, cfg))
+        requested_weight = max(0.0, _feature_weight(key, cfg))
+        weight = requested_weight if apply_feature_weights else 1.0
         scale = float(np.sqrt(weight))
         names.extend(base.names)
         base_metadata = dict(base.metadata)
@@ -1333,7 +1341,14 @@ def build_compare_feature_set(
                 upper_parts_by_time[idx].append(upper_scaled[idx] * scale)
             base_metadata.update(standardization_metadata)
 
-        base_metadata["weight"] = float(weight)
+        base_metadata.update(
+            {
+                "requested_weight": float(requested_weight),
+                "feature_weight_applied": bool(apply_feature_weights),
+                "weight": float(weight),
+                "scale": float(scale),
+            }
+        )
         metadata["base_features"][key] = base_metadata
         for side in ("lower", "upper"):
             artifacts[side].update(base.artifacts.get(side, {}))

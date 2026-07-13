@@ -92,6 +92,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-graph-energy-weight", type=float, default=0.2)
     parser.add_argument("--pij-pseudotime-weight", type=float, default=0.5)
     parser.add_argument("--pij-sr-weight", type=float, default=0.5)
+    parser.add_argument("--compare-cost-weight-l", type=float, default=1.0)
+    parser.add_argument("--compare-cost-weight-e", type=float, default=1.0)
+    parser.add_argument("--compare-cost-weight-sr", type=float, default=1.0)
     parser.add_argument("--pij-potency-weight", type=float, default=0.5)
     parser.add_argument("--pij-velocity-weight", type=float, default=0.5)
     parser.add_argument("--pij-backward-pseudotime-weight", type=float, default=0.0)
@@ -99,7 +102,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pij-entropy-epsilon", type=float, default=0.05)
     parser.add_argument("--pij-use-unbalanced-ot", action="store_true")
     parser.add_argument("--pij-unbalanced-mass", type=float, default=1.0)
-    parser.add_argument("--pij-cost-metric", choices=["cosine", "euclidean"], default="cosine")
+    parser.add_argument(
+        "--pij-cost-metric",
+        choices=["cosine", "euclidean"],
+        default="cosine",
+        help="Metric for legacy OT methods; compare cost-fusion methods encode cos/euc in the method name.",
+    )
     parser.add_argument("--no-pure-expression-normalize", action="store_true")
     parser.add_argument("--no-pure-expression-log1p", action="store_true")
     parser.add_argument("--pure-expression-scale-factor", type=float, default=10000.0)
@@ -199,6 +207,9 @@ def main() -> None:
         pij_graph_energy_weight=args.pij_graph_energy_weight,
         pij_pseudotime_weight=args.pij_pseudotime_weight,
         pij_sr_weight=args.pij_sr_weight,
+        compare_cost_weight_l=args.compare_cost_weight_l,
+        compare_cost_weight_e=args.compare_cost_weight_e,
+        compare_cost_weight_sr=args.compare_cost_weight_sr,
         pij_potency_weight=args.pij_potency_weight,
         pij_velocity_weight=args.pij_velocity_weight,
         pij_backward_pseudotime_weight=args.pij_backward_pseudotime_weight,

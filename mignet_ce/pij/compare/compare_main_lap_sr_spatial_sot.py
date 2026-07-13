@@ -9,41 +9,9 @@ from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
 from mignet_ce.pij.compare.common import export_compare_pair_artifacts
 from mignet_ce.pij.compare.cosine import matrix_summary, pairwise_cosine_distance
+from mignet_ce.pij.compare.distances import pairwise_euclidean_distance, robust_normalize_cost
 from mignet_ce.pij.compare.features import CompareFeatureSet, build_compare_feature_set
 from mignet_ce.pij.compare.sparse_ot import run_sparse_semi_relaxed_ot_from_cost
-
-
-def _robust_normalize_cost(cost: np.ndarray) -> np.ndarray:
-    arr = np.asarray(cost, dtype=float)
-    if arr.size == 0:
-        return arr.copy()
-    finite = arr[np.isfinite(arr)]
-    if finite.size == 0:
-        return np.zeros_like(arr, dtype=float)
-    lo = float(np.nanpercentile(finite, 5.0))
-    hi = float(np.nanpercentile(finite, 95.0))
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        lo = float(np.nanmin(finite))
-        hi = float(np.nanmax(finite))
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        return np.zeros_like(arr, dtype=float)
-    out = (arr - lo) / (hi - lo)
-    return np.clip(np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
-
-
-def _pairwise_euclidean(source: np.ndarray, target: np.ndarray) -> np.ndarray:
-    src = np.asarray(source, dtype=float)
-    tgt = np.asarray(target, dtype=float)
-    if src.ndim != 2 or tgt.ndim != 2:
-        raise ValueError(f"Expected 2D coordinate/features, got {src.shape} and {tgt.shape}.")
-    if src.shape[1] != tgt.shape[1]:
-        raise ValueError(f"Coordinate/feature dimensions differ: {src.shape[1]} vs {tgt.shape[1]}.")
-    if src.shape[0] == 0 or tgt.shape[0] == 0:
-        return np.zeros((src.shape[0], tgt.shape[0]), dtype=float)
-    src_sq = np.sum(src * src, axis=1, keepdims=True)
-    tgt_sq = np.sum(tgt * tgt, axis=1, keepdims=True).T
-    dist_sq = np.maximum(src_sq + tgt_sq - 2.0 * (src @ tgt.T), 0.0)
-    return np.sqrt(dist_sq)
 
 
 def _coords_for_side(context: NetworkContext, side: str) -> list[np.ndarray]:
@@ -308,9 +276,9 @@ class CompareMainLapSrSpatialSotPijMethod:
         coord_target: np.ndarray,
         weights: dict[str, float],
     ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, object]]:
-        l_cost = _robust_normalize_cost(pairwise_cosine_distance(l_source, l_target))
-        sr_cost = _robust_normalize_cost(_pairwise_euclidean(sr_source, sr_target))
-        spatial_cost = _robust_normalize_cost(_pairwise_euclidean(coord_source, coord_target))
+        l_cost, _ = robust_normalize_cost(pairwise_cosine_distance(l_source, l_target))
+        sr_cost, _ = robust_normalize_cost(pairwise_euclidean_distance(sr_source, sr_target))
+        spatial_cost, _ = robust_normalize_cost(pairwise_euclidean_distance(coord_source, coord_target))
         total_weight = sum(float(value) for value in weights.values())
         pre_cost = (
             float(weights["laplacian_hks"]) * l_cost
