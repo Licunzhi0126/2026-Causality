@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -13,6 +14,12 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from mignet_ce.config import LIGHT_CCI_NETWORK_METHODS
 
 
 METHOD_MAP: dict[str, tuple[str, str]] = {
@@ -34,20 +41,23 @@ DISTANCE_ORDER = ("Cosine", "Euclidean")
 GROUP_COLUMNS = ("organ", "time_pair", "lower_layer", "upper_layer")
 
 
-def _network_root(result_root: Path) -> Path:
+def _network_root(result_root: Path, network_method: str = "light_cci") -> Path:
+    if network_method not in LIGHT_CCI_NETWORK_METHODS:
+        raise ValueError(f"network_method must be one of {sorted(LIGHT_CCI_NETWORK_METHODS)}.")
     root = Path(result_root)
-    nested = root / "network=light_cci"
+    nested = root / f"network={network_method}"
     return nested if nested.is_dir() else root
 
 
 def load_cost_fusion_metrics(
     result_root: Path,
     *,
+    network_method: str = "light_cci",
     duplicate_policy: str = "error",
 ) -> pd.DataFrame:
     if duplicate_policy not in {"error", "mean"}:
         raise ValueError("duplicate_policy must be one of ['error', 'mean'].")
-    network_root = _network_root(result_root)
+    network_root = _network_root(result_root, network_method=network_method)
     frames: list[pd.DataFrame] = []
     required = {*GROUP_COLUMNS, "EI_gain"}
     for method, (feature_group, distance) in METHOD_MAP.items():
@@ -160,10 +170,15 @@ def plot_cost_fusion_ablation(
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Plot the fixed 12-method LightCCI cost-fusion EI_gain ablation."
+        description="Plot the fixed 12-method LightCCI-family cost-fusion EI_gain ablation."
     )
     parser.add_argument("--result-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--network-method",
+        choices=sorted(LIGHT_CCI_NETWORK_METHODS),
+        default="light_cci",
+    )
     parser.add_argument("--duplicate-policy", choices=["error", "mean"], default="error")
     parser.add_argument("--dpi", type=int, default=240)
     return parser
@@ -173,6 +188,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = build_argparser().parse_args(argv)
     metrics = load_cost_fusion_metrics(
         args.result_root,
+        network_method=args.network_method,
         duplicate_policy=args.duplicate_policy,
     )
     paths = plot_cost_fusion_ablation(metrics, args.output_dir, dpi=args.dpi)

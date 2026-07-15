@@ -16,7 +16,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.config import DEFAULT_DATA_ROOT, LAYER_SPECS, NETWORK_METHODS, PIJ_METHODS, TemporalRunConfig, VerticalPairSpec
+from mignet_ce.config import (
+    DEFAULT_DATA_ROOT,
+    LAYER_SPECS,
+    LIGHT_CCI_NETWORK_METHODS,
+    NETWORK_METHODS,
+    PIJ_METHODS,
+    TemporalRunConfig,
+    VerticalPairSpec,
+)
 from mignet_ce.io.loaders import LayerDataResolver, peek_h5ad_genes, peek_h5ad_units, read_commot_index
 from mignet_ce.networks.registry import NETWORK_BUILDERS
 from mignet_ce.pij.registry import PIJ_METHOD_REGISTRY
@@ -453,7 +461,8 @@ def _profile_root(
             "network_builder_registered": network_method in NETWORK_BUILDERS,
             "pij_method_configured": pij_method in PIJ_METHODS,
             "pij_method_registered": pij_method in PIJ_METHOD_REGISTRY,
-            "uses_lightcci_network": network_method == "light_cci",
+            "uses_lightcci_network": network_method in LIGHT_CCI_NETWORK_METHODS,
+            "uses_lightcci_family_network": network_method in LIGHT_CCI_NETWORK_METHODS,
         },
         "organs": list(organs),
         "layers": list(layers),

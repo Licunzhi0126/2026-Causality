@@ -12,6 +12,8 @@ from mignet_ce.networks.legacy_inter_additive_grn_cci import LegacyInterAdditive
 from mignet_ce.networks.legacy_inter_cci_only import LegacyInterCCIOnlyBuilder
 from mignet_ce.networks.legacy_mixed_grn_cci import LegacyMixedGRNCCIBuilder
 from mignet_ce.networks.light_cci import LightCCINetworkBuilder
+from mignet_ce.networks.sparse_cci_mass95 import SparseCCIMass95NetworkBuilder
+from mignet_ce.networks.sparse_cci_mass99 import SparseCCIMass99NetworkBuilder
 from mignet_ce.networks.unit_specific_clean_grn_cci_mix import UnitSpecificCleanGRNCCIMixBuilder
 
 
@@ -26,6 +28,8 @@ NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
     "cross_cell_multilayer": CrossCellMultilayerBuilder,
     "expression_only": ExpressionOnlyBuilder,
     "light_cci": LightCCINetworkBuilder,
+    "sparse_cci_mass99": SparseCCIMass99NetworkBuilder,
+    "sparse_cci_mass95": SparseCCIMass95NetworkBuilder,
 }
 
 

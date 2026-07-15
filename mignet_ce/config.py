@@ -271,6 +271,11 @@ PIJ_METHOD_PRESETS = {
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
+LIGHT_CCI_NETWORK_METHODS = {
+    "light_cci",
+    "sparse_cci_mass99",
+    "sparse_cci_mass95",
+}
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
     "legacy_inter_cci_only",
@@ -281,7 +286,7 @@ NETWORK_METHODS = {
     "unit_specific_clean_grn_cci_mix",
     "cross_cell_multilayer",
     "expression_only",
-    "light_cci",
+    *LIGHT_CCI_NETWORK_METHODS,
 }
 DEVELOPMENT_PIJ_METHODS = {
     "pseudotime_ot",

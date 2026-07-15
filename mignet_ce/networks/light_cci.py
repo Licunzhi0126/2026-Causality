@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -44,6 +45,116 @@ def _as_nonnegative_csr(matrix: sp.spmatrix, cci_min: float = 0.0) -> sp.csr_mat
             out.data[out.data < float(cci_min)] = 0.0
         out.eliminate_zeros()
     return out
+
+
+def _offdiag_summary(matrix: sp.spmatrix) -> dict[str, object]:
+    source = matrix.tocsr(copy=True)
+    source.sum_duplicates()
+    source.eliminate_zeros()
+    n_rows, n_cols = source.shape
+    if n_rows != n_cols:
+        raise ValueError(f"CCI adjacency must be square; got shape {source.shape}.")
+    coo = source.tocoo()
+    offdiag = coo.row != coo.col
+    offdiag_rows = np.asarray(coo.row[offdiag], dtype=int)
+    offdiag_cols = np.asarray(coo.col[offdiag], dtype=int)
+    offdiag_data = np.asarray(coo.data[offdiag], dtype=float)
+    out_degree = np.bincount(offdiag_rows, minlength=n_rows)
+    in_degree = np.bincount(offdiag_cols, minlength=n_rows)
+    denominator = n_rows * (n_rows - 1)
+    return {
+        "adjacency_nnz": int(source.nnz),
+        "offdiag_nnz": int(offdiag_data.size),
+        "offdiag_mass": float(np.sum(offdiag_data, dtype=np.float64)),
+        "offdiag_density": float(offdiag_data.size / denominator) if denominator > 0 else 0.0,
+        "zero_out_degree": int(np.count_nonzero(out_degree == 0)),
+        "zero_in_degree": int(np.count_nonzero(in_degree == 0)),
+        "out_degree_min": int(np.min(out_degree)) if out_degree.size else 0,
+        "out_degree_median": float(np.median(out_degree)) if out_degree.size else 0.0,
+        "out_degree_max": int(np.max(out_degree)) if out_degree.size else 0,
+    }
+
+
+def _cci_pruning_diagnostics(
+    raw_adjacency: sp.spmatrix,
+    adjacency: sp.spmatrix,
+) -> dict[str, object]:
+    before = _offdiag_summary(raw_adjacency)
+    after = _offdiag_summary(adjacency)
+    raw_mass = float(before["offdiag_mass"])
+    retained_mass = float(after["offdiag_mass"])
+    return {
+        "raw_adjacency_nnz": int(before["adjacency_nnz"]),
+        "raw_offdiag_nnz": int(before["offdiag_nnz"]),
+        "raw_offdiag_mass": raw_mass,
+        "adjacency_nnz": int(after["adjacency_nnz"]),
+        "retained_offdiag_nnz": int(after["offdiag_nnz"]),
+        "retained_offdiag_mass": retained_mass,
+        "retained_offdiag_mass_fraction": float(retained_mass / raw_mass) if raw_mass > 0.0 else 1.0,
+        "offdiag_density_before": float(before["offdiag_density"]),
+        "offdiag_density_after": float(after["offdiag_density"]),
+        "zero_out_degree_after": int(after["zero_out_degree"]),
+        "zero_in_degree_after": int(after["zero_in_degree"]),
+        "retained_out_degree_min": int(after["out_degree_min"]),
+        "retained_out_degree_median": float(after["out_degree_median"]),
+        "retained_out_degree_max": int(after["out_degree_max"]),
+    }
+
+
+def _prune_sender_mass(
+    matrix: sp.spmatrix,
+    keep_ratio: float,
+) -> tuple[sp.csr_matrix, dict[str, object]]:
+    ratio = float(keep_ratio)
+    if not np.isfinite(ratio) or not 0.0 < ratio <= 1.0:
+        raise ValueError(f"keep_ratio must satisfy 0 < keep_ratio <= 1; got {keep_ratio!r}.")
+
+    source = matrix.tocsr(copy=True).astype(float)
+    if source.shape[0] != source.shape[1]:
+        raise ValueError(f"CCI adjacency must be square; got shape {source.shape}.")
+    source.sum_duplicates()
+    source.sort_indices()
+    source.eliminate_zeros()
+    if source.nnz and (not np.all(np.isfinite(source.data)) or np.any(source.data < 0.0)):
+        raise ValueError("CCI adjacency must contain only finite nonnegative values before mass pruning.")
+
+    n_rows = source.shape[0]
+    output_indices: list[np.ndarray] = []
+    output_data: list[np.ndarray] = []
+    output_indptr = np.zeros(n_rows + 1, dtype=np.int64)
+
+    for sender in range(n_rows):
+        start = int(source.indptr[sender])
+        end = int(source.indptr[sender + 1])
+        row_cols = source.indices[start:end]
+        row_values = source.data[start:end]
+        diagonal_positions = np.flatnonzero(row_cols == sender)
+        offdiag_positions = np.flatnonzero((row_cols != sender) & (row_values > 0.0))
+
+        selected_offdiag = np.empty(0, dtype=int)
+        if offdiag_positions.size:
+            offdiag_cols = row_cols[offdiag_positions]
+            offdiag_values = row_values[offdiag_positions]
+            order = np.lexsort((offdiag_cols, -offdiag_values))
+            sorted_values = offdiag_values[order]
+            target_mass = ratio * float(np.sum(sorted_values, dtype=np.float64))
+            cumulative = np.cumsum(sorted_values, dtype=np.float64)
+            cutoff = min(int(np.searchsorted(cumulative, target_mass, side="left")), order.size - 1)
+            selected_offdiag = offdiag_positions[order[: cutoff + 1]]
+
+        selected_positions = np.sort(np.concatenate((diagonal_positions, selected_offdiag)))
+        if selected_positions.size:
+            output_indices.append(np.asarray(row_cols[selected_positions], dtype=source.indices.dtype))
+            output_data.append(np.asarray(row_values[selected_positions], dtype=float))
+        output_indptr[sender + 1] = output_indptr[sender] + selected_positions.size
+
+    indices = np.concatenate(output_indices) if output_indices else np.empty(0, dtype=source.indices.dtype)
+    data = np.concatenate(output_data) if output_data else np.empty(0, dtype=float)
+    pruned = sp.csr_matrix((data, indices, output_indptr), shape=source.shape, dtype=float)
+    pruned.sum_duplicates()
+    pruned.sort_indices()
+    pruned.eliminate_zeros()
+    return pruned, _cci_pruning_diagnostics(source, pruned)
 
 
 def _align_square_matrix(matrix: sp.spmatrix, index_names: Sequence[str], units: Sequence[str]) -> sp.csr_matrix:
@@ -161,6 +272,7 @@ def _adjacency_from_grn_edges(edge_table: pd.DataFrame, units: Sequence[str]) ->
 
 class LightCCINetworkBuilder:
     network_method = "light_cci"
+    cci_mass_keep_ratio: float | None = None
 
     def build_pair_context(
         self,
@@ -324,7 +436,15 @@ class LightCCINetworkBuilder:
             raw = total if total is not None else sp.csr_matrix((len(units), len(units)), dtype=float)
             source = "commot_lr_aggregate"
             source_path = paths.cci_lr_dir
-        adjacency = _as_nonnegative_csr(_align_square_matrix(raw, index_units, units), cci_min=cfg.cci_min)
+        aligned_adjacency = _as_nonnegative_csr(_align_square_matrix(raw, index_units, units), cci_min=cfg.cci_min)
+        if self.cci_mass_keep_ratio is not None and cfg.cci_min > 0.0:
+            warnings.warn(
+                f"{self.network_method} is applying sender-wise mass pruning after cci_min={cfg.cci_min}; "
+                "the retained mass fraction is relative to the post-cci_min adjacency.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        adjacency, pruning_metadata = self._postprocess_cci_adjacency(aligned_adjacency)
         inter_edges = _cci_edges_from_adjacency(adjacency, units, layer, stage)
         coords = align_coords(expression.coords, units)
         graph = LayerGraph(
@@ -342,8 +462,12 @@ class LightCCINetworkBuilder:
                 "adjacency_path": str(source_path),
                 "index_path": str(paths.cci_index),
                 "lr_files": int(lr_files),
+                "source_adjacency_shape": list(raw.shape),
+                "source_adjacency_nnz": int(raw.nnz),
                 "adjacency_shape": list(adjacency.shape),
-                "adjacency_nnz": int(adjacency.nnz),
+                "cci_mass_reference": "aligned_nonnegative_after_cci_min",
+                "cci_min": float(cfg.cci_min),
+                **pruning_metadata,
                 "adjacency_csr": adjacency,
                 "uses_grn": False,
                 "uses_cci": True,
@@ -352,6 +476,38 @@ class LightCCINetworkBuilder:
             },
         )
         return graph, coords, expression.genes
+
+    def _postprocess_cci_adjacency(
+        self,
+        adjacency: sp.csr_matrix,
+    ) -> tuple[sp.csr_matrix, dict[str, object]]:
+        keep_ratio = self.cci_mass_keep_ratio
+        if keep_ratio is None:
+            return adjacency, {
+                "cci_pruning_applied": False,
+                "cci_pruning_method": "none",
+                "cci_mass_keep_ratio": None,
+                "cci_pruning_excludes_diagonal": True,
+                "cci_pruning_preserves_raw_weights": True,
+                **_cci_pruning_diagnostics(adjacency, adjacency),
+            }
+
+        pruned, diagnostics = _prune_sender_mass(adjacency, keep_ratio)
+        if int(diagnostics["zero_in_degree_after"]) > 0:
+            warnings.warn(
+                f"{self.network_method} produced {diagnostics['zero_in_degree_after']} zero-in-degree nodes; "
+                "no edges were added automatically.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return pruned, {
+            "cci_pruning_applied": True,
+            "cci_pruning_method": "sender_cumulative_mass",
+            "cci_mass_keep_ratio": float(keep_ratio),
+            "cci_pruning_excludes_diagonal": True,
+            "cci_pruning_preserves_raw_weights": True,
+            **diagnostics,
+        }
 
     def _build_gene_graph(
         self,
@@ -394,6 +550,9 @@ class LightCCINetworkBuilder:
                 "adjacency_shape": list(adjacency.shape),
                 "adjacency_nnz": int(adjacency.nnz),
                 "adjacency_csr": adjacency,
+                "cci_pruning_applied": False,
+                "cci_pruning_method": "not_applicable_gene_grn",
+                "cci_mass_keep_ratio": None,
                 "grn_weight_mode": "abs",
                 "uses_grn": True,
                 "uses_cci": False,
@@ -403,11 +562,10 @@ class LightCCINetworkBuilder:
         )
         return graph, coords, units
 
-    @staticmethod
-    def _stage_summary(stage: str, lower_graph: LayerGraph, upper_graph: LayerGraph) -> dict[str, object]:
+    def _stage_summary(self, stage: str, lower_graph: LayerGraph, upper_graph: LayerGraph) -> dict[str, object]:
         return {
             "time_point": stage,
-            "network_method": LightCCINetworkBuilder.network_method,
+            "network_method": self.network_method,
             "feature_source": "light_cci_graph_only",
             "feature_alignment_space": "native_units",
             "lower_layer": lower_graph.layer,

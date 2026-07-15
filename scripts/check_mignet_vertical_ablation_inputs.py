@@ -11,7 +11,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.config import DEFAULT_ABLATION_OUTPUT_ROOT, DEFAULT_DATA_ROOT, NETWORK_METHODS, PAIR_PRESETS, VerticalPairSpec
+from mignet_ce.config import (
+    DEFAULT_ABLATION_OUTPUT_ROOT,
+    DEFAULT_DATA_ROOT,
+    LIGHT_CCI_NETWORK_METHODS,
+    NETWORK_METHODS,
+    PAIR_PRESETS,
+    VerticalPairSpec,
+)
 from mignet_ce.io.loaders import LayerDataResolver, LayerPaths
 
 
@@ -24,9 +31,6 @@ GRN_CCI_NETWORK_METHODS = {*LEGACY_NETWORK_METHODS, "clean_grn_cci_mix"}
 GRN_CCI_NETWORK_METHODS.update({"clean_grn_cci_expr_mix", "unit_specific_clean_grn_cci_mix"})
 EXPRESSION_CCI_NETWORK_METHODS = {"clean_expression_cci_mix"}
 UNIT_SPECIFIC_NETWORK_METHODS = {"unit_specific_clean_grn_cci_mix"}
-LIGHT_CCI_NETWORK_METHODS = {"light_cci"}
-
-
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check required inputs for the vertical MIGNet ablation matrix.")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)

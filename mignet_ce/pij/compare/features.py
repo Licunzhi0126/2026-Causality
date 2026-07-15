@@ -11,7 +11,7 @@ from scipy.linalg import orthogonal_procrustes
 from scipy.sparse.linalg import ArpackNoConvergence, eigsh
 from sklearn.decomposition import PCA
 
-from mignet_ce.config import TemporalRunConfig
+from mignet_ce.config import LIGHT_CCI_NETWORK_METHODS, TemporalRunConfig
 from mignet_ce.features import aggregate_lower_features_to_upper, align_upper_features
 from mignet_ce.graph.builder import LayerGraph
 from mignet_ce.io.developmental_features import load_developmental_features_for_layer, load_developmental_features_for_pij
@@ -733,12 +733,12 @@ def _adjacency_lists_for_side(
     side: str,
 ) -> tuple[List[sp.csr_matrix], List[dict[str, object]]]:
     graph_list = context.lower_graphs if side == "lower" else context.upper_graphs
-    if context.network_method == "light_cci" and graph_list:
+    if context.network_method in LIGHT_CCI_NETWORK_METHODS and graph_list:
         matrices: List[sp.csr_matrix] = []
         metadata: List[dict[str, object]] = []
         if len(graph_list) < len(context.time_points):
             raise ValueError(
-                f"LightCCI context has {len(graph_list)} {side} graphs for {len(context.time_points)} time points."
+                f"LightCCI-family context has {len(graph_list)} {side} graphs for {len(context.time_points)} time points."
             )
         for idx, graph in enumerate(graph_list[: len(context.time_points)]):
             units = _native_units(context, side, idx)
