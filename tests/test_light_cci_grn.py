@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import scipy.sparse as sp
+
+if not hasattr(np, "unicode_"):
+    np.unicode_ = np.str_
+
+import anndata as ad
+
+from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
+from mignet_ce.io.loaders import LayerDataResolver
+from mignet_ce.networks.registry import get_network_builder
+from mignet_ce.pij.registry import get_pij_method
+from scripts.run_mignet_vertical import build_argparser as build_vertical_argparser
+from scripts.run_mignet_vertical_ablation import build_argparser as build_ablation_argparser
+
+
+PAIR = VerticalPairSpec("louvain_k150", "seurat_k40")
+LAYERS = {
+    "louvain_k150": "louvain150",
+    "seurat_k40": "seurat",
+}
+
+
+def _write_inputs(root: Path) -> None:
+    genes = ["a", "b", "c", "d"]
+    units = ["u1", "u2", "u3"]
+    for stage_index, stage in enumerate(("11.5", "12.5")):
+        for layer_index, (layer, prefix) in enumerate(LAYERS.items()):
+            stem = f"{prefix}_heart_{stage}"
+            h5ad_path = root / layer / "heart" / f"{stem}.h5ad"
+            h5ad_path.parent.mkdir(parents=True, exist_ok=True)
+            values = (
+                np.arange(len(units) * len(genes), dtype=float).reshape(len(units), len(genes))
+                + 1.0
+                + stage_index
+                + layer_index
+            )
+            adata = ad.AnnData(
+                X=values,
+                obs=pd.DataFrame(index=pd.Index(units, name="unit_id")),
+                var=pd.DataFrame(index=pd.Index(genes, name="gene")),
+            )
+            adata.obsm["spatial"] = np.column_stack((np.arange(3), np.arange(3) + 10.0))
+            adata.write_h5ad(h5ad_path)
+
+            cci = np.array(
+                [
+                    [1.0, 2.0 + stage_index, 0.5 + layer_index],
+                    [0.7 + layer_index, 1.0, 3.0 + stage_index],
+                    [2.5 + stage_index, 0.4 + layer_index, 1.0],
+                ]
+            )
+            cci_dir = root / "cci" / layer
+            cci_dir.mkdir(parents=True, exist_ok=True)
+            sp.save_npz(cci_dir / f"{stem}_CCI_total.npz", sp.csr_matrix(cci))
+            pd.DataFrame({"domain_id": units}).to_csv(
+                cci_dir / f"{stem}_index.tsv",
+                sep="\t",
+                index=False,
+            )
+
+            grn_dir = root / "grn" / layer / stem
+            grn_dir.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                {
+                    "regulator": ["a", "a", "b", "c", "d"],
+                    "target": ["b", "c", "c", "d", "a"],
+                    "weight": [-4.0, 1.0 + stage_index, 3.0, 2.0 + layer_index, 1.5],
+                }
+            ).to_csv(grn_dir / "grn_edges.csv", index=False)
+
+
+def _cfg(root: Path, network_method: str, *, weight_n: float = 0.5, weight_g: float = 0.5) -> TemporalRunConfig:
+    return TemporalRunConfig(
+        data_root=root,
+        output_root=root / "out",
+        organs=["heart"],
+        time_points=["11.5", "12.5"],
+        level_pairs=[PAIR],
+        network_method=network_method,
+        pij_method="compare_N_kl",
+        nmf_components=2,
+        nmf_max_iter=8,
+        nmf_seed=19,
+        grn_topk_targets=2,
+        grn_state_dim=4,
+        grn_projection_seed=23,
+        kl_block_weight_n=weight_n,
+        kl_block_weight_g=weight_g,
+        joint_grn_rank=2,
+        joint_cci_rank=2,
+        joint_lambda_cci=1.0,
+        joint_lambda_grn=1.0,
+        pij_entropy_epsilon=0.5,
+    )
+
+
+def _context(root: Path, cfg: TemporalRunConfig):
+    return get_network_builder(cfg.network_method).build_pair_context(
+        "heart",
+        PAIR,
+        cfg,
+        LayerDataResolver(root),
+    )
+
+
+def test_light_cci_grn_keeps_original_cci_and_attaches_unit_grn_state(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    cfg = _cfg(root, "light_cci_grn")
+    context = _context(root, cfg)
+
+    for graph in [*context.lower_graphs, *context.upper_graphs]:
+        stored = sp.load_npz(Path(str(graph.metadata["adjacency_path"])))
+        assert (graph.metadata["adjacency_csr"] != stored).nnz == 0
+        assert graph.metadata["grn_state_shape"] == [3, 4]
+        assert graph.metadata["grn_state_metadata"]["grn_gate_mode"] == "double_end"
+        assert graph.metadata["grn_weight_mode"] == "abs"
+    assert context.metadata["grn_integration"] == "unit_grn_state_block_kl"
+
+
+def test_light_cci_grn_compare_n_kl_uses_block_cost_and_returns_row_stochastic_pij(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    cfg = _cfg(root, "light_cci_grn")
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method("compare_N_kl").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["fusion_mode"] == "independent_block_kl"
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(matrix >= 0.0)
+        assert np.all(np.isfinite(matrix))
+        assert matrix.sum(axis=1).tolist() == pytest.approx(np.ones(matrix.shape[0]).tolist())
+        assert kernels.kernel_metadata["11.5->12.5"][side]["grn_block_used"] is True
+        assert kernels.kernel_metadata["11.5->12.5"][side]["cost_source"] == "independently_normalized_N_and_GRN_block_KL"
+
+
+def test_zero_grn_block_weight_recovers_light_cci_compare_n_kl_exactly(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    grn_cfg = _cfg(root, "light_cci_grn", weight_n=1.0, weight_g=0.0)
+    light_cfg = _cfg(root, "light_cci", weight_n=1.0, weight_g=0.0)
+
+    _, grn_kernels = get_pij_method("compare_N_kl").run(_context(root, grn_cfg), grn_cfg, [(0, 1)])
+    _, light_kernels = get_pij_method("compare_N_kl").run(_context(root, light_cfg), light_cfg, [(0, 1)])
+
+    assert grn_kernels is not None and light_kernels is not None
+    assert np.array_equal(grn_kernels.p_lower[(0, 1)], light_kernels.p_lower[(0, 1)])
+    assert np.array_equal(grn_kernels.p_upper[(0, 1)], light_kernels.p_upper[(0, 1)])
+
+
+def test_joint_cci_grn_builds_single_joint_n_feature_and_row_stochastic_pij(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    cfg = _cfg(root, "joint_cci_grn")
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method("compare_N_kl").run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert context.metadata["grn_integration"] == "directed_grn_joint_nmf_expression_bridge_collective_cci_grn_nmf"
+    assert result.pairwise_lower_features is not None
+    assert result.pairwise_upper_features is not None
+    assert result.pairwise_lower_features[(0, 1)][0].shape == (3, 4)
+    assert result.pairwise_upper_features[(0, 1)][0].shape == (3, 4)
+    lower_artifact = result.method_metadata["feature_metadata"]["base_features"]["N"]
+    assert lower_artifact["lower_model_type"] == "collective_joint_cci_grn"
+    assert result.method_metadata["fusion_mode"] == "single_feature_distance"
+    for matrix in (kernels.p_lower[(0, 1)], kernels.p_upper[(0, 1)]):
+        assert np.all(np.isfinite(matrix))
+        assert matrix.sum(axis=1).tolist() == pytest.approx(np.ones(matrix.shape[0]).tolist())
+
+
+def test_grn_augmented_networks_require_compare_n_kl() -> None:
+    with pytest.raises(ValueError, match="requires pij_method='compare_N_kl'"):
+        TemporalRunConfig(network_method="light_cci_grn", pij_method="compare_N_cos").validate()
+    with pytest.raises(ValueError, match="must equal 1"):
+        TemporalRunConfig(
+            network_method="light_cci_grn",
+            pij_method="compare_N_kl",
+            kl_block_weight_n=0.7,
+            kl_block_weight_g=0.7,
+        ).validate()
+
+
+def test_cli_exposes_new_grn_options_and_removes_sparse_cci_names() -> None:
+    for parser in (build_vertical_argparser(), build_ablation_argparser()):
+        help_text = parser.format_help()
+        assert "light_cci_grn" in help_text
+        assert "joint_cci_grn" in help_text
+        assert "--grn-topk-targets" in help_text
+        assert "--grn-state-dim" in help_text
+        assert "--kl-block-weight-n" in help_text
+        assert "--joint-grn-rank" in help_text
+        assert "sparse_cci" not in help_text
+        assert "cci_sparse" not in help_text

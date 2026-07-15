@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 from mignet_ce.config import (
     DEFAULT_ABLATION_OUTPUT_ROOT,
     DEFAULT_DATA_ROOT,
+    GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS,
     LIGHT_CCI_NETWORK_METHODS,
     NETWORK_METHODS,
     PAIR_PRESETS,
@@ -84,6 +85,8 @@ def _missing_for_method(
                 required = [grn_paths.grn_edges]
             else:
                 required = [paths.h5ad, paths.cci_index]
+                if method in GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS:
+                    required.append(paths.grn_edges)
                 if not paths.cci_total.exists():
                     required.extend([paths.cci_manifest, paths.cci_lr_dir])
         elif method in EXPRESSION_CCI_NETWORK_METHODS:

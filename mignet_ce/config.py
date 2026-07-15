@@ -273,9 +273,10 @@ PIJ_METHOD_PRESETS = {
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 LIGHT_CCI_NETWORK_METHODS = {
     "light_cci",
-    "sparse_cci_mass99",
-    "sparse_cci_mass95",
+    "light_cci_grn",
+    "joint_cci_grn",
 }
+GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "joint_cci_grn"}
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
     "legacy_inter_cci_only",
@@ -329,6 +330,16 @@ class TemporalRunConfig:
     grn_expression_weight_mode: str = "geometric_mean"
     grn_expression_transform: str = "log1p_minmax"
     grn_expression_weight_floor: float = 0.0
+    grn_topk_targets: int = 50
+    grn_state_dim: int = 64
+    grn_projection_seed: int = 20260713
+    grn_gate_mode: str = "double_end"
+    kl_block_weight_n: float = 0.5
+    kl_block_weight_g: float = 0.5
+    joint_grn_rank: int = 32
+    joint_cci_rank: int = 32
+    joint_lambda_cci: float = 1.0
+    joint_lambda_grn: float = 1.0
     unit_grn_fallback: str = "sample_grn_expression_weighted"
     cross_cell_lr_use_grn_gate: bool = False
     cross_cell_top_k_edges: int = 1000
@@ -415,6 +426,8 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
+        if self.network_method in GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS and method != "compare_N_kl":
+            raise ValueError(f"{self.network_method} requires pij_method='compare_N_kl'.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
         if self.progress_refresh_interval <= 0:
@@ -439,6 +452,22 @@ class TemporalRunConfig:
             )
         if self.grn_expression_weight_floor < 0:
             raise ValueError("grn_expression_weight_floor must be nonnegative.")
+        if self.grn_topk_targets <= 0:
+            raise ValueError("grn_topk_targets must be positive.")
+        if self.grn_state_dim <= 0:
+            raise ValueError("grn_state_dim must be positive.")
+        if self.grn_gate_mode != "double_end":
+            raise ValueError("grn_gate_mode must be 'double_end'.")
+        if self.kl_block_weight_n < 0 or self.kl_block_weight_g < 0:
+            raise ValueError("kl_block_weight_n and kl_block_weight_g must be nonnegative.")
+        if abs(self.kl_block_weight_n + self.kl_block_weight_g - 1.0) > 1e-9:
+            raise ValueError("kl_block_weight_n + kl_block_weight_g must equal 1.")
+        if self.joint_grn_rank <= 0 or self.joint_cci_rank <= 0:
+            raise ValueError("joint_grn_rank and joint_cci_rank must be positive.")
+        if self.joint_lambda_cci < 0 or self.joint_lambda_grn < 0:
+            raise ValueError("joint_lambda_cci and joint_lambda_grn must be nonnegative.")
+        if self.joint_lambda_cci + self.joint_lambda_grn <= 0:
+            raise ValueError("At least one of joint_lambda_cci and joint_lambda_grn must be positive.")
         if self.unit_grn_fallback not in {
             "error",
             "sample_grn_masked",

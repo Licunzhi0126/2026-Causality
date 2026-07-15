@@ -51,6 +51,16 @@ def build_argparser() -> argparse.ArgumentParser:
         default="log1p_minmax",
     )
     parser.add_argument("--grn-expression-weight-floor", type=float, default=0.0)
+    parser.add_argument("--grn-topk-targets", type=int, default=50)
+    parser.add_argument("--grn-state-dim", type=int, default=64)
+    parser.add_argument("--grn-projection-seed", type=int, default=20260713)
+    parser.add_argument("--grn-gate-mode", choices=["double_end"], default="double_end")
+    parser.add_argument("--kl-block-weight-n", type=float, default=0.5)
+    parser.add_argument("--kl-block-weight-g", type=float, default=0.5)
+    parser.add_argument("--joint-grn-rank", type=int, default=32)
+    parser.add_argument("--joint-cci-rank", type=int, default=32)
+    parser.add_argument("--joint-lambda-cci", type=float, default=1.0)
+    parser.add_argument("--joint-lambda-grn", type=float, default=1.0)
     parser.add_argument(
         "--unit-grn-fallback",
         choices=["error", "sample_grn_masked", "sample_grn_expression_weighted", "skip_unit_intra"],
@@ -221,6 +231,16 @@ def main() -> None:
         grn_expression_weight_mode=args.grn_expression_weight_mode,
         grn_expression_transform=args.grn_expression_transform,
         grn_expression_weight_floor=args.grn_expression_weight_floor,
+        grn_topk_targets=args.grn_topk_targets,
+        grn_state_dim=args.grn_state_dim,
+        grn_projection_seed=args.grn_projection_seed,
+        grn_gate_mode=args.grn_gate_mode,
+        kl_block_weight_n=args.kl_block_weight_n,
+        kl_block_weight_g=args.kl_block_weight_g,
+        joint_grn_rank=args.joint_grn_rank,
+        joint_cci_rank=args.joint_cci_rank,
+        joint_lambda_cci=args.joint_lambda_cci,
+        joint_lambda_grn=args.joint_lambda_grn,
         unit_grn_fallback=args.unit_grn_fallback,
         cross_cell_lr_use_grn_gate=args.cross_cell_lr_use_grn_gate,
         cross_cell_top_k_edges=args.cross_cell_top_k_edges,

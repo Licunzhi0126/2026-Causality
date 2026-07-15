@@ -22,8 +22,14 @@ BASE_ROW = {
 }
 
 
-def _write_metrics(root: Path, method: str, rows: list[dict[str, object]]) -> None:
-    directory = root / "network=light_cci" / f"pij={method}"
+def _write_metrics(
+    root: Path,
+    method: str,
+    rows: list[dict[str, object]],
+    *,
+    network_method: str = "light_cci",
+) -> None:
+    directory = root / f"network={network_method}" / f"pij={method}"
     directory.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(directory / "metrics.csv", index=False)
 
@@ -64,3 +70,17 @@ def test_duplicate_rows_error_by_default_and_mean_only_when_requested(tmp_path: 
         load_cost_fusion_metrics(tmp_path)
     metrics = load_cost_fusion_metrics(tmp_path, duplicate_policy="mean")
     assert metrics.iloc[0]["EI_gain"] == pytest.approx(2.0)
+
+
+def test_loader_accepts_grn_augmented_lightcci_output_directories(tmp_path: Path) -> None:
+    method = next(iter(METHOD_MAP))
+    _write_metrics(
+        tmp_path,
+        method,
+        [BASE_ROW],
+        network_method="light_cci_grn",
+    )
+
+    metrics = load_cost_fusion_metrics(tmp_path, network_method="light_cci_grn")
+
+    assert metrics["method"].tolist() == [method]

@@ -24,6 +24,7 @@ from mignet_ce.io.loaders import (
 )
 from mignet_ce.metrics import TemporalMetricsEngine, pairwise_joint_nmf, pairwise_shared_core_directed_nmf
 from mignet_ce.networks.base import NetworkContext
+from mignet_ce.networks.joint_cci_grn import build_joint_cci_grn_pair
 from mignet_ce.pij.base import PairFeatures
 from mignet_ce.representations.expression_only import (
     _fit_transform_gene_scaler,
@@ -42,6 +43,8 @@ class CompareFeatureSet:
     artifacts: dict[str, dict[str, dict[str, object]]] = field(default_factory=dict)
     pairwise_lower_features: PairFeatures | None = None
     pairwise_upper_features: PairFeatures | None = None
+    pairwise_lower_grn_features: PairFeatures | None = None
+    pairwise_upper_grn_features: PairFeatures | None = None
 
 
 @dataclass
@@ -776,7 +779,12 @@ def _build_pairwise_nmf_side(
     pairs: Sequence[tuple[int, int]],
 ) -> tuple[PairFeatures, dict[str, object]]:
     layer = _layer_for_side(context, side)
-    model_type = _nmf_model_type_for_layer(layer)
+    model_type = (
+        "collective_joint_cci_grn"
+        if context.network_method == "joint_cci_grn" and layer != "gene"
+        else _nmf_model_type_for_layer(layer)
+    )
+    graph_list = context.lower_graphs if side == "lower" else context.upper_graphs
     pairwise: PairFeatures = {}
     artifact_pairs: dict[str, dict[str, object]] = {}
     pair_summaries: List[dict[str, object]] = []
@@ -785,11 +793,34 @@ def _build_pairwise_nmf_side(
         source_index, target_index = pair
         source_matrix = matrices[source_index]
         target_matrix = matrices[target_index]
-        source_dense = source_matrix.toarray().astype(float, copy=False)
-        target_dense = target_matrix.toarray().astype(float, copy=False)
         pair_label = _time_pair_label(context, pair)
 
-        if layer == "spot":
+        if context.network_method == "joint_cci_grn" and layer != "gene":
+            if len(graph_list) <= max(source_index, target_index):
+                raise ValueError(
+                    f"joint_cci_grn requires {side} LayerGraph payloads for every time point."
+                )
+            joint_result = build_joint_cci_grn_pair(
+                source_matrix,
+                target_matrix,
+                graph_list[source_index],
+                graph_list[target_index],
+                grn_rank=cfg.joint_grn_rank,
+                cci_rank=cfg.joint_cci_rank,
+                lambda_cci=cfg.joint_lambda_cci,
+                lambda_grn=cfg.joint_lambda_grn,
+                max_iter=cfg.nmf_max_iter,
+                seed=cfg.nmf_seed + source_index * 1009 + target_index,
+            )
+            raw_source = joint_result.source_features
+            raw_target = joint_result.target_features
+            model_artifact = {
+                **joint_result.artifacts,
+                "joint_diagnostics": joint_result.diagnostics,
+            }
+        elif layer == "spot":
+            source_dense = source_matrix.toarray().astype(float, copy=False)
+            target_dense = target_matrix.toarray().astype(float, copy=False)
             u_source, v_source, u_target, v_target, core = pairwise_shared_core_directed_nmf(
                 source_dense,
                 target_dense,
@@ -811,6 +842,8 @@ def _build_pairwise_nmf_side(
                 "feature_definition": "concat(outgoing_U, incoming_V)",
             }
         else:
+            source_dense = source_matrix.toarray().astype(float, copy=False)
+            target_dense = target_matrix.toarray().astype(float, copy=False)
             w_source, w_target, h_matrix = pairwise_joint_nmf(
                 source_dense,
                 target_dense,
@@ -848,7 +881,9 @@ def _build_pairwise_nmf_side(
             "target_alignment": target_alignment,
             "uses_only_pair_timepoints": True,
             "uses_domain_anchor": False,
-            "requires_equal_column_count": bool(layer != "spot"),
+            "requires_equal_column_count": bool(
+                layer != "spot" and context.network_method != "joint_cci_grn"
+            ),
         }
         pair_summaries.append(summary)
         artifact_pairs[pair_label] = {
@@ -858,6 +893,8 @@ def _build_pairwise_nmf_side(
                 "side": side,
                 "layer": layer,
                 "n_components": int(cfg.nmf_components),
+                "joint_grn_rank": int(cfg.joint_grn_rank),
+                "joint_cci_rank": int(cfg.joint_cci_rank),
                 "max_iter": int(cfg.nmf_max_iter),
                 "seed": int(cfg.nmf_seed + source_index * 1009 + target_index),
                 "source_adjacency": metadata[source_index],
@@ -872,6 +909,8 @@ def _build_pairwise_nmf_side(
         "layer": layer,
         "model_type": model_type,
         "n_components": int(cfg.nmf_components),
+        "joint_grn_rank": int(cfg.joint_grn_rank),
+        "joint_cci_rank": int(cfg.joint_cci_rank),
         "max_iter": int(cfg.nmf_max_iter),
         "seed": int(cfg.nmf_seed),
         "uses_only_pair_timepoints": True,
@@ -934,6 +973,55 @@ def _build_nmf_base(context: NetworkContext, cfg: TemporalRunConfig) -> _BaseFea
         pairwise_upper=upper_pairwise,
         is_pairwise=True,
     )
+
+
+def _build_pairwise_grn_state_side(
+    context: NetworkContext,
+    side: str,
+    pairs: Sequence[tuple[int, int]],
+) -> tuple[PairFeatures | None, dict[str, object]]:
+    layer = _layer_for_side(context, side)
+    if layer == "gene":
+        return None, {
+            "enabled": False,
+            "reason": "not_applicable_gene_grn_layer",
+            "side": side,
+            "layer": layer,
+        }
+    graph_list = context.lower_graphs if side == "lower" else context.upper_graphs
+    raw_pairwise: PairFeatures = {}
+    pair_summaries: list[dict[str, object]] = []
+    for pair in pairs:
+        source_index, target_index = pair
+        if len(graph_list) <= max(source_index, target_index):
+            raise ValueError(f"light_cci_grn requires {side} LayerGraph payloads for every time point.")
+        source_stored = graph_list[source_index].metadata.get("grn_state_csr")
+        target_stored = graph_list[target_index].metadata.get("grn_state_csr")
+        if source_stored is None or target_stored is None:
+            raise ValueError(f"light_cci_grn {side} graph metadata is missing grn_state_csr.")
+        source_raw = sp.csr_matrix(source_stored).toarray()
+        target_raw = sp.csr_matrix(target_stored).toarray()
+        source, source_alignment = _align_side_feature_for_time(source_raw, context, side, source_index)
+        target, target_alignment = _align_side_feature_for_time(target_raw, context, side, target_index)
+        raw_pairwise[pair] = (source, target)
+        pair_summaries.append(
+            {
+                "time_pair": _time_pair_label(context, pair),
+                "source_shape": list(source.shape),
+                "target_shape": list(target.shape),
+                "source_alignment": source_alignment,
+                "target_alignment": target_alignment,
+            }
+        )
+    standardized, standardization = _standardize_pairwise_features(raw_pairwise, context)
+    return standardized, {
+        "enabled": True,
+        "side": side,
+        "layer": layer,
+        "feature_source": "double_end_expression_gated_grn_state",
+        "pair_summaries": pair_summaries,
+        **standardization,
+    }
 
 
 def _laplacian_matrix(adjacency: sp.spmatrix, normalized: bool) -> sp.csr_matrix:
@@ -1404,6 +1492,30 @@ def build_compare_feature_set(
     else:
         metadata["pairwise_features"] = {"enabled": False}
     metadata["feature_names"] = names
+    pairwise_lower_grn_features: PairFeatures | None = None
+    pairwise_upper_grn_features: PairFeatures | None = None
+    if keys == ("N",) and context.network_method == "light_cci_grn":
+        pairs = TemporalMetricsEngine.build_time_pairs_all(context.time_points)
+        pairwise_lower_grn_features, lower_grn_metadata = _build_pairwise_grn_state_side(
+            context,
+            "lower",
+            pairs,
+        )
+        pairwise_upper_grn_features, upper_grn_metadata = _build_pairwise_grn_state_side(
+            context,
+            "upper",
+            pairs,
+        )
+        metadata["grn_block"] = {
+            "enabled": True,
+            "integration": "independent_block_kl",
+            "weight_n": float(cfg.kl_block_weight_n),
+            "weight_g": float(cfg.kl_block_weight_g),
+            "lower": lower_grn_metadata,
+            "upper": upper_grn_metadata,
+        }
+    else:
+        metadata["grn_block"] = {"enabled": False}
     return CompareFeatureSet(
         lower_features=lower_features,
         upper_features=upper_features,
@@ -1412,6 +1524,8 @@ def build_compare_feature_set(
         artifacts=artifacts,
         pairwise_lower_features=pairwise_lower_features,
         pairwise_upper_features=pairwise_upper_features,
+        pairwise_lower_grn_features=pairwise_lower_grn_features,
+        pairwise_upper_grn_features=pairwise_upper_grn_features,
     )
 
 

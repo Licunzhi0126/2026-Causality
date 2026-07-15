@@ -11,6 +11,7 @@ import scipy.sparse as sp
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
+from mignet_ce.pij.compare.block_kl import build_block_kl_cost
 from mignet_ce.pij.compare.cosine import (
     matrix_summary,
     pairwise_cosine_distance,
@@ -143,6 +144,26 @@ def _export_nmf_artifacts(
             "V_target",
             "features_source",
             "features_target",
+            "Q_reg_source",
+            "Q_tar_source",
+            "Q_reg_target",
+            "Q_tar_target",
+            "S_G",
+            "A_reg_source",
+            "A_tar_source",
+            "A_reg_target",
+            "A_tar_target",
+            "G_reg_source",
+            "G_tar_source",
+            "G_reg_target",
+            "G_tar_target",
+            "S_C",
+            "B_reg",
+            "B_tar",
+            "H_send_source",
+            "H_recv_source",
+            "H_send_target",
+            "H_recv_target",
         }
         model_payload = {key: value for key, value in pair_artifact.items() if key not in array_keys}
         _write_json(directory / "pairwise_nmf_model.json", model_payload)
@@ -162,8 +183,18 @@ def _export_nmf_artifacts(
             np.save(directory / "shared_core_V_target.npy", np.asarray(pair_artifact["V_target"], dtype=float))
             np.save(directory / "shared_core_features_source.npy", np.asarray(pair_artifact["features_source"], dtype=float))
             np.save(directory / "shared_core_features_target.npy", np.asarray(pair_artifact["features_target"], dtype=float))
+        elif model_type == "collective_joint_cci_grn":
+            for key in sorted(array_keys):
+                if key in pair_artifact:
+                    np.save(
+                        directory / f"joint_cci_grn_{key}.npy",
+                        np.asarray(pair_artifact[key], dtype=float),
+                    )
         _write_json(directory / "joint_nmf_shapes.json", model_payload)
-        _write_json(directory / "joint_nmf_diagnostics.json", pair_artifact.get("diagnostics", {}))
+        _write_json(
+            directory / "joint_nmf_diagnostics.json",
+            pair_artifact.get("joint_diagnostics", pair_artifact.get("diagnostics", {})),
+        )
         return
 
     np.save(directory / "joint_nmf_H.npy", np.asarray(artifact["H"], dtype=float))
@@ -191,6 +222,8 @@ def export_compare_pair_artifacts(
     diagnostics: dict[str, object],
     sparse_ot_result: SparseOTResult | None = None,
     metadata_extra: dict[str, object] | None = None,
+    grn_source_features: np.ndarray | None = None,
+    grn_target_features: np.ndarray | None = None,
 ) -> Path:
     directory = compare_artifact_directory(cfg, context, method_name, pair, side)
     directory.mkdir(parents=True, exist_ok=True)
@@ -219,12 +252,22 @@ def export_compare_pair_artifacts(
         }
     if metadata_extra:
         metadata_payload.update(metadata_extra)
+    if grn_source_features is not None and grn_target_features is not None:
+        metadata_payload.update(
+            {
+                "grn_source_feature_shape": list(np.asarray(grn_source_features).shape),
+                "grn_target_feature_shape": list(np.asarray(grn_target_features).shape),
+            }
+        )
     _write_json(directory / "metadata.json", metadata_payload)
     _write_json(directory / "feature_source.json", feature_set.metadata)
     pd.DataFrame({"index": range(len(source_units)), "unit": source_units}).to_csv(directory / "units_source.csv", index=False)
     pd.DataFrame({"index": range(len(target_units)), "unit": target_units}).to_csv(directory / "units_target.csv", index=False)
     np.save(directory / "features_source.npy", np.asarray(source_features, dtype=float))
     np.save(directory / "features_target.npy", np.asarray(target_features, dtype=float))
+    if grn_source_features is not None and grn_target_features is not None:
+        np.save(directory / "grn_features_source.npy", np.asarray(grn_source_features, dtype=float))
+        np.save(directory / "grn_features_target.npy", np.asarray(grn_target_features, dtype=float))
     _write_json(directory / "cost_or_kernel_diagnostics.json", diagnostics)
     sp.save_npz(directory / "pij_sparse.npz", raw_sparse.tocsr())
     sp.save_npz(directory / "pij_row_normalized_sparse.npz", pij_sparse.tocsr())
@@ -251,7 +294,18 @@ class ComparePijMethodBase:
         pairs: Sequence[TimePair],
     ) -> tuple[MethodResult, TransitionKernels | None]:
         feature_set = build_compare_feature_set(context, cfg, self.feature_keys)
-        fusion_mode = "single_feature_distance" if len(self.feature_keys) == 1 else "feature_concat"
+        block_kl_enabled = bool(
+            self.pij_key == "kl"
+            and self.feature_keys == ("N",)
+            and feature_set.metadata.get("grn_block", {}).get("enabled", False)
+        )
+        fusion_mode = (
+            "independent_block_kl"
+            if block_kl_enabled
+            else "single_feature_distance"
+            if len(self.feature_keys) == 1
+            else "feature_concat"
+        )
         kernels = TransitionKernels(
             kernel_metadata={
                 "pij_method": self.name,
@@ -282,10 +336,21 @@ class ComparePijMethodBase:
                 else:
                     source = feature_lists[pair[0]]
                     target = feature_lists[pair[1]]
+                grn_pairwise = (
+                    feature_set.pairwise_lower_grn_features
+                    if side == "lower"
+                    else feature_set.pairwise_upper_grn_features
+                )
+                grn_source: np.ndarray | None = None
+                grn_target: np.ndarray | None = None
+                if grn_pairwise is not None and pair in grn_pairwise:
+                    grn_source, grn_target = grn_pairwise[pair]
                 raw_sparse, pij_sparse, dense_pij, diagnostics, sparse_result = self._build_pair_kernel(
                     source=source,
                     target=target,
                     cfg=cfg,
+                    grn_source=grn_source,
+                    grn_target=grn_target,
                 )
                 target_dict[pair] = dense_pij
                 kernels.kernel_metadata[pair_label][side] = {
@@ -294,6 +359,9 @@ class ComparePijMethodBase:
                     "fusion_mode": fusion_mode,
                     "cost_source_feature_keys": list(self.feature_keys),
                     "cost_source": (
+                        "independently_normalized_N_and_GRN_block_KL"
+                        if grn_source is not None and grn_target is not None and self.pij_key == "kl"
+                        else
                         "cosine_distance_on_current_compare_features"
                         if self.pij_key == "sot"
                         else "current_compare_feature_cosine_distance"
@@ -304,6 +372,9 @@ class ComparePijMethodBase:
                     "pairwise_features_used": bool(pairwise_used),
                     "source_shape": list(source.shape),
                     "target_shape": list(target.shape),
+                    "grn_block_used": bool(grn_source is not None and grn_target is not None),
+                    "grn_source_shape": list(grn_source.shape) if grn_source is not None else None,
+                    "grn_target_shape": list(grn_target.shape) if grn_target is not None else None,
                     "raw_matrix": _sparse_summary(raw_sparse),
                     "row_normalized_matrix": _sparse_summary(pij_sparse),
                 }
@@ -334,10 +405,10 @@ class ComparePijMethodBase:
                         sparse_ot_result=sparse_result,
                         metadata_extra={
                             "fusion_mode": fusion_mode,
-                            "transition_construction": (
-                                "single_feature_distance" if len(self.feature_keys) == 1 else "feature_concat"
-                            ),
+                            "transition_construction": fusion_mode,
                         },
+                        grn_source_features=grn_source,
+                        grn_target_features=grn_target,
                     )
 
         result = MethodResult(
@@ -365,6 +436,8 @@ class ComparePijMethodBase:
         source: np.ndarray,
         target: np.ndarray,
         cfg: TemporalRunConfig,
+        grn_source: np.ndarray | None = None,
+        grn_target: np.ndarray | None = None,
     ) -> tuple[sp.csr_matrix, sp.csr_matrix, np.ndarray, dict[str, object], SparseOTResult | None]:
         if self.pij_key == "cos":
             cost = pairwise_cosine_distance(source, target)
@@ -380,15 +453,31 @@ class ComparePijMethodBase:
 
         if self.pij_key == "kl":
             beta = max(float(cfg.pij_entropy_epsilon), 1e-12)
-            cost = pairwise_feature_kl(source, target, beta=beta)
+            if (grn_source is None) != (grn_target is None):
+                raise ValueError("Both grn_source and grn_target are required for block KL.")
+            if grn_source is not None and grn_target is not None:
+                cost, block_metadata = build_block_kl_cost(
+                    source,
+                    target,
+                    grn_source,
+                    grn_target,
+                    weight_n=cfg.kl_block_weight_n,
+                    weight_g=cfg.kl_block_weight_g,
+                    beta_n=beta,
+                    beta_g=beta,
+                )
+            else:
+                cost = pairwise_feature_kl(source, target, beta=beta)
+                block_metadata = None
             kernel, pij = row_normalized_kernel_from_cost(cost, tau=cfg.pij_temperature)
             diagnostics = {
-                "kind": "feature_kl_kernel",
+                "kind": "block_feature_kl_kernel" if block_metadata is not None else "feature_kl_kernel",
                 "beta": float(beta),
                 "tau": float(cfg.pij_temperature),
                 "cost": matrix_summary(cost),
                 "kernel": matrix_summary(kernel),
                 "main_cost_dense": cost,
+                "block_kl": block_metadata,
             }
             return sp.csr_matrix(kernel), sp.csr_matrix(pij), pij, diagnostics, None
 

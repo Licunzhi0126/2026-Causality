@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from mignet_ce.config import (
     DEFAULT_DATA_ROOT,
+    GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS,
     LAYER_SPECS,
     LIGHT_CCI_NETWORK_METHODS,
     NETWORK_METHODS,
@@ -248,6 +249,11 @@ def _inspect_lightcci_layer(paths, grn_source_paths=None) -> dict[str, object]:
         and row["cci_index_exists"]
         and (row["cci_total_exists"] or (row["cci_manifest_exists"] and row["cci_lr_dir_exists"]))
     )
+    row["grn_edges"] = str(paths.grn_edges)
+    row["grn_edges_exists"] = paths.grn_edges.exists()
+    row["can_build_grn_augmented_lightcci_graph"] = bool(
+        row["can_build_lightcci_graph"] and row["grn_edges_exists"]
+    )
     return row
 
 
@@ -463,6 +469,7 @@ def _profile_root(
             "pij_method_registered": pij_method in PIJ_METHOD_REGISTRY,
             "uses_lightcci_network": network_method in LIGHT_CCI_NETWORK_METHODS,
             "uses_lightcci_family_network": network_method in LIGHT_CCI_NETWORK_METHODS,
+            "uses_grn_augmented_lightcci_network": network_method in GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS,
         },
         "organs": list(organs),
         "layers": list(layers),
