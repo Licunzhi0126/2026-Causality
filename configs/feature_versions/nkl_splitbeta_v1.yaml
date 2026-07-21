@@ -1,0 +1,25 @@
+recipe_id: nkl_splitbeta_v1
+entry_method: compare_NG_kl_splitbeta_v1
+algorithm_version: lightcci_feature_versions_v1
+cci_mode: legacy_pairwise_by_layer
+grn_mode: merged_projected_state
+block_distances:
+  n: kl
+  g: kl
+distance_parameters:
+  n:
+    beta: 0.20
+  g:
+    beta: 1.00
+fusion_weights:
+  n: 0.75
+  g: 0.25
+nmf_rank: 5
+nmf_max_iter: 300
+nmf_seeds: [42]
+grn_topk_targets: 50
+projection_dim: 64
+projection_seed: 20260713
+kernel_temperature: 1.0
+pseudocount: 1.0e-8
+normalization_quantiles: [5.0, 95.0]

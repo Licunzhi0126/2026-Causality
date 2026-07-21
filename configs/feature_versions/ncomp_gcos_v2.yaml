@@ -1,0 +1,25 @@
+recipe_id: ncomp_gcos_v2
+entry_method: compare_Ncomp_Gcos_v2
+algorithm_version: lightcci_feature_versions_v2
+cci_mode: directed_shared_core_all_non_gene
+grn_mode: split_reg_tar_recomputed
+block_distances:
+  n_out: js
+  n_in: js
+  g_reg: cosine
+  g_tar: cosine
+distance_parameters: {}
+fusion_weights:
+  n_out: 0.30
+  n_in: 0.30
+  g_reg: 0.20
+  g_tar: 0.20
+nmf_rank: 5
+nmf_max_iter: 300
+nmf_seeds: [42]
+grn_topk_targets: 50
+projection_dim: 64
+projection_seed: 20260713
+kernel_temperature: 1.0
+pseudocount: 1.0e-8
+normalization_quantiles: [5.0, 95.0]
