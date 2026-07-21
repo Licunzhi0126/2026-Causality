@@ -4,7 +4,7 @@ from typing import Dict
 
 import numpy as np
 
-from mignet_ce.pij.compare.cosine import pairwise_cosine_distance
+from mignet_ce.pij.compare._shared.cosine import pairwise_cosine_distance
 
 
 def summarize_dense_cost(cost: np.ndarray) -> Dict[str, object]:

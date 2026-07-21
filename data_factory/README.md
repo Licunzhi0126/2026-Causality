@@ -35,6 +35,10 @@ $OUT/
   spatial_domain_k150/
   spatial_domain_less_than5/
   cci/
+    edge_lr_long/
+      seurat_k150/
+      seurat_k40/
+      spot/
     spot/
     organ/
     seurat_less_than5/
@@ -266,6 +270,78 @@ python scripts/04_run_cci_spot_commot.py --workers 64 --lr-chunk-size 1 --heartb
 `--workers 64` means up to 64 processes process LR chunks for the current sample. `--lr-chunk-size 1` gives the most detailed progress bar, one progress tick per LR pair. Larger values reduce overhead but make the progress bar coarser.
 
 This parallel path calls official COMMOT separately on LR chunks and merges the external LR matrices, total matrix, pathway matrices, and sender/receiver summaries. It is designed for throughput and progress visibility. The h5ad written by this path stores total and pathway matrices; individual LR matrices are stored as external `.npz` files under `*_COMMOT_by_LR/`.
+
+## Consolidated Directed Edge-LR Long Tables
+
+After COMMOT has finished, consolidate the external LR matrices for the three analysis
+layers into one Parquet long-table file per layer, organ, and stage:
+
+```bash
+cd "/home/jovyan/work/2026 Causality/data_factory"
+
+python scripts/export_cci_edge_lr_long.py \
+  --cci-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/cci" \
+  --layers seurat_k150 seurat_k40 spot \
+  --workers 64 \
+  --strict-grid
+```
+
+The exporter accepts only `seurat_k150`, `seurat_k40`, and `spot`. `--workers 64` is
+the default and runs independent samples in separate processes, up to the number of
+available samples. The parent process displays an overall sample bar plus one row-count
+progress bar for every sample. Each worker streams bounded Arrow batches (250,000 rows
+by default), so it never constructs the full edge-LR table in memory.
+
+Inspect and validate the complete plan without writing files first:
+
+```bash
+python scripts/export_cci_edge_lr_long.py \
+  --cci-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/cci" \
+  --layers seurat_k150 seurat_k40 spot \
+  --strict-grid \
+  --dry-run
+```
+
+Outputs are written under
+`$OUT/cci/edge_lr_long/{layer}/{sample}_edge_lr_long.parquet`. A successful complete
+server grid contains 36 data files: three layers by three organs by four stages. Existing
+completed outputs are skipped unless `--overwrite` is explicitly provided. A failed job
+does not replace a completed output; its uniquely named `.partial.*` file is retained for
+diagnosis. Per-sample statuses and validation results are recorded in
+`$OUT/cci/edge_lr_long/cci_edge_lr_export_manifest.csv`.
+
+Each nonzero entry of each external LR sparse matrix becomes one directed long-table row:
+
+```text
+layer, sample, organ, stage, sender, receiver,
+lr_key, ligand, receptor, pathway, weight
+```
+
+Matrix rows are `sender`; matrix columns are `receiver`. Self edges are retained and no
+weight threshold is applied. If one directed edge has 20 LR pairs, it appears in 20 rows.
+The exporter checks matrix/index shapes, manifest versus actual `nnz`, missing LR files,
+finite nonnegative weights, final Parquet row count, and the exported LR weight sum versus
+the sample's `CCI_total.npz` weight sum.
+
+Read one complete file or query one directed edge with PyArrow:
+
+```python
+import pyarrow.dataset as ds
+
+path = (
+    "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/cci/"
+    "edge_lr_long/seurat_k40/seurat_heart_11.5_edge_lr_long.parquet"
+)
+table = ds.dataset(path, format="parquet").to_table(
+    filter=(ds.field("sender") == "domain_001")
+    & (ds.field("receiver") == "domain_002")
+)
+edge_lr = table.to_pandas().sort_values("weight", ascending=False)
+```
+
+Parquet with Zstandard compression is required because spot outputs can exceed one hundred
+million rows for a single sample. The runtime therefore needs `pyarrow` in addition to the
+existing NumPy, Pandas, and SciPy dependencies.
 
 The current copied methods are CPU implementations:
 

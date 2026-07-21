@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mignet_ce.pij.compare.block_kl import build_block_kl_cost
-from mignet_ce.pij.compare.kl import pairwise_feature_kl
+from mignet_ce.pij.compare._shared.kl import pairwise_feature_kl
+from mignet_ce.pij.compare.compare_N_kl import build_block_kl_cost
 
 
 def test_block_kl_combines_independently_normalized_n_and_g_costs() -> None:

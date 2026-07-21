@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mignet_ce.networks.grn_state import (
+from mignet_ce.networks.light_cci_grn import (
     build_projected_grn_state,
     deterministic_projection_matrix,
     double_end_grn_state,

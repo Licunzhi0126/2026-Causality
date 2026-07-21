@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mignet_ce.pij.compare.sparse_ot import run_sparse_semi_relaxed_ot_from_cost
+from mignet_ce.pij.compare._shared.sparse_ot import run_sparse_semi_relaxed_ot_from_cost
 
 
 def _run(cost: np.ndarray):

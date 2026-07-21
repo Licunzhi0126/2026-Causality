@@ -8,14 +8,14 @@ from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, PairFeatures, TimePair, TransitionKernels
 from mignet_ce.pij.compare.common import export_compare_pair_artifacts
-from mignet_ce.pij.compare.distances import (
+from mignet_ce.pij.compare._shared.distances import (
     pairwise_scalar_absolute_distance,
     pairwise_vector_distance,
     robust_normalize_cost,
     summarize_dense_cost,
 )
-from mignet_ce.pij.compare.features import CompareFeatureSet, build_compare_feature_set
-from mignet_ce.pij.compare.sparse_ot import run_sparse_semi_relaxed_ot_from_cost
+from mignet_ce.pij.compare._shared.features import CompareFeatureSet, build_compare_feature_set
+from mignet_ce.pij.compare._shared.sparse_ot import run_sparse_semi_relaxed_ot_from_cost
 
 
 _ALLOWED_COMPONENT_KEYS = ("L", "E", "Sr")

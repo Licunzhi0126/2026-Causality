@@ -7,7 +7,6 @@ import scipy.sparse as sp
 
 from mignet_ce.graph.builder import LayerGraph
 from mignet_ce.io.loaders import natural_sort
-from mignet_ce.metrics import pairwise_shared_core_directed_nmf
 from mignet_ce.networks.light_cci_grn import LightCCIGRNNetworkBuilder
 
 
@@ -261,6 +260,10 @@ def build_joint_cci_grn_pair(
     max_iter: int,
     seed: int,
 ) -> JointCCIGRNPairResult:
+    # Import lazily so importing mignet_ce.metrics can initialize the PIJ and
+    # network packages without cycling back into this module.
+    from mignet_ce.metrics import pairwise_shared_core_directed_nmf
+
     genes, source_w, target_w, source_x, target_x = _aligned_graph_grn_pair(source_graph, target_graph)
     q_reg_source, q_tar_source, q_reg_target, q_tar_target, s_grn = pairwise_shared_core_directed_nmf(
         source_w,

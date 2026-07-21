@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from mignet_ce.pij.compare.cosine import pairwise_cosine_distance
+from mignet_ce.pij.compare._shared.cosine import pairwise_cosine_distance
 
 
 @dataclass

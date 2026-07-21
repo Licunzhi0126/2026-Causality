@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mignet_ce.pij.compare.cosine import pairwise_cosine_distance
-from mignet_ce.pij.compare.distances import (
+from mignet_ce.pij.compare._shared.cosine import pairwise_cosine_distance
+from mignet_ce.pij.compare._shared.distances import (
     pairwise_euclidean_distance,
     pairwise_scalar_absolute_distance,
     pairwise_vector_distance,

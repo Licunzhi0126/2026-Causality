@@ -14,7 +14,7 @@ import anndata as ad
 from mignet_ce.config import TemporalRunConfig, VerticalPairSpec
 from mignet_ce.io.loaders import LayerDataResolver
 from mignet_ce.networks.registry import get_network_builder
-from mignet_ce.pij.compare.features import adjacency_from_lightcci_graph
+from mignet_ce.pij.compare._shared.features import adjacency_from_lightcci_graph
 
 
 def _write_h5ad(path: Path, units: list[str], genes: list[str]) -> None:

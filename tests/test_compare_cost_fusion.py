@@ -8,13 +8,13 @@ import pytest
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.pij.compare import cost_fusion
 from mignet_ce.pij.compare.cost_fusion import CompareCostFusionSotBase, _build_fused_pre_cost
-from mignet_ce.pij.compare.distances import (
+from mignet_ce.pij.compare._shared.distances import (
     pairwise_scalar_absolute_distance,
     pairwise_vector_distance,
     robust_normalize_cost,
 )
-from mignet_ce.pij.compare.features import CompareFeatureSet
-from mignet_ce.pij.compare.sparse_ot import _topk_candidates
+from mignet_ce.pij.compare._shared.features import CompareFeatureSet
+from mignet_ce.pij.compare._shared.sparse_ot import _topk_candidates
 
 
 def _normalized(cost: np.ndarray) -> np.ndarray:

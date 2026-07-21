@@ -19,7 +19,7 @@ from mignet_ce.io.loaders import LayerDataResolver, read_commot_index
 from mignet_ce.mapping import OverlapMapping
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.networks.registry import get_network_builder
-from mignet_ce.pij.compare.features import read_compare_adjacency
+from mignet_ce.pij.compare._shared.features import read_compare_adjacency
 from mignet_ce.pij.registry import get_pij_method
 
 
@@ -367,7 +367,7 @@ def test_compare_N_uses_lightcci_graph_adjacency_without_cci_files(tmp_path: Pat
     def fail_read_compare_adjacency(*_args, **_kwargs):
         raise AssertionError("read_compare_adjacency should not be called for light_cci graph context")
 
-    monkeypatch.setattr("mignet_ce.pij.compare.features.read_compare_adjacency", fail_read_compare_adjacency)
+    monkeypatch.setattr("mignet_ce.pij.compare._shared.features.read_compare_adjacency", fail_read_compare_adjacency)
     result, kernels = get_pij_method("compare_N_cos").run(context, cfg, [(0, 1)])
 
     assert kernels is not None

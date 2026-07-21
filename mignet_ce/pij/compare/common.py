@@ -11,15 +11,14 @@ import scipy.sparse as sp
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
-from mignet_ce.pij.compare.block_kl import build_block_kl_cost
-from mignet_ce.pij.compare.cosine import (
+from mignet_ce.pij.compare._shared.cosine import (
     matrix_summary,
     pairwise_cosine_distance,
     row_normalized_kernel_from_cost,
 )
-from mignet_ce.pij.compare.features import CompareFeatureSet, build_compare_feature_set
-from mignet_ce.pij.compare.kl import pairwise_feature_kl
-from mignet_ce.pij.compare.sparse_ot import SparseOTResult, run_sparse_semi_relaxed_ot
+from mignet_ce.pij.compare._shared.features import CompareFeatureSet, build_compare_feature_set
+from mignet_ce.pij.compare._shared.kl import pairwise_feature_kl
+from mignet_ce.pij.compare._shared.sparse_ot import SparseOTResult, run_sparse_semi_relaxed_ot
 
 
 FEATURE_COMBINATIONS: tuple[tuple[str, ...], ...] = (
@@ -286,6 +285,22 @@ class ComparePijMethodBase:
     name: str
     feature_keys: tuple[str, ...]
     pij_key: str
+    supports_block_kl = False
+
+    def build_kl_cost(
+        self,
+        source: np.ndarray,
+        target: np.ndarray,
+        *,
+        beta: float,
+        weight_n: float,
+        weight_g: float,
+        grn_source: np.ndarray | None = None,
+        grn_target: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, dict[str, object] | None]:
+        if (grn_source is None) != (grn_target is None):
+            raise ValueError("Both grn_source and grn_target are required for block KL.")
+        return pairwise_feature_kl(source, target, beta=beta), None
 
     def run(
         self,
@@ -295,8 +310,7 @@ class ComparePijMethodBase:
     ) -> tuple[MethodResult, TransitionKernels | None]:
         feature_set = build_compare_feature_set(context, cfg, self.feature_keys)
         block_kl_enabled = bool(
-            self.pij_key == "kl"
-            and self.feature_keys == ("N",)
+            self.supports_block_kl
             and feature_set.metadata.get("grn_block", {}).get("enabled", False)
         )
         fusion_mode = (
@@ -453,22 +467,15 @@ class ComparePijMethodBase:
 
         if self.pij_key == "kl":
             beta = max(float(cfg.pij_entropy_epsilon), 1e-12)
-            if (grn_source is None) != (grn_target is None):
-                raise ValueError("Both grn_source and grn_target are required for block KL.")
-            if grn_source is not None and grn_target is not None:
-                cost, block_metadata = build_block_kl_cost(
-                    source,
-                    target,
-                    grn_source,
-                    grn_target,
-                    weight_n=cfg.kl_block_weight_n,
-                    weight_g=cfg.kl_block_weight_g,
-                    beta_n=beta,
-                    beta_g=beta,
-                )
-            else:
-                cost = pairwise_feature_kl(source, target, beta=beta)
-                block_metadata = None
+            cost, block_metadata = self.build_kl_cost(
+                source,
+                target,
+                beta=beta,
+                weight_n=cfg.kl_block_weight_n,
+                weight_g=cfg.kl_block_weight_g,
+                grn_source=grn_source,
+                grn_target=grn_target,
+            )
             kernel, pij = row_normalized_kernel_from_cost(cost, tau=cfg.pij_temperature)
             diagnostics = {
                 "kind": "block_feature_kl_kernel" if block_metadata is not None else "feature_kl_kernel",
