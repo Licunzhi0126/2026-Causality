@@ -176,6 +176,11 @@ COST_FUSION_EXPERIMENT_PIJ_METHODS: Tuple[str, ...] = (
     "compare_E_Sr_costmix_cos_sot",
     "compare_E_Sr_costmix_euc_sot",
 )
+FEATURE_VERSION_PIJ_METHODS = {
+    "compare_NG_kl_splitbeta_v1",
+    "compare_Ncomp_Gcos_v2",
+    "compare_Nshape_Gcos_v3",
+}
 MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 
 PIJ_METHODS = {
@@ -202,6 +207,7 @@ PIJ_METHODS = {
     "development_ot",
     *COMPARE_PIJ_METHODS,
     *COST_FUSION_NEW_PIJ_METHODS,
+    *FEATURE_VERSION_PIJ_METHODS,
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
@@ -267,6 +273,7 @@ PIJ_METHOD_PRESETS = {
         "development_ot",
         *COMPARE_PIJ_METHODS,
         *COST_FUSION_NEW_PIJ_METHODS,
+        *FEATURE_VERSION_PIJ_METHODS,
         MAIN_LIGHTCCI_PIJ_METHOD,
     ),
 }
@@ -277,6 +284,10 @@ LIGHT_CCI_NETWORK_METHODS = {
     "joint_cci_grn",
 }
 GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "joint_cci_grn"}
+LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
+    "compare_N_kl",
+    *FEATURE_VERSION_PIJ_METHODS,
+}
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
     "legacy_inter_cci_only",
@@ -426,8 +437,15 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
-        if self.network_method in GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS and method != "compare_N_kl":
-            raise ValueError(f"{self.network_method} requires pij_method='compare_N_kl'.")
+        if self.network_method == "light_cci_grn" and method not in LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS:
+            raise ValueError(
+                "light_cci_grn requires pij_method='compare_N_kl' or one of "
+                f"{sorted(FEATURE_VERSION_PIJ_METHODS)}."
+            )
+        if self.network_method == "joint_cci_grn" and method != "compare_N_kl":
+            raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
+        if method in FEATURE_VERSION_PIJ_METHODS and self.network_method != "light_cci_grn":
+            raise ValueError(f"{method} requires network_method='light_cci_grn'.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
         if self.progress_refresh_interval <= 0:

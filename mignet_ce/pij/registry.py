@@ -36,6 +36,9 @@ from mignet_ce.pij.compare.compare_L_Sr_costmix_euc_sot import CompareLSrCostMix
 from mignet_ce.pij.compare.compare_main_lap_sr_spatial_sot import CompareMainLapSrSpatialSotPijMethod
 from mignet_ce.pij.compare.compare_N_cos import CompareNCosPijMethod
 from mignet_ce.pij.compare.compare_N_kl import CompareNKlPijMethod
+from mignet_ce.pij.compare.compare_NG_kl_splitbeta_v1 import CompareNGKlSplitBetaV1PijMethod
+from mignet_ce.pij.compare.compare_Ncomp_Gcos_v2 import CompareNCompGCosV2PijMethod
+from mignet_ce.pij.compare.compare_Nshape_Gcos_v3 import CompareNShapeGCosV3PijMethod
 from mignet_ce.pij.compare.compare_N_L_cos import CompareNLCosPijMethod
 from mignet_ce.pij.compare.compare_N_L_kl import CompareNLKlPijMethod
 from mignet_ce.pij.compare.compare_N_L_sot import CompareNLSotPijMethod
@@ -97,6 +100,9 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_E_euc_sot": CompareEEucSotPijMethod,
     "compare_N_cos": CompareNCosPijMethod,
     "compare_N_kl": CompareNKlPijMethod,
+    "compare_NG_kl_splitbeta_v1": CompareNGKlSplitBetaV1PijMethod,
+    "compare_Ncomp_Gcos_v2": CompareNCompGCosV2PijMethod,
+    "compare_Nshape_Gcos_v3": CompareNShapeGCosV3PijMethod,
     "compare_N_sot": CompareNSotPijMethod,
     "compare_L_cos": CompareLCosPijMethod,
     "compare_L_kl": CompareLKlPijMethod,

@@ -40,6 +40,21 @@ def test_protected_files_do_not_depend_on_feature_versions() -> None:
         assert "feature_versions" not in text, relative_path
 
 
+def test_new_feature_version_dependency_direction_is_isolated() -> None:
+    method_base = (REPO_ROOT / "mignet_ce/pij/feature_versions/method_base.py").read_text(encoding="utf-8")
+    assert "monkeypatch" not in method_base
+    assert "VerticalMIGNetPipeline" not in method_base
+    assert "PIJ_METHOD_REGISTRY" not in method_base
+    for filename in (
+        "compare_NG_kl_splitbeta_v1.py",
+        "compare_Ncomp_Gcos_v2.py",
+        "compare_Nshape_Gcos_v3.py",
+    ):
+        text = (REPO_ROOT / "mignet_ce/pij/compare" / filename).read_text(encoding="utf-8")
+        assert "build_block_kl_cost" not in text
+        assert "FeatureVersionPijMethod" in text
+
+
 def test_compare_n_kl_registry_binding_is_frozen() -> None:
     assert PIJ_METHOD_REGISTRY["compare_N_kl"] is CompareNKlPijMethod
     assert isinstance(get_pij_method("compare_N_kl"), CompareNKlPijMethod)
