@@ -195,6 +195,125 @@ def test_light_cci_grn_grnanchor_v5_smoke_exports_truthful_unbounded_cost_metada
         assert diagnostics["block_kl"]["removes_unit_interval_gibbs_ei_bound"] is True
 
 
+def test_light_cci_grn_splitrole_v6_smoke_exports_separate_roles_and_no_leakage_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    method_name = "compare_NG_kl_splitrole_grnanchor_v6"
+    cfg = _cfg(
+        root,
+        "light_cci_grn",
+        pij_method=method_name,
+        beta=0.05,
+    )
+    cfg.export_pair_artifacts = True
+    cfg.pij_archive_root = Path("\\\\?\\" + str((root / "a").resolve()))
+    cfg.validate()
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method(method_name).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["transition_construction"] == "splitrole_grnanchored_block_kl"
+    assert result.method_metadata["uses_third_timepoint"] is False
+    assert result.method_metadata["uses_developmental_features"] is False
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(np.isfinite(matrix))
+        assert np.all(matrix >= 0.0)
+        np.testing.assert_allclose(matrix.sum(axis=1), np.ones(matrix.shape[0]), rtol=1e-10, atol=1e-12)
+        metadata = kernels.kernel_metadata["11.5->12.5"][side]
+        assert metadata["final_cost_clipped_to_unit_interval"] is False
+        assert metadata["uses_only_current_pair_timepoints"] is True
+        assert metadata["uses_developmental_features"] is False
+        assert metadata["uses_labels"] is False
+
+        artifact = (
+            cfg.effective_pij_archive_root()
+            / "compare"
+            / f"method={method_name}"
+            / "organ=heart"
+            / f"pair={PAIR.label()}"
+            / "time=11.5_to_12.5"
+            / f"side={side}"
+        )
+        exported_metadata = json.loads((artifact / "metadata.json").read_text(encoding="utf-8"))
+        diagnostics = json.loads((artifact / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+        assert exported_metadata["regulator_target_summed_before_distance"] is False
+        assert exported_metadata["uses_third_timepoint"] is False
+        assert exported_metadata["uses_lower_to_upper_projection"] is False
+        assert diagnostics["block_kl"]["removes_unit_interval_gibbs_ei_bound"] is True
+        assert (artifact / "grn_reg_features_source.npy").exists()
+        assert (artifact / "grn_reg_features_target.npy").exists()
+        assert (artifact / "grn_tar_features_source.npy").exists()
+        assert (artifact / "grn_tar_features_target.npy").exists()
+
+
+def test_light_cci_grn_sinkhorn_v7_smoke_exports_balanced_coupling_and_no_leakage_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    method_name = "compare_NG_kl_sinkhorn_grnanchor_v7"
+    cfg = _cfg(
+        root,
+        "light_cci_grn",
+        pij_method=method_name,
+        beta=0.05,
+    )
+    cfg.export_pair_artifacts = True
+    cfg.pij_archive_root = Path("\\\\?\\" + str((root / "a").resolve()))
+    cfg.validate()
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method(method_name).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["transition_construction"] == "balanced_sinkhorn_grnanchored_block_kl"
+    assert result.method_metadata["cost_is_exact_frozen_v5_formula"] is True
+    assert result.method_metadata["uses_ei_for_fitting"] is False
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(np.isfinite(matrix))
+        assert np.all(matrix >= 0.0)
+        np.testing.assert_allclose(matrix.sum(axis=1), np.ones(matrix.shape[0]), rtol=0.0, atol=1.0e-12)
+        np.testing.assert_allclose(
+            matrix.mean(axis=0),
+            np.full(matrix.shape[1], 1.0 / matrix.shape[1]),
+            rtol=0.0,
+            atol=2.0e-9,
+        )
+        metadata = kernels.kernel_metadata["11.5->12.5"][side]
+        assert metadata["cost_is_exact_frozen_v5_formula"] is True
+        assert metadata["sinkhorn"]["converged"] is True
+        assert metadata["uses_only_current_pair_timepoints"] is True
+        assert metadata["uses_developmental_features"] is False
+        assert metadata["uses_ei_for_fitting"] is False
+        assert metadata["uses_layer_identity"] is False
+        assert metadata["uses_labels"] is False
+
+        artifact = (
+            cfg.effective_pij_archive_root()
+            / "compare"
+            / f"method={method_name}"
+            / "organ=heart"
+            / f"pair={PAIR.label()}"
+            / "time=11.5_to_12.5"
+            / f"side={side}"
+        )
+        exported_metadata = json.loads((artifact / "metadata.json").read_text(encoding="utf-8"))
+        diagnostics = json.loads((artifact / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+        joint = sp.load_npz(artifact / "pij_sparse.npz").toarray()
+        conditional = sp.load_npz(artifact / "pij_row_normalized_sparse.npz").toarray()
+        assert exported_metadata["transition_construction"] == "balanced_sinkhorn_grnanchored_block_kl"
+        assert exported_metadata["raw_matrix_semantics"] == "balanced_joint_coupling"
+        assert exported_metadata["uses_third_timepoint"] is False
+        assert exported_metadata["uses_lower_to_upper_projection"] is False
+        assert diagnostics["sinkhorn"]["converged"] is True
+        np.testing.assert_allclose(joint.sum(axis=1), np.full(joint.shape[0], 1.0 / joint.shape[0]), atol=2.0e-9)
+        np.testing.assert_allclose(joint.sum(axis=0), np.full(joint.shape[1], 1.0 / joint.shape[1]), atol=2.0e-9)
+        np.testing.assert_allclose(conditional, matrix, rtol=0.0, atol=0.0)
+
+
 def test_zero_grn_block_weight_recovers_light_cci_compare_n_kl_exactly(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _write_inputs(root)
