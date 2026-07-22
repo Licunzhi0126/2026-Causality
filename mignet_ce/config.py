@@ -186,6 +186,8 @@ BASELINE_DERIVED_PIJ_METHODS = {
     "compare_NG_kl_splitrole_grnanchor_v6",
     "compare_NG_kl_sinkhorn_grnanchor_v7",
     "compare_NG_kl_sparseot_grnanchor_v8",
+    "compare_NG_fgw_grnanchor_v9",
+    "compare_NG_multiscale_fgw_annealed_v10",
 }
 MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 

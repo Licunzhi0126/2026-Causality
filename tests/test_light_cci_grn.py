@@ -385,6 +385,144 @@ def test_light_cci_grn_sparseot_v8_smoke_exports_sparse_balanced_coupling_and_no
         np.testing.assert_allclose(conditional, matrix, rtol=0.0, atol=0.0)
 
 
+def test_light_cci_grn_fgw_v9_smoke_exports_balanced_coupling_and_no_leakage_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    method_name = "compare_NG_fgw_grnanchor_v9"
+    cfg = _cfg(
+        root,
+        "light_cci_grn",
+        pij_method=method_name,
+        beta=0.05,
+    )
+    cfg.export_pair_artifacts = True
+    cfg.pij_archive_root = Path("\\\\?\\" + str((root / "a").resolve()))
+    cfg.validate()
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method(method_name).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["transition_construction"] == "fixed_iteration_lowrank_directed_fgw"
+    assert result.method_metadata["node_cost_is_exact_frozen_v5_formula"] is True
+    assert result.method_metadata["fgw_outer_iterations"] == 10
+    assert result.method_metadata["uses_ei_for_fitting"] is False
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(np.isfinite(matrix))
+        assert np.all(matrix >= 0.0)
+        np.testing.assert_allclose(matrix.sum(axis=1), np.ones(matrix.shape[0]), atol=1.0e-12)
+        np.testing.assert_allclose(
+            matrix.mean(axis=0),
+            np.full(matrix.shape[1], 1.0 / matrix.shape[1]),
+            atol=2.0e-9,
+        )
+        metadata = kernels.kernel_metadata["11.5->12.5"][side]
+        assert metadata["node_cost_is_exact_frozen_v5_formula"] is True
+        assert metadata["fgw"]["outer_iterations"] == 10
+        assert metadata["fgw"]["source_adjacency_nnz"] > 0
+        assert metadata["fgw"]["target_adjacency_nnz"] > 0
+        assert metadata["uses_only_current_pair_timepoints"] is True
+        assert metadata["uses_developmental_features"] is False
+        assert metadata["uses_ei_for_fitting"] is False
+        assert metadata["uses_layer_identity"] is False
+        assert metadata["uses_labels"] is False
+
+        artifact = (
+            cfg.effective_pij_archive_root()
+            / "compare"
+            / f"method={method_name}"
+            / "organ=heart"
+            / f"pair={PAIR.label()}"
+            / "time=11.5_to_12.5"
+            / f"side={side}"
+        )
+        exported_metadata = json.loads((artifact / "metadata.json").read_text(encoding="utf-8"))
+        diagnostics = json.loads((artifact / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+        joint = sp.load_npz(artifact / "pij_sparse.npz").toarray()
+        conditional = sp.load_npz(artifact / "pij_row_normalized_sparse.npz").toarray()
+        assert exported_metadata["transition_construction"] == "fixed_iteration_lowrank_directed_fgw"
+        assert exported_metadata["raw_matrix_semantics"] == "balanced_joint_coupling"
+        assert exported_metadata["uses_third_timepoint"] is False
+        assert exported_metadata["uses_lower_to_upper_projection"] is False
+        assert diagnostics["fgw"]["outer_iterations"] == 10
+        assert diagnostics["fgw"]["uses_ei_for_fitting"] is False
+        np.testing.assert_allclose(joint.sum(axis=1), np.full(joint.shape[0], 1.0 / joint.shape[0]), atol=2.0e-9)
+        np.testing.assert_allclose(joint.sum(axis=0), np.full(joint.shape[1], 1.0 / joint.shape[1]), atol=2.0e-9)
+        np.testing.assert_allclose(conditional, matrix, rtol=0.0, atol=0.0)
+
+
+def test_light_cci_grn_multiscale_fgw_v10_smoke_exports_balanced_no_leakage_metadata(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    method_name = "compare_NG_multiscale_fgw_annealed_v10"
+    cfg = _cfg(root, "light_cci_grn", pij_method=method_name, beta=0.05)
+    cfg.export_pair_artifacts = True
+    cfg.pij_archive_root = Path("\\\\?\\" + str((root / "a").resolve()))
+    cfg.validate()
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method(method_name).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert (
+        result.method_metadata["transition_construction"]
+        == "fixed_schedule_multiscale_lowrank_directed_fgw"
+    )
+    assert result.method_metadata["node_cost_is_exact_frozen_v5_formula"] is True
+    assert result.method_metadata["multiscale_diffusion_steps"] == [1, 2, 4]
+    assert result.method_metadata["uses_ei_for_fitting"] is False
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(np.isfinite(matrix))
+        assert np.all(matrix >= 0.0)
+        np.testing.assert_allclose(matrix.sum(axis=1), np.ones(matrix.shape[0]), atol=1.0e-12)
+        np.testing.assert_allclose(
+            matrix.mean(axis=0),
+            np.full(matrix.shape[1], 1.0 / matrix.shape[1]),
+            atol=2.0e-9,
+        )
+        metadata = kernels.kernel_metadata["11.5->12.5"][side]
+        assert metadata["node_cost_is_exact_frozen_v5_formula"] is True
+        assert metadata["multiscale_fgw"]["diffusion_steps"] == [1, 2, 4]
+        assert metadata["multiscale_fgw"]["temperature_schedule"][-1] == 0.1
+        assert metadata["multiscale_fgw"]["source_adjacency_nnz"] > 0
+        assert metadata["multiscale_fgw"]["target_adjacency_nnz"] > 0
+        assert metadata["uses_only_current_pair_timepoints"] is True
+        assert metadata["uses_developmental_features"] is False
+        assert metadata["uses_ei_for_fitting"] is False
+        assert metadata["uses_layer_identity"] is False
+        assert metadata["uses_labels"] is False
+
+        artifact = (
+            cfg.effective_pij_archive_root()
+            / "compare"
+            / f"method={method_name}"
+            / "organ=heart"
+            / f"pair={PAIR.label()}"
+            / "time=11.5_to_12.5"
+            / f"side={side}"
+        )
+        exported_metadata = json.loads((artifact / "metadata.json").read_text(encoding="utf-8"))
+        diagnostics = json.loads((artifact / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+        joint = sp.load_npz(artifact / "pij_sparse.npz").toarray()
+        conditional = sp.load_npz(artifact / "pij_row_normalized_sparse.npz").toarray()
+        assert (
+            exported_metadata["transition_construction"]
+            == "fixed_schedule_multiscale_lowrank_directed_fgw"
+        )
+        assert exported_metadata["raw_matrix_semantics"] == "balanced_joint_coupling"
+        assert exported_metadata["uses_third_timepoint"] is False
+        assert exported_metadata["uses_lower_to_upper_projection"] is False
+        assert diagnostics["multiscale_fgw"]["diffusion_steps"] == [1, 2, 4]
+        assert diagnostics["multiscale_fgw"]["uses_ei_for_fitting"] is False
+        np.testing.assert_allclose(joint.sum(axis=1), np.full(joint.shape[0], 1.0 / joint.shape[0]), atol=2.0e-9)
+        np.testing.assert_allclose(joint.sum(axis=0), np.full(joint.shape[1], 1.0 / joint.shape[1]), atol=2.0e-9)
+        np.testing.assert_allclose(conditional, matrix, rtol=0.0, atol=0.0)
+
+
 def test_zero_grn_block_weight_recovers_light_cci_compare_n_kl_exactly(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _write_inputs(root)
