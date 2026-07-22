@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -76,7 +77,15 @@ def _write_inputs(root: Path) -> None:
             ).to_csv(grn_dir / "grn_edges.csv", index=False)
 
 
-def _cfg(root: Path, network_method: str, *, weight_n: float = 0.5, weight_g: float = 0.5) -> TemporalRunConfig:
+def _cfg(
+    root: Path,
+    network_method: str,
+    *,
+    weight_n: float = 0.5,
+    weight_g: float = 0.5,
+    pij_method: str = "compare_N_kl",
+    beta: float = 0.5,
+) -> TemporalRunConfig:
     return TemporalRunConfig(
         data_root=root,
         output_root=root / "out",
@@ -84,7 +93,7 @@ def _cfg(root: Path, network_method: str, *, weight_n: float = 0.5, weight_g: fl
         time_points=["11.5", "12.5"],
         level_pairs=[PAIR],
         network_method=network_method,
-        pij_method="compare_N_kl",
+        pij_method=pij_method,
         nmf_components=2,
         nmf_max_iter=8,
         nmf_seed=19,
@@ -97,7 +106,7 @@ def _cfg(root: Path, network_method: str, *, weight_n: float = 0.5, weight_g: fl
         joint_cci_rank=2,
         joint_lambda_cci=1.0,
         joint_lambda_grn=1.0,
-        pij_entropy_epsilon=0.5,
+        pij_entropy_epsilon=beta,
     )
 
 
@@ -141,6 +150,49 @@ def test_light_cci_grn_compare_n_kl_uses_block_cost_and_returns_row_stochastic_p
         assert matrix.sum(axis=1).tolist() == pytest.approx(np.ones(matrix.shape[0]).tolist())
         assert kernels.kernel_metadata["11.5->12.5"][side]["grn_block_used"] is True
         assert kernels.kernel_metadata["11.5->12.5"][side]["cost_source"] == "independently_normalized_N_and_GRN_block_KL"
+
+
+def test_light_cci_grn_grnanchor_v5_smoke_exports_truthful_unbounded_cost_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_inputs(root)
+    method_name = "compare_NG_kl_grnanchor_v5"
+    cfg = _cfg(
+        root,
+        "light_cci_grn",
+        pij_method=method_name,
+        beta=0.05,
+    )
+    cfg.export_pair_artifacts = True
+    cfg.pij_archive_root = root / "archive"
+    cfg.validate()
+    context = _context(root, cfg)
+
+    result, kernels = get_pij_method(method_name).run(context, cfg, [(0, 1)])
+
+    assert kernels is not None
+    assert result.method_metadata["transition_construction"] == "grnanchored_block_kl"
+    for side, matrix in (("lower", kernels.p_lower[(0, 1)]), ("upper", kernels.p_upper[(0, 1)])):
+        assert np.all(np.isfinite(matrix))
+        assert np.all(matrix >= 0.0)
+        np.testing.assert_allclose(matrix.sum(axis=1), np.ones(matrix.shape[0]), rtol=1e-10, atol=1e-12)
+        metadata = kernels.kernel_metadata["11.5->12.5"][side]
+        assert metadata["cost_source"] == "raw_GRN_KL_plus_0.25_robust_normalized_N_KL"
+        assert metadata["final_cost_clipped_to_unit_interval"] is False
+
+        artifact = (
+            cfg.effective_pij_archive_root()
+            / "compare"
+            / f"method={method_name}"
+            / "organ=heart"
+            / f"pair={PAIR.label()}"
+            / "time=11.5_to_12.5"
+            / f"side={side}"
+        )
+        exported_metadata = json.loads((artifact / "metadata.json").read_text(encoding="utf-8"))
+        diagnostics = json.loads((artifact / "cost_or_kernel_diagnostics.json").read_text(encoding="utf-8"))
+        assert exported_metadata["transition_construction"] == "grnanchored_block_kl"
+        assert exported_metadata["final_cost_clipped_to_unit_interval"] is False
+        assert diagnostics["block_kl"]["removes_unit_interval_gibbs_ei_bound"] is True
 
 
 def test_zero_grn_block_weight_recovers_light_cci_compare_n_kl_exactly(tmp_path: Path) -> None:

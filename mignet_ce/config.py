@@ -181,6 +181,9 @@ FEATURE_VERSION_PIJ_METHODS = {
     "compare_Ncomp_Gcos_v2",
     "compare_Nshape_Gcos_v3",
 }
+BASELINE_DERIVED_PIJ_METHODS = {
+    "compare_NG_kl_grnanchor_v5",
+}
 MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 
 PIJ_METHODS = {
@@ -208,6 +211,7 @@ PIJ_METHODS = {
     *COMPARE_PIJ_METHODS,
     *COST_FUSION_NEW_PIJ_METHODS,
     *FEATURE_VERSION_PIJ_METHODS,
+    *BASELINE_DERIVED_PIJ_METHODS,
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
@@ -274,6 +278,7 @@ PIJ_METHOD_PRESETS = {
         *COMPARE_PIJ_METHODS,
         *COST_FUSION_NEW_PIJ_METHODS,
         *FEATURE_VERSION_PIJ_METHODS,
+        *BASELINE_DERIVED_PIJ_METHODS,
         MAIN_LIGHTCCI_PIJ_METHOD,
     ),
 }
@@ -287,6 +292,7 @@ GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "joint_cci_grn"}
 LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
     "compare_N_kl",
     *FEATURE_VERSION_PIJ_METHODS,
+    *BASELINE_DERIVED_PIJ_METHODS,
 }
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
@@ -440,11 +446,13 @@ class TemporalRunConfig:
         if self.network_method == "light_cci_grn" and method not in LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS:
             raise ValueError(
                 "light_cci_grn requires pij_method='compare_N_kl' or one of "
-                f"{sorted(FEATURE_VERSION_PIJ_METHODS)}."
+                f"{sorted(FEATURE_VERSION_PIJ_METHODS | BASELINE_DERIVED_PIJ_METHODS)}."
             )
         if self.network_method == "joint_cci_grn" and method != "compare_N_kl":
             raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
         if method in FEATURE_VERSION_PIJ_METHODS and self.network_method != "light_cci_grn":
+            raise ValueError(f"{method} requires network_method='light_cci_grn'.")
+        if method in BASELINE_DERIVED_PIJ_METHODS and self.network_method != "light_cci_grn":
             raise ValueError(f"{method} requires network_method='light_cci_grn'.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
