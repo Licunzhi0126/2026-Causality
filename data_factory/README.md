@@ -34,6 +34,8 @@ $OUT/
   spatial_domain_k40/
   spatial_domain_k150/
   spatial_domain_less_than5/
+  pash_mrc_k40/
+  pash_mrc_k150/
   cci/
     edge_lr_long/
       seurat_k150/
@@ -51,6 +53,8 @@ $OUT/
     spatial_domain_k40/
     spatial_domain_k150/
     spatial_domain_less_than5/
+    pash_mrc_k40/
+    pash_mrc_k150/
   grn/
     spot/
     organ/
@@ -64,6 +68,8 @@ $OUT/
     spatial_domain_k40/
     spatial_domain_k150/
     spatial_domain_less_than5/
+    pash_mrc_k40/
+    pash_mrc_k150/
 ```
 
 ## Required Order
@@ -85,6 +91,7 @@ Rscript scripts/03_run_seurat_k40.R
 python scripts/run_spatial_domain_layer.py --layer spatial_domain_k40
 python scripts/run_spatial_domain_layer.py --layer spatial_domain_k150
 python scripts/run_spatial_domain_layer.py --layer spatial_domain_less_than5
+python scripts/run_pash_mrc_layers.py
 python scripts/04_run_cci_spot_commot.py
 python scripts/07_run_grn_spot.py
 ```
@@ -115,6 +122,21 @@ python scripts/20_run_spatial_domain_k40.py
 python scripts/21_run_spatial_domain_k150.py
 python scripts/22_run_spatial_domain_less_than5.py
 ```
+
+PASH-MRC is a prospective single-timepoint hierarchy. One invocation jointly
+creates K40 and K150 so every K150 domain is strictly nested in exactly one K40
+domain. It reads only the current sample's spot counts and spatial coordinates;
+it does not read another time point, CCI, GRN, PGR, PIJ, or EI:
+
+```bash
+python scripts/run_pash_mrc_layers.py \
+  --spot-root "$OUT/spot" \
+  --factory-root "$OUT"
+```
+
+The runner never overwrites domain artifacts. A complete existing K40/K150 pair
+is skipped; a partial hierarchy raises an error so outputs from different fits
+cannot be mixed.
 
 `05`, `06_run_louvain_less_than5.py`, and the legacy fixed-K `06_run_louvain_k1100.py`
 must wait for `04_run_cci_spot_commot.py`, because Louvain uses the spot-level
@@ -182,6 +204,12 @@ python scripts/run_cci_layer_commot.py --layer spatial_domain_k150
 
 python scripts/run_grn_layer.py --layer spatial_domain_less_than5
 python scripts/run_cci_layer_commot.py --layer spatial_domain_less_than5
+
+python scripts/run_grn_layer.py --layer pash_mrc_k40
+python scripts/run_cci_layer_commot.py --layer pash_mrc_k40
+
+python scripts/run_grn_layer.py --layer pash_mrc_k150
+python scripts/run_cci_layer_commot.py --layer pash_mrc_k150
 ```
 
 The new generic runners can replace the fixed wrappers when you want one command shape:
@@ -193,6 +221,8 @@ python scripts/run_grn_layer.py --layer seurat_k150
 python scripts/run_cci_layer_commot.py --layer seurat_k150
 python scripts/run_grn_layer.py --layer spatial_domain_k40
 python scripts/run_cci_layer_commot.py --layer spatial_domain_k40
+python scripts/run_grn_layer.py --layer pash_mrc_k150
+python scripts/run_cci_layer_commot.py --layer pash_mrc_k150
 ```
 
 ## Skip Policy
@@ -200,6 +230,7 @@ python scripts/run_cci_layer_commot.py --layer spatial_domain_k40
 - Louvain less-than-5 writes domains where each output domain has at most 4 spots (`<5`) and records `max_domain_spots` in `manifests/domain_manifest_louvain_less_than5.csv`.
 - Louvain less-than-5 still requires the spot-level COMMOT files from `04_run_cci_spot_commot.py`; missing `{sample}_CCI_total.npz` files are recorded as errors.
 - Spatial-domain fixed-K layers skip samples with fewer spots than K and record them in `manifests/skipped_jobs.csv`.
+- PASH-MRC jointly writes K40/K150, skips samples with fewer than 150 spots, and refuses to overwrite a partial hierarchy.
 - Spatial-domain less-than-5 writes domains where each output domain has at most `--less-than-5-max-size` spots and records min/max domain sizes in `manifests/domain_manifest_spatial_domain_less_than5.csv`.
 - Seurat less-than-5 writes domains where each output domain has at most `--max-spots-per-domain` spots and records min/max domain sizes in `manifests/domain_manifest_seurat_less_than5.csv`.
 - Legacy Louvain K1100 skips samples with fewer than 1100 spots and writes them to `manifests/skipped_jobs.csv`.

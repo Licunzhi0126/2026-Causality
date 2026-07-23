@@ -24,7 +24,7 @@ AUXILIARY_H5AD_SUFFIXES: Tuple[str, ...] = (
 )
 
 SAMPLE_RE = re.compile(
-    r"^(?P<prefix>spot|organ|seurat|seurat40|seurat150|seuratLessThan5|louvain40|louvain150|louvain1100|louvainLessThan5|spatialDomain40|spatialDomain150|spatialDomainLessThan5)_(?P<organ>[A-Za-z]+)_(?P<stage>\d+(?:\.\d+)?)$"
+    r"^(?P<prefix>spot|organ|seurat|seurat40|seurat150|seuratLessThan5|louvain40|louvain150|louvain1100|louvainLessThan5|spatialDomain40|spatialDomain150|spatialDomainLessThan5|pashMRC40|pashMRC150)_(?P<organ>[A-Za-z]+)_(?P<stage>\d+(?:\.\d+)?)$"
 )
 
 

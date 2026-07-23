@@ -67,6 +67,8 @@ LAYER_SPECS: Dict[str, LayerSpec] = {
     "spatial_domain_less_than5": LayerSpec(name="spatial_domain_less_than5", sample_prefix="spatialDomainLessThan5"),
     "spatial_domain_k150": LayerSpec(name="spatial_domain_k150", sample_prefix="spatialDomain150"),
     "spatial_domain_k40": LayerSpec(name="spatial_domain_k40", sample_prefix="spatialDomain40"),
+    "pash_mrc_k150": LayerSpec(name="pash_mrc_k150", sample_prefix="pashMRC150"),
+    "pash_mrc_k40": LayerSpec(name="pash_mrc_k40", sample_prefix="pashMRC40"),
 }
 
 DEFAULT_LEVEL_ORDER: Tuple[str, ...] = ("spot", "louvain_less_than5", "louvain_k150", "seurat_k40")
@@ -115,6 +117,15 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
         VerticalPairSpec("spot", "spatial_domain_k150"),
         VerticalPairSpec("spot", "spatial_domain_k40"),
         VerticalPairSpec("spatial_domain_less_than5", "spatial_domain_k40"),
+    ),
+    "pash_mrc_adjacent": (
+        VerticalPairSpec("spot", "pash_mrc_k150"),
+        VerticalPairSpec("pash_mrc_k150", "pash_mrc_k40"),
+    ),
+    "pash_mrc_all": (
+        VerticalPairSpec("spot", "pash_mrc_k150"),
+        VerticalPairSpec("pash_mrc_k150", "pash_mrc_k40"),
+        VerticalPairSpec("spot", "pash_mrc_k40"),
     ),
 }
 
@@ -291,9 +302,10 @@ EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
 LIGHT_CCI_NETWORK_METHODS = {
     "light_cci",
     "light_cci_grn",
+    "light_cci_grn_pgr",
     "joint_cci_grn",
 }
-GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "joint_cci_grn"}
+GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "light_cci_grn_pgr", "joint_cci_grn"}
 LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
     "compare_N_kl",
     *FEATURE_VERSION_PIJ_METHODS,
@@ -448,17 +460,17 @@ class TemporalRunConfig:
             raise ValueError(f"{method} requires development_feature_root.")
         if self.network_method not in NETWORK_METHODS:
             raise ValueError(f"network_method must be one of {sorted(NETWORK_METHODS)}.")
-        if self.network_method == "light_cci_grn" and method not in LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS:
+        if self.network_method in {"light_cci_grn", "light_cci_grn_pgr"} and method not in LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS:
             raise ValueError(
-                "light_cci_grn requires pij_method='compare_N_kl' or one of "
+                "light_cci_grn/light_cci_grn_pgr requires pij_method='compare_N_kl' or one of "
                 f"{sorted(FEATURE_VERSION_PIJ_METHODS | BASELINE_DERIVED_PIJ_METHODS)}."
             )
         if self.network_method == "joint_cci_grn" and method != "compare_N_kl":
             raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
-        if method in FEATURE_VERSION_PIJ_METHODS and self.network_method != "light_cci_grn":
-            raise ValueError(f"{method} requires network_method='light_cci_grn'.")
-        if method in BASELINE_DERIVED_PIJ_METHODS and self.network_method != "light_cci_grn":
-            raise ValueError(f"{method} requires network_method='light_cci_grn'.")
+        if method in FEATURE_VERSION_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
+            raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
+        if method in BASELINE_DERIVED_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
+            raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
         if self.progress_refresh_interval <= 0:

@@ -33,6 +33,16 @@ domain_levels:
     k: 1100
     source_script: scripts/06_run_louvain_k1100.py
     skip_when_n_spots_less_than_k: true
+  pash_mrc_k40:
+    k: 40
+    source_script: scripts/run_pash_mrc_layers.py
+    prospective_single_timepoint: true
+    jointly_built_with: pash_mrc_k150
+  pash_mrc_k150:
+    k: 150
+    source_script: scripts/run_pash_mrc_layers.py
+    prospective_single_timepoint: true
+    strictly_nested_in: pash_mrc_k40
 
 commot:
   lr_database: CellPhoneDB_v4.0

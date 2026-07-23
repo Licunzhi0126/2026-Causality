@@ -1494,7 +1494,7 @@ def build_compare_feature_set(
     metadata["feature_names"] = names
     pairwise_lower_grn_features: PairFeatures | None = None
     pairwise_upper_grn_features: PairFeatures | None = None
-    if keys == ("N",) and context.network_method == "light_cci_grn":
+    if keys == ("N",) and context.network_method in {"light_cci_grn", "light_cci_grn_pgr"}:
         pairs = TemporalMetricsEngine.build_time_pairs_all(context.time_points)
         pairwise_lower_grn_features, lower_grn_metadata = _build_pairwise_grn_state_side(
             context,
