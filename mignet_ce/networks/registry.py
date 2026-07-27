@@ -16,6 +16,7 @@ from mignet_ce.networks.light_cci import LightCCINetworkBuilder
 from mignet_ce.networks.light_cci_grn import LightCCIGRNNetworkBuilder
 from mignet_ce.networks.light_cci_grn_pgr import LightCCIGRNPGRNetworkBuilder
 from mignet_ce.networks.unit_specific_clean_grn_cci_mix import UnitSpecificCleanGRNCCIMixBuilder
+from mignet_ce.networks.wyt_cci_regsim import WYTCCIRegSimNetworkBuilder
 
 
 NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
@@ -32,6 +33,7 @@ NETWORK_BUILDERS: Dict[str, Type[NetworkBuilder]] = {
     "light_cci_grn": LightCCIGRNNetworkBuilder,
     "light_cci_grn_pgr": LightCCIGRNPGRNetworkBuilder,
     "joint_cci_grn": JointCCIGRNNetworkBuilder,
+    "wyt_cci_regsim": WYTCCIRegSimNetworkBuilder,
 }
 
 

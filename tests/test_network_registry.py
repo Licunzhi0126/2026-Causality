@@ -20,6 +20,7 @@ def test_network_registry_matches_configured_methods() -> None:
         "light_cci_grn",
         "light_cci_grn_pgr",
         "joint_cci_grn",
+        "wyt_cci_regsim",
     }
     assert set(NETWORK_BUILDERS) == NETWORK_METHODS
     assert NETWORK_BUILDERS["legacy_mixed_grn_cci"].__module__ == "mignet_ce.networks.legacy_mixed_grn_cci"
@@ -45,6 +46,7 @@ def test_network_registry_matches_configured_methods() -> None:
     assert NETWORK_BUILDERS["light_cci_grn"].__module__ == "mignet_ce.networks.light_cci_grn"
     assert NETWORK_BUILDERS["light_cci_grn_pgr"].__module__ == "mignet_ce.networks.light_cci_grn_pgr"
     assert NETWORK_BUILDERS["joint_cci_grn"].__module__ == "mignet_ce.networks.joint_cci_grn"
+    assert NETWORK_BUILDERS["wyt_cci_regsim"].__module__ == "mignet_ce.networks.wyt_cci_regsim"
     assert LEGACY_NETWORK_METHODS == {
         "legacy_mixed_grn_cci",
         "legacy_inter_cci_only",

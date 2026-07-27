@@ -55,6 +55,10 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-state-dim", type=int, default=64)
     parser.add_argument("--grn-projection-seed", type=int, default=20260713)
     parser.add_argument("--grn-gate-mode", choices=["double_end"], default="double_end")
+    parser.add_argument("--regsim-knn-k", type=int, default=50)
+    parser.add_argument("--regsim-weight", type=float, default=0.2)
+    parser.add_argument("--wyt-network-svd-dim", type=int, default=32)
+    parser.add_argument("--wyt-network-pca-dim", type=int, default=32)
     parser.add_argument("--kl-block-weight-n", type=float, default=0.5)
     parser.add_argument("--kl-block-weight-g", type=float, default=0.5)
     parser.add_argument("--joint-grn-rank", type=int, default=32)
@@ -235,6 +239,10 @@ def main() -> None:
         grn_state_dim=args.grn_state_dim,
         grn_projection_seed=args.grn_projection_seed,
         grn_gate_mode=args.grn_gate_mode,
+        regsim_knn_k=args.regsim_knn_k,
+        regsim_weight=args.regsim_weight,
+        wyt_network_svd_dim=args.wyt_network_svd_dim,
+        wyt_network_pca_dim=args.wyt_network_pca_dim,
         kl_block_weight_n=args.kl_block_weight_n,
         kl_block_weight_g=args.kl_block_weight_g,
         joint_grn_rank=args.joint_grn_rank,

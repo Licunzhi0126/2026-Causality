@@ -200,6 +200,11 @@ BASELINE_DERIVED_PIJ_METHODS = {
     "compare_NG_fgw_grnanchor_v9",
     "compare_NG_multiscale_fgw_annealed_v10",
 }
+WYT_PIJ_METHODS = {
+    "wyt_single_kl",
+    "wyt_regsim_v7",
+    "wyt_regsim_v9",
+}
 MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
 
 PIJ_METHODS = {
@@ -228,6 +233,7 @@ PIJ_METHODS = {
     *COST_FUSION_NEW_PIJ_METHODS,
     *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
+    *WYT_PIJ_METHODS,
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
@@ -295,6 +301,7 @@ PIJ_METHOD_PRESETS = {
         *COST_FUSION_NEW_PIJ_METHODS,
         *FEATURE_VERSION_PIJ_METHODS,
         *BASELINE_DERIVED_PIJ_METHODS,
+        *WYT_PIJ_METHODS,
         MAIN_LIGHTCCI_PIJ_METHOD,
     ),
 }
@@ -304,12 +311,14 @@ LIGHT_CCI_NETWORK_METHODS = {
     "light_cci_grn",
     "light_cci_grn_pgr",
     "joint_cci_grn",
+    "wyt_cci_regsim",
 }
 GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "light_cci_grn_pgr", "joint_cci_grn"}
 LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
     "compare_N_kl",
     *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
+    "wyt_single_kl",
 }
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
@@ -368,6 +377,10 @@ class TemporalRunConfig:
     grn_state_dim: int = 64
     grn_projection_seed: int = 20260713
     grn_gate_mode: str = "double_end"
+    regsim_knn_k: int = 50
+    regsim_weight: float = 0.2
+    wyt_network_svd_dim: int = 32
+    wyt_network_pca_dim: int = 32
     kl_block_weight_n: float = 0.5
     kl_block_weight_g: float = 0.5
     joint_grn_rank: int = 32
@@ -467,6 +480,19 @@ class TemporalRunConfig:
             )
         if self.network_method == "joint_cci_grn" and method != "compare_N_kl":
             raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
+        if self.network_method == "wyt_cci_regsim" and method not in WYT_PIJ_METHODS:
+            raise ValueError(f"wyt_cci_regsim requires pij_method in {sorted(WYT_PIJ_METHODS)}.")
+        if method in {"wyt_regsim_v7", "wyt_regsim_v9"} and self.network_method != "wyt_cci_regsim":
+            raise ValueError(f"{method} requires network_method='wyt_cci_regsim'.")
+        if method == "wyt_single_kl" and self.network_method not in {
+            "light_cci_grn",
+            "light_cci_grn_pgr",
+            "wyt_cci_regsim",
+        }:
+            raise ValueError(
+                "wyt_single_kl requires network_method='light_cci_grn', "
+                "'light_cci_grn_pgr', or 'wyt_cci_regsim'."
+            )
         if method in FEATURE_VERSION_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
             raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
         if method in BASELINE_DERIVED_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
@@ -501,6 +527,12 @@ class TemporalRunConfig:
             raise ValueError("grn_state_dim must be positive.")
         if self.grn_gate_mode != "double_end":
             raise ValueError("grn_gate_mode must be 'double_end'.")
+        if self.regsim_knn_k <= 0:
+            raise ValueError("regsim_knn_k must be positive.")
+        if not 0.0 <= self.regsim_weight <= 1.0:
+            raise ValueError("regsim_weight must be between 0 and 1.")
+        if self.wyt_network_svd_dim <= 0 or self.wyt_network_pca_dim <= 0:
+            raise ValueError("wyt_network_svd_dim and wyt_network_pca_dim must be positive.")
         if self.kl_block_weight_n < 0 or self.kl_block_weight_g < 0:
             raise ValueError("kl_block_weight_n and kl_block_weight_g must be nonnegative.")
         if abs(self.kl_block_weight_n + self.kl_block_weight_g - 1.0) > 1e-9:

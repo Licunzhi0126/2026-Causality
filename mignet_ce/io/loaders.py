@@ -32,6 +32,7 @@ class LayerPaths:
     cci_lr_dir: Path
     spot_domain_map: Optional[Path]
     unit_grn_edges: Optional[Path] = None
+    spots_with_domain_h5ad: Optional[Path] = None
 
 
 @dataclass
@@ -68,6 +69,11 @@ class LayerDataResolver:
             cci_lr_dir=self.data_root / "cci" / layer / f"{sample}_COMMOT_by_LR",
             spot_domain_map=spot_map,
             unit_grn_edges=self.data_root / "grn_unit_specific" / layer / sample / "unit_grn_edges.csv",
+            spots_with_domain_h5ad=(
+                None
+                if layer == "spot"
+                else self.data_root / layer / organ / f"{sample}_spots_with_domain.h5ad"
+            ),
         )
 
     def _select_sample_stem(self, layer: str, organ: str, stage: str, candidates: Sequence[str]) -> str:

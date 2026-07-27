@@ -45,6 +45,8 @@ from mignet_ce.pij.compare.compare_NG_fgw_grnanchor_v9 import CompareNGFGWGRNAnc
 from mignet_ce.pij.compare.compare_NG_multiscale_fgw_annealed_v10 import (
     CompareNGMultiscaleFGWAnnealedV10PijMethod,
 )
+from mignet_ce.pij.compare.compare_NR_fgw_regsim_v9 import CompareNRFGWRegSimV9PijMethod
+from mignet_ce.pij.compare.compare_NR_kl_sinkhorn_regsim_v7 import CompareNRKlSinkhornRegSimV7PijMethod
 from mignet_ce.pij.compare.compare_Ncomp_Gcos_v2 import CompareNCompGCosV2PijMethod
 from mignet_ce.pij.compare.compare_Nshape_Gcos_v3 import CompareNShapeGCosV3PijMethod
 from mignet_ce.pij.compare.compare_N_L_cos import CompareNLCosPijMethod
@@ -78,6 +80,7 @@ from mignet_ce.pij.legacy.sr_ot import SROTPijMethod
 from mignet_ce.pij.legacy.sr_spatial_ot import SRSpatialOTPijMethod
 from mignet_ce.pij.legacy.three_dot import ThreeDotPijMethod
 from mignet_ce.pij.legacy.velocity_ot import VelocityOTPijMethod
+from mignet_ce.pij.wyt_single_kl import WYTSingleKLPijMethod
 
 
 PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
@@ -152,6 +155,9 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_E_Sr_costmix_cos_sot": CompareESrCostMixCosSotPijMethod,
     "compare_E_Sr_costmix_euc_sot": CompareESrCostMixEucSotPijMethod,
     "compare_main_lap_sr_spatial_sot": CompareMainLapSrSpatialSotPijMethod,
+    "wyt_single_kl": WYTSingleKLPijMethod,
+    "wyt_regsim_v7": CompareNRKlSinkhornRegSimV7PijMethod,
+    "wyt_regsim_v9": CompareNRFGWRegSimV9PijMethod,
 }
 
 
