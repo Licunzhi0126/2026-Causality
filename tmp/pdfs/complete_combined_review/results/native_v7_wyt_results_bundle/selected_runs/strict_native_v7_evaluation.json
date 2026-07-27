@@ -1,0 +1,412 @@
+{
+  "EI_micro_native_v7": 0.8584988116735808,
+  "EI_macro_training_interface_pool_NG": 0.6732497665869381,
+  "deltaEI_training_interface_pool_NG": -0.18524904508664264,
+  "EI_macro_strict_raw_projected_CCI_reextract_N_recompute_G": 0.892464825457334,
+  "deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G": 0.03396601378375319,
+  "EI_macro_strict_rownorm_projected_CCI_reextract_N_recompute_G": 0.8975667237319147,
+  "deltaEI_strict_rownorm_projected_CCI_reextract_N_recompute_G": 0.03906791205833393,
+  "pooled_v7_metadata": {
+    "cost": {
+      "mode": "raw_grn_kl_plus_bounded_n_correction",
+      "beta_n": 0.05,
+      "beta_g": 0.05,
+      "n_correction_weight": 0.25,
+      "n_cost": {
+        "shape": [
+          64,
+          64
+        ],
+        "values": 4096,
+        "finite_values": 4096,
+        "nonfinite_count": 0,
+        "min": 0.0009610954101376361,
+        "max": 27.63101781910145,
+        "mean": 18.293101026459304
+      },
+      "g_cost": {
+        "shape": [
+          64,
+          64
+        ],
+        "values": 4096,
+        "finite_values": 4096,
+        "nonfinite_count": 0,
+        "min": 0.18251674957766184,
+        "max": 27.343979378635204,
+        "mean": 17.395811901838165
+      },
+      "n_normalization": {
+        "raw_summary": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.0009610954101376361,
+          "max": 27.63101781910145,
+          "mean": 18.293101026459304
+        },
+        "lower_percentile": 5.0,
+        "upper_percentile": 95.0,
+        "q_low": 3.895254869905154,
+        "q_high": 27.617185858446796,
+        "fallback_min": null,
+        "fallback_max": null,
+        "normalization_mode": "quantile_5_95",
+        "nonfinite_count": 0,
+        "normalized_summary": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.0,
+          "max": 1.0,
+          "mean": 0.6107693540469985
+        }
+      },
+      "combined_cost": {
+        "shape": [
+          64,
+          64
+        ],
+        "values": 4096,
+        "finite_values": 4096,
+        "nonfinite_count": 0,
+        "min": 0.2235812800811006,
+        "max": 27.571926369187675,
+        "mean": 17.548504240349914
+      },
+      "grn_cost_scale": "raw_kl_nats",
+      "n_correction_scale": "robust_5_95_times_0.25",
+      "final_cost_clipped_to_unit_interval": false,
+      "removes_unit_interval_gibbs_ei_bound": true,
+      "parameter_selection_split": "adjacent_time_pairs_development_only",
+      "heldout_split_observed": false
+    },
+    "sinkhorn": {
+      "mode": "balanced_entropic_ot_uniform_marginals",
+      "converged": true,
+      "iterations": 31,
+      "scaling_iterations": 31,
+      "max_iterations": 2000,
+      "tolerance": 1e-09,
+      "check_every": 10,
+      "source_marginal_policy": "uniform",
+      "target_marginal_policy": "uniform",
+      "source_marginal_value": 0.015625,
+      "target_marginal_value": 0.015625,
+      "max_absolute_marginal_residual": 7.105515845845511e-10,
+      "source_marginal_residual": 7.105515845845511e-10,
+      "target_marginal_residual": 4.883438584069033e-10,
+      "prebalanced_target_entropy_bits": 4.395320658690391,
+      "balanced_target_entropy_bits": 6.0,
+      "maximum_target_entropy_bits": 6.0,
+      "mean_absolute_target_marginal_shift": 0.020396401185879737,
+      "dual_fallback": {
+        "used": false
+      },
+      "uses_ei_for_fitting": false,
+      "uses_layer_identity": false,
+      "uses_labels": false,
+      "uses_third_timepoint": false,
+      "study_solver_fallback": false
+    },
+    "prebalanced_ei": 0.4066463329186405
+  },
+  "strict_raw_metadata": {
+    "EI_macro": 0.892464825457334,
+    "macro_cci_normalization": "raw_S_transpose_A_S",
+    "macro_cci_shape_t": [
+      64,
+      64
+    ],
+    "macro_cci_shape_tp": [
+      64,
+      64
+    ],
+    "macro_cci_nnz_t": 4096,
+    "macro_cci_nnz_tp": 4096,
+    "N_meta": {
+      "core_shape": [
+        5,
+        5
+      ],
+      "components": 5,
+      "max_iter": 300,
+      "linear_algebra_backend": "sparse_exact_multiplicative_updates"
+    },
+    "V7_meta": {
+      "cost": {
+        "mode": "raw_grn_kl_plus_bounded_n_correction",
+        "beta_n": 0.05,
+        "beta_g": 0.05,
+        "n_correction_weight": 0.25,
+        "n_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 7.445199862621266e-06,
+          "max": 27.631021115900914,
+          "mean": 4.163410640270305
+        },
+        "g_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.5996984387400732,
+          "max": 27.626695625995385,
+          "mean": 22.785406973644044
+        },
+        "n_normalization": {
+          "raw_summary": {
+            "shape": [
+              64,
+              64
+            ],
+            "values": 4096,
+            "finite_values": 4096,
+            "nonfinite_count": 0,
+            "min": 7.445199862621266e-06,
+            "max": 27.631021115900914,
+            "mean": 4.163410640270305
+          },
+          "lower_percentile": 5.0,
+          "upper_percentile": 95.0,
+          "q_low": 0.0004353572663047256,
+          "q_high": 24.686472040739037,
+          "fallback_min": null,
+          "fallback_max": null,
+          "normalization_mode": "quantile_5_95",
+          "nonfinite_count": 0,
+          "normalized_summary": {
+            "shape": [
+              64,
+              64
+            ],
+            "values": 4096,
+            "finite_values": 4096,
+            "nonfinite_count": 0,
+            "min": 0.0,
+            "max": 1.0,
+            "mean": 0.16661586853468924
+          }
+        },
+        "combined_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.6088621216961697,
+          "max": 27.876695625990056,
+          "mean": 22.82706094077772
+        },
+        "grn_cost_scale": "raw_kl_nats",
+        "n_correction_scale": "robust_5_95_times_0.25",
+        "final_cost_clipped_to_unit_interval": false,
+        "removes_unit_interval_gibbs_ei_bound": true,
+        "parameter_selection_split": "adjacent_time_pairs_development_only",
+        "heldout_split_observed": false
+      },
+      "sinkhorn": {
+        "mode": "balanced_entropic_ot_uniform_marginals",
+        "converged": true,
+        "iterations": 61,
+        "scaling_iterations": 61,
+        "max_iterations": 2000,
+        "tolerance": 1e-09,
+        "check_every": 10,
+        "source_marginal_policy": "uniform",
+        "target_marginal_policy": "uniform",
+        "source_marginal_value": 0.015625,
+        "target_marginal_value": 0.015625,
+        "max_absolute_marginal_residual": 2.857321029087201e-10,
+        "source_marginal_residual": 2.857321029087201e-10,
+        "target_marginal_residual": 2.4548458404938245e-10,
+        "prebalanced_target_entropy_bits": 5.254651582598802,
+        "balanced_target_entropy_bits": 6.0,
+        "maximum_target_entropy_bits": 6.0,
+        "mean_absolute_target_marginal_shift": 0.013109776158157333,
+        "dual_fallback": {
+          "used": false
+        },
+        "uses_ei_for_fitting": false,
+        "uses_layer_identity": false,
+        "uses_labels": false,
+        "uses_third_timepoint": false,
+        "study_solver_fallback": false
+      },
+      "prebalanced_ei": 0.7416241130888954
+    }
+  },
+  "strict_rownorm_metadata": {
+    "EI_macro": 0.8975667237319147,
+    "macro_cci_normalization": "row_normalized_after_projection",
+    "macro_cci_shape_t": [
+      64,
+      64
+    ],
+    "macro_cci_shape_tp": [
+      64,
+      64
+    ],
+    "macro_cci_nnz_t": 4096,
+    "macro_cci_nnz_tp": 4096,
+    "N_meta": {
+      "core_shape": [
+        5,
+        5
+      ],
+      "components": 5,
+      "max_iter": 300,
+      "linear_algebra_backend": "sparse_exact_multiplicative_updates"
+    },
+    "V7_meta": {
+      "cost": {
+        "mode": "raw_grn_kl_plus_bounded_n_correction",
+        "beta_n": 0.05,
+        "beta_g": 0.05,
+        "n_correction_weight": 0.25,
+        "n_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.0,
+          "max": 27.631021115900914,
+          "mean": 21.22233724572765
+        },
+        "g_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.5996984387400732,
+          "max": 27.626695625995385,
+          "mean": 22.785406973644044
+        },
+        "n_normalization": {
+          "raw_summary": {
+            "shape": [
+              64,
+              64
+            ],
+            "values": 4096,
+            "finite_values": 4096,
+            "nonfinite_count": 0,
+            "min": 0.0,
+            "max": 27.631021115900914,
+            "mean": 21.22233724572765
+          },
+          "lower_percentile": 5.0,
+          "upper_percentile": 95.0,
+          "q_low": 2.8319155600367386e-07,
+          "q_high": 27.631021115900904,
+          "fallback_min": null,
+          "fallback_max": null,
+          "normalization_mode": "quantile_5_95",
+          "nonfinite_count": 0,
+          "normalized_summary": {
+            "shape": [
+              64,
+              64
+            ],
+            "values": 4096,
+            "finite_values": 4096,
+            "nonfinite_count": 0,
+            "min": 0.0,
+            "max": 1.0,
+            "mean": 0.7680619946711386
+          }
+        },
+        "combined_cost": {
+          "shape": [
+            64,
+            64
+          ],
+          "values": 4096,
+          "finite_values": 4096,
+          "nonfinite_count": 0,
+          "min": 0.7821674992832791,
+          "max": 27.876695625995385,
+          "mean": 22.97742247231183
+        },
+        "grn_cost_scale": "raw_kl_nats",
+        "n_correction_scale": "robust_5_95_times_0.25",
+        "final_cost_clipped_to_unit_interval": false,
+        "removes_unit_interval_gibbs_ei_bound": true,
+        "parameter_selection_split": "adjacent_time_pairs_development_only",
+        "heldout_split_observed": false
+      },
+      "sinkhorn": {
+        "mode": "balanced_entropic_ot_uniform_marginals",
+        "converged": true,
+        "iterations": 61,
+        "scaling_iterations": 61,
+        "max_iterations": 2000,
+        "tolerance": 1e-09,
+        "check_every": 10,
+        "source_marginal_policy": "uniform",
+        "target_marginal_policy": "uniform",
+        "source_marginal_value": 0.015625,
+        "target_marginal_value": 0.015625,
+        "max_absolute_marginal_residual": 2.8166824428410564e-10,
+        "source_marginal_residual": 2.8166824428410564e-10,
+        "target_marginal_residual": 2.4009158203219805e-10,
+        "prebalanced_target_entropy_bits": 5.2709286865280705,
+        "balanced_target_entropy_bits": 6.0,
+        "maximum_target_entropy_bits": 6.0,
+        "mean_absolute_target_marginal_shift": 0.013131432504475352,
+        "dual_fallback": {
+          "used": false
+        },
+        "uses_ei_for_fitting": false,
+        "uses_layer_identity": false,
+        "uses_labels": false,
+        "uses_third_timepoint": false,
+        "study_solver_fallback": false
+      },
+      "prebalanced_ei": 0.7391427871696514
+    }
+  },
+  "assignment_t": {
+    "K_requested": 64,
+    "hardK": 11,
+    "Keff": 9.285412788391113,
+    "max_cluster_fraction": 0.15055653192735793,
+    "min_active_cluster_size": 1,
+    "max_active_cluster_size": 257,
+    "mean_assignment_confidence": 0.5084182620048523
+  },
+  "assignment_tp": {
+    "K_requested": 64,
+    "hardK": 17,
+    "Keff": 11.348695755004883,
+    "max_cluster_fraction": 0.1544871794871795,
+    "min_active_cluster_size": 1,
+    "max_active_cluster_size": 241,
+    "mean_assignment_confidence": 0.5534637570381165
+  }
+}

@@ -28,6 +28,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--cci-tp", type=Path, required=True)
     parser.add_argument("--cci-index-t", type=Path, default=None)
     parser.add_argument("--cci-index-tp", type=Path, default=None)
+    parser.add_argument("--grn-t", type=Path, default=None)
+    parser.add_argument("--grn-tp", type=Path, default=None)
     parser.add_argument("--k", type=int, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
 
@@ -38,6 +40,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--nmf-components", type=int, default=5)
     parser.add_argument("--nmf-max-iter", type=int, default=300)
     parser.add_argument("--pij-temperature", type=float, default=1.0)
+    parser.add_argument("--grn-topk-targets", type=int, default=50)
+    parser.add_argument("--grn-state-dim", type=int, default=64)
+    parser.add_argument("--grn-projection-seed", type=int, default=20260713)
+    parser.add_argument("--grn-knn-k", type=int, default=50)
+    parser.add_argument("--grn-graph-weight", type=float, default=0.2)
 
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--mid-dim", type=int, default=32)
@@ -45,6 +52,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--macro-layers", type=int, default=2)
     parser.add_argument("--knn-k", type=int, default=30)
     parser.add_argument("--local-dims", type=int, default=2)
+    parser.add_argument(
+        "--local-graph-mode",
+        choices=["legacy_features", "coords", "all_features"],
+        default="legacy_features",
+    )
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--align-temperature", type=float, default=1.0)
     parser.add_argument("--epochs", type=int, default=1500)
@@ -86,6 +98,13 @@ def main() -> None:
         nmf_max_iter=args.nmf_max_iter,
         seed=args.seed,
         pij_temperature=args.pij_temperature,
+        grn_t=args.grn_t,
+        grn_tp=args.grn_tp,
+        grn_topk_targets=args.grn_topk_targets,
+        grn_state_dim=args.grn_state_dim,
+        grn_projection_seed=args.grn_projection_seed,
+        grn_knn_k=args.grn_knn_k,
+        grn_graph_weight=args.grn_graph_weight,
     )
     prepared = prepare_coarse_input(args.method, frontend_request)
     config = WYTDeltaEIConfig(
@@ -97,6 +116,7 @@ def main() -> None:
         macro_layers=args.macro_layers,
         knn_k=args.knn_k,
         local_dims=args.local_dims,
+        local_graph_mode=args.local_graph_mode,
         temperature=args.temperature,
         align_temperature=args.align_temperature,
         epochs=args.epochs,

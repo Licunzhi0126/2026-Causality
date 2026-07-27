@@ -37,6 +37,10 @@ def test_deltaei_core_smoke_writes_contract(tmp_path) -> None:
         micro_pij=micro_pij,
         micro_ei=0.1,
         macro_pij_builder=_macro_pij,
+        posthoc_evaluator=lambda _s_t, _s_tp: {
+            "EI_macro_test": 0.2,
+            "deltaEI_test": 0.1,
+        },
     )
     result = train_deltaei(
         prepared,
@@ -71,6 +75,7 @@ def test_deltaei_core_smoke_writes_contract(tmp_path) -> None:
         "assignments_t.csv",
         "assignments_tp.csv",
         "summary.json",
+        "strict_native_v7_evaluation.json",
     ):
         assert (tmp_path / name).exists(), name
     assert np.load(tmp_path / "S_t.npy").shape == (count_t, 3)

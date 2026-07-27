@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Callable
 
 from mignet_ce.coarse_frontends._common import CoarseFrontendRequest
+from mignet_ce.coarse_frontends.complete_combined_coarse import (
+    prepare as prepare_complete_combined_coarse,
+)
 from mignet_ce.coarse_frontends.wyt_cg_cci import prepare as prepare_wyt_cg_cci
 from mignet_ce.coarse_frontends.wyt_cg_cci_regsim import prepare as prepare_wyt_cg_cci_regsim
 from mignet_ce.coarse_frontends.wyt_cg_regsim_v7 import prepare as prepare_wyt_cg_regsim_v7
@@ -14,6 +17,7 @@ COARSE_FRONTEND_REGISTRY: dict[
     str,
     Callable[[CoarseFrontendRequest], PreparedCoarseInput],
 ] = {
+    "complete_combined_coarse": prepare_complete_combined_coarse,
     "wyt_cg_cci": prepare_wyt_cg_cci,
     "wyt_cg_cci_regsim": prepare_wyt_cg_cci_regsim,
     "wyt_cg_regsim_v7": prepare_wyt_cg_regsim_v7,

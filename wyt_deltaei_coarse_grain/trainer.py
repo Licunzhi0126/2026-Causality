@@ -36,6 +36,7 @@ from wyt_deltaei_coarse_grain.objective import (
 from wyt_deltaei_coarse_grain.result import (
     write_csv,
     write_final_arrays,
+    write_json,
     write_static_manifests,
 )
 
@@ -50,6 +51,7 @@ class WYTDeltaEIConfig:
     macro_layers: int = 2
     knn_k: int = 30
     local_dims: int = 2
+    local_graph_mode: str = "legacy_features"
     temperature: float = 0.07
     align_temperature: float = 1.0
     epochs: int = 1500
@@ -81,6 +83,20 @@ class WYTDeltaEIConfig:
             raise ValueError("GNN layer counts must be non-negative.")
         if self.knn_k <= 0 or self.local_dims < 0:
             raise ValueError("knn_k must be positive and local_dims non-negative.")
+        if self.local_graph_mode not in {
+            "legacy_features",
+            "coords",
+            "all_features",
+        }:
+            raise ValueError(
+                "local_graph_mode must be one of legacy_features, coords, all_features."
+            )
+        if self.local_graph_mode == "coords" and (
+            prepared.coords_t is None or prepared.coords_tp is None
+        ):
+            raise ValueError(
+                "local_graph_mode=coords requires coordinates at both time points."
+            )
         if self.temperature <= 0.0 or self.align_temperature <= 0.0:
             raise ValueError("temperatures must be positive.")
         if self.epochs <= 0 or self.lr <= 0.0 or self.log_every <= 0:
@@ -144,7 +160,13 @@ def build_knn_adjacency(
 
 
 def _torch_sparse(matrix: sp.spmatrix, device: torch.device) -> torch.Tensor:
-    coo = matrix.tocoo()
+    """Use dense tensors for nearly dense CCI and sparse tensors for kNN graphs."""
+    csr = matrix.tocsr().astype(np.float32)
+    total = int(csr.shape[0]) * int(csr.shape[1])
+    density = float(csr.nnz / total) if total else 0.0
+    if density >= 0.20:
+        return torch.tensor(csr.toarray(), dtype=torch.float32, device=device)
+    coo = csr.tocoo()
     indices = torch.tensor(
         np.vstack([coo.row, coo.col]),
         dtype=torch.long,
@@ -192,17 +214,38 @@ def train_deltaei(
     out_dir.mkdir(parents=True, exist_ok=True)
     write_static_manifests(out_dir, prepared, config)
 
+    encoder_preprocess_dims = (
+        config.local_dims
+        if config.local_graph_mode == "legacy_features"
+        else 0
+    )
     encoder_t_np, encoder_tp_np = preprocess_route_a(
         prepared.encoder_features_t,
         prepared.encoder_features_tp,
-        config.local_dims,
+        encoder_preprocess_dims,
     )
-    adjacency_t_np = build_knn_adjacency(encoder_t_np, config.knn_k, config.local_dims)
-    adjacency_tp_np = build_knn_adjacency(
-        encoder_tp_np,
-        config.knn_k,
-        config.local_dims,
-    )
+    if config.local_graph_mode == "coords":
+        local_t_np, local_tp_np = preprocess_route_a(
+            np.asarray(prepared.coords_t, dtype=np.float32),
+            np.asarray(prepared.coords_tp, dtype=np.float32),
+            2,
+        )
+        adjacency_t_np = build_knn_adjacency(local_t_np, config.knn_k, 0)
+        adjacency_tp_np = build_knn_adjacency(local_tp_np, config.knn_k, 0)
+    elif config.local_graph_mode == "all_features":
+        adjacency_t_np = build_knn_adjacency(encoder_t_np, config.knn_k, 0)
+        adjacency_tp_np = build_knn_adjacency(encoder_tp_np, config.knn_k, 0)
+    else:
+        adjacency_t_np = build_knn_adjacency(
+            encoder_t_np,
+            config.knn_k,
+            config.local_dims,
+        )
+        adjacency_tp_np = build_knn_adjacency(
+            encoder_tp_np,
+            config.knn_k,
+            config.local_dims,
+        )
     device = _resolve_device(config.device)
     features_t = torch.tensor(encoder_t_np, dtype=torch.float32, device=device)
     features_tp = torch.tensor(encoder_tp_np, dtype=torch.float32, device=device)
@@ -254,6 +297,7 @@ def train_deltaei(
         _log(log_handle, f"network_t: {prepared.network_t.shape}; network_tp: {prepared.network_tp.shape}")
         _log(log_handle, f"encoder_t: {tuple(features_t.shape)}; encoder_tp: {tuple(features_tp.shape)}")
         _log(log_handle, f"K: {config.k}; mid_dim: {config.mid_dim}; device: {device}")
+        _log(log_handle, f"local_graph_mode: {config.local_graph_mode}")
         _log(log_handle, f"fixed EI_micro: {prepared.micro_ei:.6f}")
         _log(log_handle, "No macro dynamics. No anti-coarsening. No reconstruction.")
         _log(log_handle, "================================================")
@@ -470,6 +514,24 @@ def train_deltaei(
             )
             summary[f"assignment_entropy_mean_{label}"] = float(entropy.mean())
             summary[f"prototype_collapse_{label}"] = bool(np.count_nonzero(counts) < config.k)
+        if prepared.posthoc_evaluator is not None:
+            strict_evaluation = dict(
+                prepared.posthoc_evaluator(assignment_t_np, assignment_tp_np)
+            )
+            write_json(
+                out_dir / "strict_native_v7_evaluation.json",
+                strict_evaluation,
+            )
+            summary["strict_posthoc_file"] = "strict_native_v7_evaluation.json"
+            for key, value in strict_evaluation.items():
+                if (
+                    isinstance(value, (int, float, np.generic))
+                    and (
+                        key.startswith("EI_")
+                        or key.startswith("deltaEI_")
+                    )
+                ):
+                    summary[key] = float(value)
         write_final_arrays(
             out_dir,
             prepared,
@@ -487,6 +549,24 @@ def train_deltaei(
         _log(log_handle, f"EI_micro fixed: {float(fixed_micro_ei.cpu()):.6f}")
         _log(log_handle, f"EI_macro: {float(final_macro_ei.cpu()):.6f}")
         _log(log_handle, f"Delta EI: {float(final_delta.cpu()):.6f}")
+        if (
+            prepared.posthoc_evaluator is not None
+            and "deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G" in summary
+        ):
+            _log(
+                log_handle,
+                "Strict raw Delta EI: "
+                f"{summary['deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G']:.6f}",
+            )
+        if (
+            prepared.posthoc_evaluator is not None
+            and "deltaEI_strict_rownorm_projected_CCI_reextract_N_recompute_G" in summary
+        ):
+            _log(
+                log_handle,
+                "Strict row-normalized Delta EI: "
+                f"{summary['deltaEI_strict_rownorm_projected_CCI_reextract_N_recompute_G']:.6f}",
+            )
         _log(log_handle, f"Saved to: {out_dir}")
 
     return WYTDeltaEIResult(

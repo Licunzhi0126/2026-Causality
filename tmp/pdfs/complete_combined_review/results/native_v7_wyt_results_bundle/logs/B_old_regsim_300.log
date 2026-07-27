@@ -1,0 +1,26 @@
+========== WYT FeatureAlign-DeltaEI ==========
+method: wyt_cg_regsim_v7
+network_t: (1707, 1707); network_tp: (1560, 1560)
+encoder_t: (1707, 368); encoder_tp: (1560, 368)
+K: 64; mid_dim: 32; device: cpu
+fixed EI_micro: 3.236466
+No macro dynamics. No anti-coarsening. No reconstruction.
+================================================
+[wyt] 0001 loss=8.890171 | Lalign=2.405744 | EI_macro=0.001637 | delta=-3.234829 | Keff=[30.6,37.2] | hardK=[27,35]
+[wyt] 0030 loss=7.876142 | Lalign=2.397447 | EI_macro=0.503648 | delta=-2.732818 | Keff=[22.1,15.6] | hardK=[28,22]
+[wyt] 0060 loss=7.173196 | Lalign=1.922127 | EI_macro=0.616727 | delta=-2.619739 | Keff=[14.5,9.4] | hardK=[21,8]
+[wyt] 0090 loss=4.750762 | Lalign=0.634926 | EI_macro=1.191681 | delta=-2.044785 | Keff=[9.4,7.8] | hardK=[10,10]
+[wyt] 0120 loss=4.280730 | Lalign=0.267150 | EI_macro=1.238223 | delta=-1.998243 | Keff=[9.0,7.8] | hardK=[9,12]
+[wyt] 0150 loss=4.106822 | Lalign=0.202018 | EI_macro=1.290443 | delta=-1.946023 | Keff=[9.6,8.6] | hardK=[11,13]
+[wyt] 0180 loss=4.077023 | Lalign=0.196139 | EI_macro=1.300251 | delta=-1.936215 | Keff=[9.9,9.4] | hardK=[12,13]
+[wyt] 0210 loss=4.056995 | Lalign=0.190653 | EI_macro=1.307767 | delta=-1.928699 | Keff=[9.6,9.8] | hardK=[12,17]
+[wyt] 0240 loss=4.047274 | Lalign=0.190909 | EI_macro=1.312258 | delta=-1.924208 | Keff=[9.5,10.9] | hardK=[12,17]
+[wyt] 0270 loss=4.041238 | Lalign=0.193140 | EI_macro=1.316146 | delta=-1.920320 | Keff=[9.4,11.5] | hardK=[11,17]
+[wyt] 0300 loss=4.037654 | Lalign=0.195392 | EI_macro=1.318949 | delta=-1.917517 | Keff=[9.3,11.4] | hardK=[11,17]
+========== Best checkpoint ==========
+best epoch: 300
+EI_micro fixed: 3.236466
+EI_macro: 1.318997
+Delta EI: -1.917469
+Saved to: /mnt/data/native_v7_true/B_old_regsim_300
+completed method=wyt_cg_regsim_v7 K=64 best_epoch=300 delta_EI=-1.917469 out=/mnt/data/native_v7_true/B_old_regsim_300

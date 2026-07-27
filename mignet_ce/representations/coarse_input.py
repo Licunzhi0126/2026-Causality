@@ -10,6 +10,7 @@ import scipy.sparse as sp
 
 
 MacroPijBuilder = Callable[["MacroPijInputs"], Any]
+PosthocEvaluator = Callable[[np.ndarray, np.ndarray], Mapping[str, object]]
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,11 @@ class PreparedCoarseInput:
     macro_pij_builder: MacroPijBuilder
     feature_blocks_t: Mapping[str, np.ndarray] = field(default_factory=dict)
     feature_blocks_tp: Mapping[str, np.ndarray] = field(default_factory=dict)
+    independent_width_feature_blocks: frozenset[str] = field(default_factory=frozenset)
     coords_t: np.ndarray | None = None
     coords_tp: np.ndarray | None = None
     provenance: Mapping[str, object] = field(default_factory=dict)
+    posthoc_evaluator: PosthocEvaluator | None = None
 
     def validate(self) -> None:
         n_t = len(self.unit_ids_t)
@@ -84,6 +87,14 @@ class PreparedCoarseInput:
             raise ValueError("micro_ei must be finite.")
         if set(self.feature_blocks_t) != set(self.feature_blocks_tp):
             raise ValueError("Feature-block keys must match across time.")
+        unknown_independent = (
+            set(self.independent_width_feature_blocks) - set(self.feature_blocks_t)
+        )
+        if unknown_independent:
+            raise ValueError(
+                "independent_width_feature_blocks contains unknown keys: "
+                f"{sorted(unknown_independent)}."
+            )
         for key in self.feature_blocks_t:
             source = np.asarray(self.feature_blocks_t[key])
             target = np.asarray(self.feature_blocks_tp[key])
@@ -91,7 +102,10 @@ class PreparedCoarseInput:
                 raise ValueError(f"Feature block {key!r} must be 2D.")
             if source.shape[0] != n_t or target.shape[0] != n_tp:
                 raise ValueError(f"Feature block {key!r} row counts do not match units.")
-            if source.shape[1] != target.shape[1]:
+            if (
+                source.shape[1] != target.shape[1]
+                and key not in self.independent_width_feature_blocks
+            ):
                 raise ValueError(f"Feature block {key!r} dimensions differ across time.")
         for name, coords, expected_rows in (
             ("coords_t", self.coords_t, n_t),
@@ -122,7 +136,11 @@ class PreparedCoarseInput:
                 }
                 for key in self.feature_blocks_t
             },
+            "independent_width_feature_blocks": sorted(
+                self.independent_width_feature_blocks
+            ),
             "coords_available_t": self.coords_t is not None,
             "coords_available_tp": self.coords_tp is not None,
+            "posthoc_evaluation_available": self.posthoc_evaluator is not None,
             "provenance": dict(self.provenance),
         }

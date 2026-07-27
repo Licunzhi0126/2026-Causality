@@ -36,6 +36,13 @@ class CoarseFrontendRequest:
     nmf_max_iter: int = 300
     seed: int = 42
     pij_temperature: float = 1.0
+    grn_t: Path | None = None
+    grn_tp: Path | None = None
+    grn_topk_targets: int = 50
+    grn_state_dim: int = 64
+    grn_projection_seed: int = 20260713
+    grn_knn_k: int = 50
+    grn_graph_weight: float = 0.2
 
     def validate(self) -> None:
         for name, value in (
@@ -58,6 +65,19 @@ class CoarseFrontendRequest:
             raise ValueError("NMF components must be positive and max_iter non-negative.")
         if self.pij_temperature <= 0.0:
             raise ValueError("pij_temperature must be positive.")
+        if (self.grn_t is None) != (self.grn_tp is None):
+            raise ValueError("grn_t and grn_tp must either both be provided or both be omitted.")
+        for name, value in (("grn_t", self.grn_t), ("grn_tp", self.grn_tp)):
+            if value is not None and not Path(value).exists():
+                raise FileNotFoundError(f"{name} does not exist: {value}")
+        if self.grn_topk_targets <= 0:
+            raise ValueError("grn_topk_targets must be positive.")
+        if self.grn_state_dim <= 0:
+            raise ValueError("grn_state_dim must be positive.")
+        if self.grn_knn_k <= 0:
+            raise ValueError("grn_knn_k must be positive.")
+        if not 0.0 <= self.grn_graph_weight <= 1.0:
+            raise ValueError("grn_graph_weight must be between 0 and 1.")
 
 
 @dataclass(frozen=True)

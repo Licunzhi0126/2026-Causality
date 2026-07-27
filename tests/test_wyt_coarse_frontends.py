@@ -10,6 +10,7 @@ from mignet_ce.representations.coarse_input import PreparedCoarseInput
 
 def test_coarse_frontend_registry_has_exact_planned_methods() -> None:
     assert set(COARSE_FRONTEND_REGISTRY) == {
+        "complete_combined_coarse",
         "wyt_cg_cci",
         "wyt_cg_cci_regsim",
         "wyt_cg_regsim_v7",
