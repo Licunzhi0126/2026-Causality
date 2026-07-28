@@ -1,3 +1,0 @@
-{"pair": "11.5->12.5", "rc": 0, "seconds": 350.17626309394836, "out": "/mnt/data/native_v7_true/recompute_g_1500/11p5_12p5", "log": "/mnt/data/native_v7_true/recompute_g_1500/11p5_12p5.log"}
-{"pair": "12.5->13.5", "rc": 0, "seconds": 363.1719856262207, "out": "/mnt/data/native_v7_true/recompute_g_1500/12p5_13p5", "log": "/mnt/data/native_v7_true/recompute_g_1500/12p5_13p5.log"}
-{"pair": "13.5->14.5", "rc": 0, "seconds": 272.69573163986206, "out": "/mnt/data/native_v7_true/recompute_g_1500/13p5_14p5", "log": "/mnt/data/native_v7_true/recompute_g_1500/13p5_14p5.log"}

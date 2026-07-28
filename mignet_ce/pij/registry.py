@@ -45,6 +45,7 @@ from mignet_ce.pij.compare.compare_NG_fgw_grnanchor_v9 import CompareNGFGWGRNAnc
 from mignet_ce.pij.compare.compare_NG_multiscale_fgw_annealed_v10 import (
     CompareNGMultiscaleFGWAnnealedV10PijMethod,
 )
+from mignet_ce.pij.compare.NG_KLot import NGKLotPijMethod
 from mignet_ce.pij.compare.compare_NR_fgw_regsim_v9 import CompareNRFGWRegSimV9PijMethod
 from mignet_ce.pij.compare.compare_NR_kl_sinkhorn_regsim_v7 import CompareNRKlSinkhornRegSimV7PijMethod
 from mignet_ce.pij.compare.compare_Ncomp_Gcos_v2 import CompareNCompGCosV2PijMethod
@@ -118,6 +119,7 @@ PIJ_METHOD_REGISTRY: Dict[str, Type[PijMethod]] = {
     "compare_NG_kl_sparseot_grnanchor_v8": CompareNGKlSparseOTGRNAnchorV8PijMethod,
     "compare_NG_fgw_grnanchor_v9": CompareNGFGWGRNAnchorV9PijMethod,
     "compare_NG_multiscale_fgw_annealed_v10": CompareNGMultiscaleFGWAnnealedV10PijMethod,
+    "NG_KLot": NGKLotPijMethod,
     "compare_Ncomp_Gcos_v2": CompareNCompGCosV2PijMethod,
     "compare_Nshape_Gcos_v3": CompareNShapeGCosV3PijMethod,
     "compare_N_sot": CompareNSotPijMethod,

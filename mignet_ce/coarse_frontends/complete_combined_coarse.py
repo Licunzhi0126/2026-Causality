@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from functools import partial
 
-import numpy as np
-import torch
-
 from mignet_ce.coarse_frontends._common import (
     CoarseFrontendRequest,
     load_spot_pair,
     provenance_base,
 )
-from mignet_ce.coarse_frontends._complete_combined_core import (
-    CompleteCombinedStage,
+from wyt_deltaei_coarse_grain.complete_combined import (
+    build_macro_pij_builder,
     prepare_complete_pair,
     prepare_complete_stage,
     strict_complete_combined_evaluation,
@@ -22,99 +19,7 @@ from mignet_ce.networks.wyt_cci_regsim import (
     build_regsim_similarity_network,
     integrate_cci_regsim,
 )
-from mignet_ce.pij.compare.native_v7_torch import native_v7_pij_torch
-from mignet_ce.representations.coarse_input import (
-    MacroPijInputs,
-    PreparedCoarseInput,
-)
-
-
-def _pairwise_zscore_torch(
-    source: torch.Tensor,
-    target: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    combined = torch.cat([source, target], dim=0)
-    mean = combined.mean(dim=0, keepdim=True)
-    std = combined.std(dim=0, unbiased=False, keepdim=True)
-    std = torch.where(std < 1e-8, torch.ones_like(std), std)
-    values = (combined - mean) / std
-    return values[: source.shape[0]], values[source.shape[0] :]
-
-
-def _macro_pij_builder(
-    stage_t: CompleteCombinedStage,
-    stage_tp: CompleteCombinedStage,
-):
-    cache: dict[tuple[str, str], torch.Tensor] = {}
-
-    def torch_assets(stage: CompleteCombinedStage, label: str, device: torch.device):
-        device_key = str(device)
-        adjacency_key = (f"{label}_adjacency", device_key)
-        if adjacency_key not in cache:
-            coo = stage.grn_adjacency.tocoo()
-            indices = torch.tensor(
-                np.vstack([coo.row, coo.col]),
-                dtype=torch.long,
-                device=device,
-            )
-            values = torch.tensor(coo.data, dtype=torch.float32, device=device)
-            cache[adjacency_key] = torch.sparse_coo_tensor(
-                indices,
-                values,
-                size=coo.shape,
-                dtype=torch.float32,
-                device=device,
-                check_invariants=True,
-            ).coalesce()
-            cache[(f"{label}_projection_reg", device_key)] = torch.tensor(
-                stage.projection_reg,
-                dtype=torch.float32,
-                device=device,
-            )
-            cache[(f"{label}_projection_tar", device_key)] = torch.tensor(
-                stage.projection_tar,
-                dtype=torch.float32,
-                device=device,
-            )
-        return (
-            cache[adjacency_key],
-            cache[(f"{label}_projection_reg", device_key)],
-            cache[(f"{label}_projection_tar", device_key)],
-        )
-
-    def project(
-        expression: torch.Tensor,
-        stage: CompleteCombinedStage,
-        label: str,
-    ) -> torch.Tensor:
-        values = torch.clamp(
-            torch.nan_to_num(expression, nan=0.0, posinf=0.0, neginf=0.0),
-            min=0.0,
-        )
-        adjacency, projection_reg, projection_tar = torch_assets(
-            stage,
-            label,
-            values.device,
-        )
-        regulator_program = torch.sparse.mm(adjacency, values.T).T
-        target_program = torch.sparse.mm(adjacency.transpose(0, 1), values.T).T
-        return (
-            (values * regulator_program) @ projection_reg
-            + (values * target_program) @ projection_tar
-        )
-
-    def build(inputs: MacroPijInputs) -> torch.Tensor:
-        n_t, n_tp = _pairwise_zscore_torch(
-            inputs.feature_blocks_t["N"],
-            inputs.feature_blocks_tp["N"],
-        )
-        g_t, g_tp = _pairwise_zscore_torch(
-            project(inputs.feature_blocks_t["X"], stage_t, "t"),
-            project(inputs.feature_blocks_tp["X"], stage_tp, "tp"),
-        )
-        return native_v7_pij_torch(n_t, n_tp, g_t, g_tp)
-
-    return build
+from mignet_ce.representations.coarse_input import PreparedCoarseInput
 
 
 def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
@@ -171,7 +76,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         micro_features_tp=pair.micro_features_tp,
         micro_pij=pair.micro_pij,
         micro_ei=pair.micro_ei,
-        macro_pij_builder=_macro_pij_builder(stage_t, stage_tp),
+        macro_pij_builder=build_macro_pij_builder(stage_t, stage_tp),
         feature_blocks_t={
             "N": pair.n_t,
             "X": stage_t.expression_grn,
