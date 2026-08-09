@@ -36,3 +36,18 @@ python scripts/run_downstream_analysis.py render `
 输出包括 17 张审计表、十张高分辨率 PNG、十张矢量 PDF、`findings.json`
 和 `manifest.json`。随机粗粒化、GRN/CCI 关联和 Pij 行同质化扰动的解释边界会写入
 `findings.json`。
+
+## 扩展动力学闭合
+
+Figure 3、4、6 所在的 `dynamic_closure/` 现同时包含 full、deep 和
+ultradeep 三层扩展分析，共新增 20 张图；每张图同时输出 PNG 和 PDF。
+这些计算不会在普通 `analyze`/`render` 中自动启动，可通过统一入口显式运行：
+
+```powershell
+python scripts/run_downstream_analysis.py closure `
+  --stage all `
+  --data-root data/mouse_embyro/E1S1_domain_factory `
+  --output-dir output/dynamic_closure_extended
+```
+
+详细指标、阶段依赖和解释边界见 `dynamic_closure/README.md`。

@@ -18,6 +18,7 @@ from mignet_ce.visualization.downstream import (
 
 DEFAULT_DATA_ROOT = REPO_ROOT / "data" / "mouse_embyro" / "E1S1_domain_factory"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "downstream_six_panel"
+DEFAULT_CLOSURE_OUTPUT_DIR = REPO_ROOT / "output" / "dynamic_closure_extended"
 DEFAULT_TIMES = ("11.5", "12.5", "13.5", "14.5")
 
 
@@ -48,6 +49,32 @@ def build_argparser() -> argparse.ArgumentParser:
     render.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     render.add_argument("--organ", default="heart")
     render.add_argument("--time-points", nargs=4, default=list(DEFAULT_TIMES))
+
+    closure = subparsers.add_parser(
+        "closure",
+        help="Run the extended full/deep/ultradeep dynamic-closure suite.",
+    )
+    closure.add_argument(
+        "--stage",
+        choices=("full", "deep", "ultradeep", "all"),
+        default="all",
+    )
+    closure.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    closure.add_argument("--output-dir", type=Path, default=DEFAULT_CLOSURE_OUTPUT_DIR)
+    closure.add_argument("--organ", default="heart")
+    closure.add_argument("--time-points", nargs=4, default=list(DEFAULT_TIMES))
+    closure.add_argument("--k-optimal", type=int, default=40)
+    closure.add_argument("--optimal-epochs", type=int, default=300)
+    closure.add_argument("--nmf-components", type=int, default=5)
+    closure.add_argument("--nmf-max-iter", type=int, default=300)
+    closure.add_argument("--large-target-nmf-max-iter", type=int, default=60)
+    closure.add_argument("--null-repeats", type=int, default=200)
+    closure.add_argument("--bootstrap-repeats", type=int, default=200)
+    closure.add_argument("--repair-max-splits", type=int, default=8)
+    closure.add_argument("--repair-random-repeats", type=int, default=40)
+    closure.add_argument("--seed", type=int, default=42)
+    closure.add_argument("--device", default="cpu")
+    closure.add_argument("--force", action="store_true")
     return parser
 
 
@@ -72,14 +99,44 @@ def main(argv: list[str] | None = None) -> int:
                 perturb_random_repeats=args.perturb_random_repeats,
             )
         )
-    else:
+    elif args.command == "render":
         outputs = render_downstream_figures(
             args.results_dir,
             args.data_root,
             organ=args.organ,
             times=tuple(map(str, args.time_points)),
         )
-    print(f"Downstream figures: {outputs['figures_dir']}")
+    else:
+        from mignet_ce.visualization.downstream.dynamic_closure import (
+            DynamicClosureConfig,
+            run_dynamic_closure_analysis,
+        )
+
+        outputs = run_dynamic_closure_analysis(
+            DynamicClosureConfig(
+                data_root=args.data_root,
+                output_root=args.output_dir,
+                organ=args.organ,
+                time_points=tuple(map(str, args.time_points)),
+                k_optimal=args.k_optimal,
+                optimal_epochs=args.optimal_epochs,
+                nmf_components=args.nmf_components,
+                nmf_max_iter=args.nmf_max_iter,
+                large_target_nmf_max_iter=args.large_target_nmf_max_iter,
+                null_repeats=args.null_repeats,
+                bootstrap_repeats=args.bootstrap_repeats,
+                repair_max_splits=args.repair_max_splits,
+                repair_random_repeats=args.repair_random_repeats,
+                seed=args.seed,
+                device=args.device,
+                force=args.force,
+            ),
+            stage=args.stage,
+        )
+    if args.command == "closure":
+        print(f"Dynamic-closure output: {outputs['output_root']}")
+    else:
+        print(f"Downstream figures: {outputs['figures_dir']}")
     print(f"Manifest: {outputs['manifest']}")
     return 0
 

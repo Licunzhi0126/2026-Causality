@@ -25,3 +25,23 @@ def test_single_cli_exposes_analyze_and_render_subcommands() -> None:
     assert analyze.command == "analyze"
     assert render.command == "render"
     assert tuple(analyze.time_points) == module.DEFAULT_TIMES
+
+
+def test_single_cli_exposes_extended_dynamic_closure_stage() -> None:
+    module = _load_script_module()
+    args = module.build_argparser().parse_args(
+        [
+            "closure",
+            "--stage",
+            "all",
+            "--optimal-epochs",
+            "2",
+            "--bootstrap-repeats",
+            "3",
+        ]
+    )
+    assert args.command == "closure"
+    assert args.stage == "all"
+    assert args.optimal_epochs == 2
+    assert args.bootstrap_repeats == 3
+    assert tuple(args.time_points) == module.DEFAULT_TIMES

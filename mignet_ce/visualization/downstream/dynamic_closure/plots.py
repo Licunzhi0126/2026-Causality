@@ -330,3 +330,21 @@ def plot_multiscale(consistency: pd.DataFrame, purity: pd.DataFrame, path: Path)
     ax.legend(loc="lower left")
     add_panel_label(ax, "F")
     savefig(fig, path)
+
+
+# Extended renderers live beside the original Figure 3/4/6 implementation so
+# callers have one dynamic-closure plotting namespace without turning this
+# compatibility module into a thousand-line monolith.
+from .deep_plots import render_deep_figures
+from .full_plots import render_all_closure_figures
+from .ultradeep_plots import render_ultradeep_figures
+
+
+__all__ = [
+    "plot_multiscale",
+    "plot_multistep_closure",
+    "plot_single_step_closure",
+    "render_all_closure_figures",
+    "render_deep_figures",
+    "render_ultradeep_figures",
+]
