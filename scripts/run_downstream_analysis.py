@@ -75,6 +75,9 @@ def build_argparser() -> argparse.ArgumentParser:
     closure.add_argument("--seed", type=int, default=42)
     closure.add_argument("--device", default="cpu")
     closure.add_argument("--force", action="store_true")
+    closure.add_argument("--closure-output-mode", choices=("paper","diagnostic","both"), default="both")
+    closure.add_argument("--closure-crossfit-folds", type=int, default=5)
+    closure.add_argument("--closure-low-signal-threshold", type=float, default=None, help="Practical I_available threshold in bits. Default is scale-adaptive and is not a significance test.")
     return parser
 
 
@@ -130,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 device=args.device,
                 force=args.force,
+                output_mode=args.closure_output_mode,
+                crossfit_folds=args.closure_crossfit_folds,
+                low_signal_threshold_bits=args.closure_low_signal_threshold,
             ),
             stage=args.stage,
         )

@@ -338,8 +338,29 @@ def gini(values: np.ndarray) -> float:
     n=len(x); return float((2*np.sum((np.arange(1,n+1))*x)/(n*x.sum()))-(n+1)/n)
 
 
-def source_usage_from_assignment(s: np.ndarray) -> np.ndarray:
-    s=normalize_assignment(s); u=s.mean(axis=0); return u/max(u.sum(),EPS)
+def source_usage_from_assignment(s: np.ndarray, expected_states: int | None = None) -> np.ndarray:
+    """Return usage aligned to the primary hard/active macro representation.
+
+    Optimized assignments may have nominal empty prototype columns; the audited
+    primary closure compacts those columns after argmax hardening.  When an
+    expected state count is supplied, mirror that compaction here.
+    """
+    s=normalize_assignment(s)
+    if expected_states is not None:
+        labels=np.argmax(s,axis=1)
+        active=np.unique(labels)
+        if len(active)==expected_states:
+            counts=np.asarray([(labels==a).sum() for a in active],dtype=float)
+            return counts/max(counts.sum(),EPS)
+    u=s.mean(axis=0)
+    if expected_states is not None and len(u)!=expected_states:
+        # Last-resort alignment for legacy cached arrays: select non-empty columns.
+        nz=np.flatnonzero(u>EPS)
+        if len(nz)==expected_states:
+            u=u[nz]
+        else:
+            raise ValueError(f"Assignment/Q state mismatch: usage={len(u)}, expected={expected_states}, active={len(nz)}")
+    return u/max(u.sum(),EPS)
 
 
 def q_pair_paths(closure_root: Path, mapping: str, pair: str) -> tuple[np.ndarray,np.ndarray]:
@@ -362,7 +383,7 @@ def transition_mismatch_tables(
     pairs = tuple(f"{a}->{b}" for a, b in zip(time_points[:-1], time_points[1:]))
     for mapping in MAPPINGS:
         for pair in pairs:
-            t0=pair.split("->")[0]; qb,qd=q_pair_paths(closure_root,mapping,pair); mu=source_usage_from_assignment(assignments[(mapping,t0)])
+            t0=pair.split("->")[0]; qb,qd=q_pair_paths(closure_root,mapping,pair); mu=source_usage_from_assignment(assignments[(mapping,t0)], expected_states=qb.shape[0])
             # q arrays can include nominal empty optimized states; source usage has same width K.
             signed=mu[:,None]*(qd-qb); absolute=np.abs(signed); flat=absolute.ravel(); total=float(flat.sum())
             order=np.argsort(flat)[::-1]

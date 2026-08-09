@@ -210,12 +210,17 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
             "EI_micro_dynamics": effective_information(p_spot),
             "I_micro_to_future_macro": effective_information(p_spot),
             "I_macro_to_future_macro": effective_information(p_spot),
-            "micro_residual_information": 0.0, "macro_sufficiency": 1.0,
-            "residual_fraction": 0.0, "I_macro_to_future_micro": effective_information(p_spot),
+            "micro_residual_information": 0.0, "closure_leakage_bits": 0.0, "macro_sufficiency": 1.0,
+            "residual_fraction": 0.0, "signal_status": "informative", "signal_threshold_bits": 0.0,
+            "information_identity_error": 0.0, "primary_macro_representation": "hard", "primary_weighting": "state_balanced",
+            "I_macro_to_future_micro": effective_information(p_spot),
             "downward_reach_ratio": 1.0, "best_closure_mean_js": 0.0,
             "best_closure_median_js": 0.0, "best_closure_p95_js": 0.0,
             "best_closure_max_js": 0.0, "best_closure_mean_kl": 0.0,
             "best_closure_relative_frobenius": 0.0,
+            "induced_closure_mean_js": 0.0, "induced_closure_mean_kl_bits": 0.0, "induced_closure_relative_frobenius": 0.0,
+            "crossfit_closure_kl_bits": 0.0, "crossfit_closure_js": 0.0, "crossfit_closure_coverage": 1.0,
+            "crossfit_singleton_weight_fraction": 0.0,
             "EI_induced_Q_uniform": effective_information(p_spot),
             "EI_induced_Q_weighted": effective_information(p_spot),
             "Keff_source_macro": float(p_spot.shape[0]),
@@ -223,6 +228,7 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
             "EI_direct_Q": effective_information(p_spot),
             "direct_excess_js_above_best": 0.0,
             "direct_excess_frobenius_above_best": 0.0,
+            "independent_q_excess_js": 0.0, "independent_q_gap_js": 0.0,
         })
 
         for layer, label in (("seurat_k150", "Seurat K150"), ("seurat_k40", "Seurat K40")):
@@ -234,6 +240,9 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
                 time_pair=pair,
                 q_direct=pijs[(layer, time_t, time_tp)],
                 source_state_names=units_cache[(layer, time_t)],
+                weighting="state_balanced",
+                crossfit_folds=config.crossfit_folds,
+                low_signal_threshold_bits=config.low_signal_threshold_bits,
             )
             closure_results[(label, pair)] = result
             summaries.append(result.summary)
@@ -261,6 +270,9 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
             time_pair=pair,
             q_direct=pijs[("seurat_k40", time_t, time_tp)],
             source_state_names=units_cache[("seurat_k40", time_t)],
+            weighting="state_balanced",
+            crossfit_folds=config.crossfit_folds,
+            low_signal_threshold_bits=config.low_signal_threshold_bits,
         )
         closure_results[("K150 to K40 overlap", pair)] = result
         summaries.append(result.summary)
@@ -287,6 +299,9 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
             time_pair=pair,
             q_direct=run["Q_train"],
             source_state_names=[f"M{index:02d}" for index in range(run["S_t"].shape[1])],
+            weighting="state_balanced",
+            crossfit_folds=config.crossfit_folds,
+            low_signal_threshold_bits=config.low_signal_threshold_bits,
         )
         closure_results[("Optimized coarse-graining", pair)] = result
         summary = dict(result.summary)
@@ -359,21 +374,37 @@ def run_closure_full_analysis(config: ClosureFullConfig) -> dict[str, Any]:
         q_chain = q_aligned[start:end_index]
         source_assignment = optimal_runs[pair_labels[start]]["S_t"]
         target_assignment = optimal_runs[pair_labels[end_index - 1]]["S_tp"]
-        observed = compose_matrices(p_chain) @ target_assignment
-        predicted = source_assignment @ compose_matrices(q_chain)
-        from .analysis import best_macro_q
-        q_best, _ = best_macro_q(observed, source_assignment)
-        predicted_best = source_assignment @ q_best
+        # Pairwise optimized states are not jointly trained across all times. Keep
+        # this as an operational composition diagnostic, but evaluate the endpoint
+        # partition with the same hard/state-balanced closure semantics.
+        from .analysis import compact_hard_assignment, state_balanced_micro_weights, induced_macro_q, weighted_information, kl_rows
+        h_source, active_source = compact_hard_assignment(source_assignment)
+        h_target, active_target = compact_hard_assignment(target_assignment)
+        observed = row_normalize(compose_matrices(p_chain) @ h_target)
+        # The aligned q_chain is still nominal-K. Compact only endpoint rows/cols;
+        # intermediate pairwise alignment remains a diagnostic limitation.
+        q_composed_full = compose_matrices(q_chain)
+        q_composed = row_normalize(q_composed_full[np.ix_(active_source, active_target)])
+        predicted = row_normalize(h_source @ q_composed)
+        weights = state_balanced_micro_weights(h_source)
+        q_induced, macro_mass = induced_macro_q(observed, h_source, weights)
+        predicted_induced = row_normalize(h_source @ q_induced)
+        composed_js=float(np.sum(weights*js_rows(observed,predicted)))
+        induced_js=float(np.sum(weights*js_rows(observed,predicted_induced)))
         multi_rows.append({
             "mapping": "Optimized coarse-graining", "interval": f"{times[0]}->{times[-1]}", "steps": len(p_chain),
-            "composed_mean_js": float(np.mean(js_rows(observed, predicted))),
-            "composed_relative_frobenius": relative_frobenius(predicted, observed),
-            "best_possible_mean_js": float(np.mean(js_rows(observed, predicted_best))),
-            "best_possible_relative_frobenius": relative_frobenius(predicted_best, observed),
-            "semigroup_excess_js": float(np.mean(js_rows(observed, predicted)) - np.mean(js_rows(observed, predicted_best))),
-            "semigroup_excess_frobenius": relative_frobenius(predicted, observed) - relative_frobenius(predicted_best, observed),
-            "EI_composed_Q": effective_information(compose_matrices(q_chain)),
-            "EI_best_Q": effective_information(q_best),
+            "composed_mean_js": composed_js,
+            "composed_relative_frobenius": relative_frobenius(predicted*weights[:,None]**0.5, observed*weights[:,None]**0.5),
+            "best_possible_mean_js": induced_js,
+            "induced_endpoint_mean_js": induced_js,
+            "best_possible_relative_frobenius": relative_frobenius(predicted_induced*weights[:,None]**0.5, observed*weights[:,None]**0.5),
+            "semigroup_excess_js": composed_js-induced_js,
+            "semigroup_excess_frobenius": relative_frobenius(predicted*weights[:,None]**0.5, observed*weights[:,None]**0.5)-relative_frobenius(predicted_induced*weights[:,None]**0.5, observed*weights[:,None]**0.5),
+            "EI_composed_Q": weighted_information(q_composed, macro_mass),
+            "EI_best_Q": weighted_information(q_induced, macro_mass),
+            "I_endpoint_available_bits": weighted_information(observed,weights),
+            "I_endpoint_macro_retained_bits": weighted_information(q_induced,macro_mass),
+            "endpoint_closure_leakage_bits": float(np.sum(weights*kl_rows(observed,predicted_induced))),
         })
     multi_frame = pd.DataFrame(multi_rows)
     multi_frame.to_csv(table_dir / "closure_multistep_summary.csv", index=False)
@@ -466,12 +497,21 @@ def run_dynamic_closure_analysis(
             seed=cfg.seed,
         )
 
+    if cfg.output_mode in {"paper", "both"} and stage in {"deep", "ultradeep", "all"}:
+        from .paper import run_paper_closure_analysis
+        results["paper"] = run_paper_closure_analysis(
+            closure_root=cfg.full_root,
+            deep_root=cfg.deep_root,
+            output_root=cfg.paper_root,
+        )
+
     available_stages = [
         name
         for name, path in (
             ("full", cfg.full_root),
             ("deep", cfg.deep_root),
             ("ultradeep", cfg.ultradeep_root),
+            ("paper", cfg.paper_root),
         )
         if path.is_dir()
     ]

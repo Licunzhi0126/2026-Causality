@@ -232,7 +232,7 @@ def plot_directionality(frame: pd.DataFrame, output_dir: Path) -> Path:
     ax.set_xlabel("Forward closure floor")
     ax.set_ylabel("Backward closure floor")
     ax.grid(True)
-    _panel(ax, "B", "Directional asymmetry of lumpability")
+    _panel(ax, "B", "Predictive versus Bayesian-reconstructive lumpability")
 
     ax = axes[0, 2]
     x = np.arange(len(TIME_PAIRS)); width = 0.24
@@ -242,9 +242,9 @@ def plot_directionality(frame: pd.DataFrame, output_dir: Path) -> Path:
         ax.bar(x + (index - 1) * width, values, width * 0.9, color=COLORS[mapping], label=mapping)
     ax.axhline(0, color=MUTED, linestyle="--", linewidth=1)
     ax.set_xticks(x, _pair_labels(), rotation=22, ha="right")
-    ax.set_ylabel("Forward minus backward sufficiency")
+    ax.set_ylabel("Predictive minus Bayesian-reconstructive sufficiency")
     ax.grid(axis="y")
-    _panel(ax, "C", "Arrow-of-development asymmetry")
+    _panel(ax, "C", "Predictive–Bayesian reconstruction asymmetry")
 
     ax = axes[1, 0]
     for mapping in MAPPINGS:
@@ -346,4 +346,3 @@ def render_deep_figures(*, lump_summary: pd.DataFrame, lump_states: pd.DataFrame
         plot_directionality(direction, output_dir),
         plot_q_spectrum_bootstrap(spectrum_summary, spectrum, bootstrap_summary, output_dir),
     ]
-

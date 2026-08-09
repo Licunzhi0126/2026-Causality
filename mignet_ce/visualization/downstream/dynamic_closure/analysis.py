@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+import warnings
 
 import h5py
 import numpy as np
@@ -304,13 +305,255 @@ def overlap_assignment(lower_spot_assignment: np.ndarray, upper_spot_assignment:
     return row_normalize(matrix)
 
 
-def best_macro_q(observed_micro_to_macro: np.ndarray, source_assignment: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def to_hard_assignment(matrix: np.ndarray) -> np.ndarray:
+    """Convert an assignment matrix to a deterministic one-hot macrostate map.
+
+    Dynamic-closure primary analyses use this representation so Seurat and
+    optimized coarse-grainings are evaluated with the same information object:
+    a discrete macrostate label, not a micro-specific soft coordinate.
+    """
+    values = normalize_assignment(matrix)
+    hard = np.zeros_like(values, dtype=float)
+    hard[np.arange(values.shape[0]), np.argmax(values, axis=1)] = 1.0
+    return hard
+
+
+def compact_hard_assignment(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Harden and drop empty nominal macrostates, returning active column ids."""
+    hard = to_hard_assignment(matrix)
+    active = np.flatnonzero(hard.sum(axis=0) > EPS)
+    if len(active) == 0:
+        raise ValueError("Hard assignment has no active macrostates.")
+    return hard[:, active], active
+
+
+def state_balanced_micro_weights(hard_assignment: np.ndarray) -> np.ndarray:
+    """Give every active macrostate equal intervention mass and every member equal mass within state."""
+    hard = to_hard_assignment(hard_assignment)
+    mass = hard.sum(axis=0)
+    active = mass > EPS
+    k = int(active.sum())
+    if k == 0:
+        raise ValueError("No active macrostates for state-balanced weighting.")
+    inv = np.zeros_like(mass, dtype=float)
+    inv[active] = 1.0 / (k * mass[active])
+    weights = hard @ inv
+    weights /= max(float(weights.sum()), EPS)
+    return weights
+
+
+def induced_macro_q(
+    observed_micro_to_macro: np.ndarray,
+    source_assignment: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Micro-induced/oracle macro kernel, i.e. the KL centroid within each macrostate.
+
+    This is an *existence/reference* kernel extracted from micro dynamics. It is
+    not evidence by itself that an independently estimated macro predictor can
+    reproduce the dynamics.
+    """
     observed = row_normalize(observed_micro_to_macro)
     source = normalize_assignment(source_assignment)
-    mass = source.sum(axis=0)
-    q = source.T @ observed
+    if weights is None:
+        weights = np.full(source.shape[0], 1.0 / source.shape[0], dtype=float)
+    w = np.maximum(np.asarray(weights, dtype=float).reshape(-1), 0.0)
+    if len(w) != source.shape[0]:
+        raise ValueError("weights length does not match source assignment rows")
+    w /= max(float(w.sum()), EPS)
+    weighted_source = source * w[:, None]
+    mass = weighted_source.sum(axis=0)
+    q = weighted_source.T @ observed
     q = np.divide(q, mass[:, None], out=np.zeros_like(q), where=mass[:, None] > EPS)
     return row_normalize(q), mass
+
+
+def best_macro_q(observed_micro_to_macro: np.ndarray, source_assignment: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Deprecated compatibility alias for :func:`induced_macro_q`."""
+    warnings.warn(
+        "best_macro_q() is deprecated; use induced_macro_q(). The kernel is a micro-induced/oracle reference, not a generic JS-optimal or independently runnable macro model.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return induced_macro_q(observed_micro_to_macro, source_assignment)
+
+
+def information_closure_budget(
+    p_micro: np.ndarray,
+    source_assignment: np.ndarray,
+    target_assignment: np.ndarray,
+    *,
+    weighting: str = "state_balanced",
+    low_signal_threshold_bits: float | None = None,
+) -> dict[str, object]:
+    """Compute a hard-macro information budget in bits.
+
+    For deterministic M_t=f(X_t):
+        I(X_t;M_{t+1}) = I(M_t;M_{t+1}) + I(X_t;M_{t+1}|M_t).
+    The last term is the primary closure leakage: lower is better.
+    """
+    p = row_normalize(p_micro)
+    h_t, active_t = compact_hard_assignment(source_assignment)
+    h_tp, active_tp = compact_hard_assignment(target_assignment)
+    if p.shape != (h_t.shape[0], h_tp.shape[0]):
+        raise ValueError(f"P {p.shape} incompatible with hard assignments {h_t.shape}, {h_tp.shape}")
+    observed = row_normalize(p @ h_tp)
+    if weighting == "state_balanced":
+        weights = state_balanced_micro_weights(h_t)
+    elif weighting == "uniform_spot":
+        weights = np.full(h_t.shape[0], 1.0 / h_t.shape[0], dtype=float)
+    else:
+        raise ValueError(f"Unknown weighting {weighting!r}")
+    q_induced, macro_mass = induced_macro_q(observed, h_t, weights)
+    predicted = row_normalize(h_t @ q_induced)
+    i_available = weighted_information(observed, weights)
+    i_macro = weighted_information(q_induced, macro_mass)
+    leakage_direct = float(np.sum(weights * kl_rows(observed, predicted)))
+    identity_error = float(abs(i_available - i_macro - leakage_direct))
+    if identity_error > 1e-8:
+        raise AssertionError(
+            f"Information closure identity failed: available={i_available}, macro={i_macro}, leakage={leakage_direct}, error={identity_error}"
+        )
+    if low_signal_threshold_bits is None:
+        # A transparent practical threshold, not a significance test. With model
+        # transition probabilities there is no sampling null unless biological
+        # replicates/count uncertainty are supplied.
+        low_signal_threshold_bits = max(0.01, 0.01 * np.log2(max(h_tp.shape[1], 2)))
+    signal_status = "informative" if i_available >= low_signal_threshold_bits else "low-signal"
+    sufficiency = (i_macro / i_available) if signal_status == "informative" and i_available > EPS else np.nan
+    return {
+        "observed": observed,
+        "source_hard": h_t,
+        "target_hard": h_tp,
+        "source_active_columns": active_t,
+        "target_active_columns": active_tp,
+        "weights": weights,
+        "q_induced": q_induced,
+        "macro_mass": macro_mass,
+        "predicted_induced": predicted,
+        "I_available_bits": float(i_available),
+        "I_macro_retained_bits": float(i_macro),
+        "closure_leakage_bits": float(leakage_direct),
+        "macro_sufficiency": float(sufficiency) if np.isfinite(sufficiency) else np.nan,
+        "information_identity_error": identity_error,
+        "signal_status": signal_status,
+        "signal_threshold_bits": float(low_signal_threshold_bits),
+        "weighting": weighting,
+    }
+
+
+def information_closure_budget_from_observed(
+    observed_micro_to_macro: np.ndarray,
+    source_assignment: np.ndarray,
+    *,
+    weighting: str = "state_balanced",
+    low_signal_threshold_bits: float | None = None,
+) -> dict[str, object]:
+    """Evaluate the canonical closure budget for precomputed future-macro profiles."""
+    observed = row_normalize(observed_micro_to_macro)
+    source_hard, active_source = compact_hard_assignment(source_assignment)
+    if observed.shape[0] != source_hard.shape[0]:
+        raise ValueError(
+            f"Observed row count {observed.shape[0]} != source assignment rows {source_hard.shape[0]}."
+        )
+    if weighting == "state_balanced":
+        weights = state_balanced_micro_weights(source_hard)
+    elif weighting == "uniform_spot":
+        weights = np.full(source_hard.shape[0], 1.0 / source_hard.shape[0], dtype=float)
+    else:
+        raise ValueError(f"Unknown weighting {weighting!r}")
+    q_induced, macro_mass = induced_macro_q(observed, source_hard, weights)
+    predicted = row_normalize(source_hard @ q_induced)
+    i_available = weighted_information(observed, weights)
+    i_retained = weighted_information(q_induced, macro_mass)
+    leakage = float(np.sum(weights * kl_rows(observed, predicted)))
+    identity_error = float(abs(i_available - i_retained - leakage))
+    if identity_error > 1e-8:
+        raise AssertionError(
+            f"Information closure identity failed: available={i_available}, retained={i_retained}, leakage={leakage}, error={identity_error}"
+        )
+    if low_signal_threshold_bits is None:
+        low_signal_threshold_bits = max(0.01, 0.01 * np.log2(max(observed.shape[1], 2)))
+    signal_status = "informative" if i_available >= low_signal_threshold_bits else "low-signal"
+    sufficiency = i_retained / i_available if signal_status == "informative" and i_available > EPS else np.nan
+    return {
+        "observed": observed,
+        "source_hard": source_hard,
+        "source_active_columns": active_source,
+        "weights": weights,
+        "q_induced": q_induced,
+        "macro_mass": macro_mass,
+        "predicted_induced": predicted,
+        "I_available_bits": float(i_available),
+        "I_macro_retained_bits": float(i_retained),
+        "closure_leakage_bits": leakage,
+        "macro_sufficiency": float(sufficiency) if np.isfinite(sufficiency) else np.nan,
+        "information_identity_error": identity_error,
+        "signal_status": signal_status,
+        "signal_threshold_bits": float(low_signal_threshold_bits),
+        "weighting": weighting,
+    }
+
+
+def crossfit_macro_q_error(
+    observed: np.ndarray,
+    source_hard: np.ndarray,
+    *,
+    folds: int = 5,
+    weights: np.ndarray | None = None,
+    seed: int = 20260809,
+) -> dict[str, float]:
+    """Cross-fit the induced macro Q across microstates within each hard macrostate.
+
+    This separates in-sample partition existence from held-out predictive
+    generalization. Folds are stratified by macrostate; tiny states fall back to
+    leave-one-out where possible. Singleton states are excluded from the error
+    instead of receiving an artificially perfect self-prediction.
+    """
+    obs = row_normalize(observed)
+    hard = to_hard_assignment(source_hard)
+    labels = np.argmax(hard, axis=1)
+    n = len(labels)
+    if weights is None:
+        weights = state_balanced_micro_weights(hard)
+    w = np.asarray(weights, dtype=float).reshape(-1)
+    w = np.maximum(w, 0); w /= max(float(w.sum()), EPS)
+    rng = np.random.default_rng(seed)
+    pred = np.zeros_like(obs)
+    estimable = np.zeros(n, dtype=bool)
+    singleton = np.zeros(n, dtype=bool)
+    for state in np.unique(labels):
+        idx = np.flatnonzero(labels == state)
+        if len(idx) == 1:
+            singleton[idx] = True
+            continue
+        estimable[idx] = True
+        shuffled = idx.copy(); rng.shuffle(shuffled)
+        k = min(max(2, int(folds)), len(idx))
+        fold_ids = np.arange(len(shuffled)) % k
+        for fold in range(k):
+            test = shuffled[fold_ids == fold]
+            train = shuffled[fold_ids != fold]
+            tw = w[train]
+            tw = tw / max(float(tw.sum()), EPS)
+            q = (tw @ obs[train]).reshape(1, -1)
+            pred[test] = q
+    coverage = float(np.sum(w[estimable]))
+    singleton_fraction = float(np.sum(w[singleton]))
+    if coverage <= EPS:
+        return {
+            "crossfit_kl_bits": np.nan,
+            "crossfit_js": np.nan,
+            "crossfit_coverage": 0.0,
+            "singleton_weight_fraction": singleton_fraction,
+        }
+    normalized_weights = w[estimable] / coverage
+    return {
+        "crossfit_kl_bits": float(np.sum(normalized_weights * kl_rows(obs[estimable], pred[estimable]))),
+        "crossfit_js": float(np.sum(normalized_weights * js_rows(obs[estimable], pred[estimable]))),
+        "crossfit_coverage": coverage,
+        "singleton_weight_fraction": singleton_fraction,
+    }
 
 
 @dataclass
@@ -319,10 +562,20 @@ class ClosureResult:
     state_table: pd.DataFrame
     source_residuals: pd.DataFrame
     observed: np.ndarray
-    q_best: np.ndarray
-    predicted_best: np.ndarray
+    q_induced: np.ndarray
+    predicted_induced: np.ndarray
     q_direct: np.ndarray | None
     predicted_direct: np.ndarray | None
+    source_active_columns: np.ndarray
+    target_active_columns: np.ndarray
+
+    @property
+    def q_best(self) -> np.ndarray:  # compatibility
+        return self.q_induced
+
+    @property
+    def predicted_best(self) -> np.ndarray:  # compatibility
+        return self.predicted_induced
 
 
 def closure_analysis(
@@ -334,26 +587,42 @@ def closure_analysis(
     time_pair: str,
     q_direct: np.ndarray | None = None,
     source_state_names: Sequence[str] | None = None,
+    weighting: str = "state_balanced",
+    crossfit_folds: int = 5,
+    low_signal_threshold_bits: float | None = None,
 ) -> ClosureResult:
+    # Primary macro object is deterministic/hard for every method, including
+    # optimized coarse-graining. This removes the unfair micro-specific soft-S_i
+    # predictor that previously made optimized JS closure artificially easier.
+    source_soft = normalize_assignment(source_assignment)
+    original_confidence = np.max(source_soft, axis=1)
+    budget = information_closure_budget(
+        p_micro, source_assignment, target_assignment, weighting=weighting,
+        low_signal_threshold_bits=low_signal_threshold_bits,
+    )
     p = row_normalize(p_micro)
-    s_t = normalize_assignment(source_assignment)
-    s_tp = normalize_assignment(target_assignment)
-    if p.shape != (s_t.shape[0], s_tp.shape[0]):
-        raise ValueError(f"P {p.shape} is incompatible with assignments {s_t.shape}, {s_tp.shape}.")
-    observed = p @ s_tp
-    q_best, mass = best_macro_q(observed, s_t)
-    predicted_best = row_normalize(s_t @ q_best)
-    residual_js = js_rows(observed, predicted_best)
-    residual_kl = kl_rows(observed, predicted_best)
+    s_t = budget["source_hard"]
+    s_tp = budget["target_hard"]
+    observed = budget["observed"]
+    q_induced = budget["q_induced"]
+    predicted_induced = budget["predicted_induced"]
+    weights = budget["weights"]
+    macro_mass = budget["macro_mass"]
+    active_src = budget["source_active_columns"]
+    active_tgt = budget["target_active_columns"]
+    residual_js = js_rows(observed, predicted_induced)
+    residual_kl = kl_rows(observed, predicted_induced)
+    crossfit = crossfit_macro_q_error(observed, s_t, folds=crossfit_folds, weights=weights)
 
-    source_weights = mass / max(float(mass.sum()), EPS)
-    i_micro_future_macro = effective_information(observed)
-    i_macro_future_macro = weighted_information(q_best, source_weights)
-    leakage = max(0.0, i_micro_future_macro - i_macro_future_macro)
+    i_micro_future_macro = float(budget["I_available_bits"])
+    i_macro_future_macro = float(budget["I_macro_retained_bits"])
+    leakage = float(budget["closure_leakage_bits"])
 
-    q_to_future_micro, _ = best_macro_q(p, s_t)
+    # Downward reach is retained only as a descriptive sensitivity metric. Use the
+    # same hard source macro and state-balanced intervention semantics.
+    q_to_future_micro, source_weights = induced_macro_q(p, s_t, weights)
     i_macro_future_micro = weighted_information(q_to_future_micro, source_weights)
-    i_micro_future_micro = effective_information(p)
+    i_micro_future_micro = weighted_information(p, weights)
 
     direct = None
     predicted_direct = None
@@ -362,20 +631,34 @@ def closure_analysis(
     direct_ei = np.nan
     direct_excess_js = np.nan
     direct_excess_frob = np.nan
+    direct_q_gap_js = np.nan
     if q_direct is not None:
-        direct = row_normalize(q_direct)
-        if direct.shape != q_best.shape:
-            raise ValueError(f"Direct Q shape {direct.shape} != induced Q shape {q_best.shape} for {label}.")
+        raw_direct = row_normalize(q_direct)
+        # Compare only active hard macrostates; empty optimized prototypes must not
+        # count as states or provide hidden capacity.
+        if raw_direct.shape[0] < int(np.max(active_src)) + 1 or raw_direct.shape[1] < int(np.max(active_tgt)) + 1:
+            raise ValueError(f"Direct Q shape {raw_direct.shape} is incompatible with active hard columns for {label}.")
+        direct = row_normalize(raw_direct[np.ix_(active_src, active_tgt)])
+        if direct.shape != q_induced.shape:
+            raise ValueError(f"Direct Q compact shape {direct.shape} != induced Q shape {q_induced.shape} for {label}.")
         predicted_direct = row_normalize(s_t @ direct)
-        direct_js = float(np.mean(js_rows(observed, predicted_direct)))
-        direct_frob = relative_frobenius(predicted_direct, observed)
-        direct_ei = effective_information(direct)
-        direct_excess_js = direct_js - float(np.mean(residual_js))
-        direct_excess_frob = direct_frob - relative_frobenius(predicted_best, observed)
+        direct_js = float(np.sum(weights * js_rows(observed, predicted_direct)))
+        direct_frob = relative_frobenius(predicted_direct * weights[:, None] ** 0.5, observed * weights[:, None] ** 0.5)
+        direct_ei = weighted_information(direct, macro_mass)
+        induced_js = float(np.sum(weights * residual_js))
+        direct_excess_js = direct_js - induced_js
+        induced_frob = relative_frobenius(predicted_induced * weights[:, None] ** 0.5, observed * weights[:, None] ** 0.5)
+        direct_excess_frob = direct_frob - induced_frob
+        direct_q_gap_js = float(np.sum(macro_mass * js_rows(q_induced, direct)))
 
+    weighted_mean_js = float(np.sum(weights * residual_js))
+    weighted_mean_kl = float(np.sum(weights * residual_kl))
+    weighted_frob = relative_frobenius(predicted_induced * weights[:, None] ** 0.5, observed * weights[:, None] ** 0.5)
     summary: dict[str, float | str] = {
         "mapping": label,
         "time_pair": time_pair,
+        "primary_macro_representation": "hard",
+        "primary_weighting": weighting,
         "source_nodes": float(p.shape[0]),
         "target_nodes": float(p.shape[1]),
         "source_macro_states": float(s_t.shape[1]),
@@ -384,30 +667,48 @@ def closure_analysis(
         "I_micro_to_future_macro": i_micro_future_macro,
         "I_macro_to_future_macro": i_macro_future_macro,
         "micro_residual_information": leakage,
-        "macro_sufficiency": i_macro_future_macro / max(i_micro_future_macro, EPS),
-        "residual_fraction": leakage / max(i_micro_future_macro, EPS),
+        "closure_leakage_bits": leakage,
+        "macro_sufficiency": budget["macro_sufficiency"],
+        "residual_fraction": (leakage / i_micro_future_macro) if i_micro_future_macro > EPS else np.nan,
+        "signal_status": budget["signal_status"],
+        "signal_threshold_bits": budget["signal_threshold_bits"],
+        "information_identity_error": budget["information_identity_error"],
         "I_macro_to_future_micro": i_macro_future_micro,
         "downward_reach_ratio": i_macro_future_micro / max(i_micro_future_micro, EPS),
-        "best_closure_mean_js": float(np.mean(residual_js)),
+        # Keep legacy columns but explicitly define them as induced/oracle diagnostics.
+        "best_closure_mean_js": weighted_mean_js,
         "best_closure_median_js": float(np.median(residual_js)),
         "best_closure_p95_js": float(np.quantile(residual_js, 0.95)),
         "best_closure_max_js": float(np.max(residual_js)),
-        "best_closure_mean_kl": float(np.mean(residual_kl)),
-        "best_closure_relative_frobenius": relative_frobenius(predicted_best, observed),
-        "EI_induced_Q_uniform": effective_information(q_best),
+        "best_closure_mean_kl": weighted_mean_kl,
+        "best_closure_relative_frobenius": weighted_frob,
+        "induced_closure_mean_js": weighted_mean_js,
+        "induced_closure_mean_kl_bits": weighted_mean_kl,
+        "induced_closure_relative_frobenius": weighted_frob,
+        "crossfit_closure_kl_bits": crossfit["crossfit_kl_bits"],
+        "crossfit_closure_js": crossfit["crossfit_js"],
+        "crossfit_closure_coverage": crossfit["crossfit_coverage"],
+        "crossfit_singleton_weight_fraction": crossfit["singleton_weight_fraction"],
+        "EI_induced_Q_uniform": effective_information(q_induced),
         "EI_induced_Q_weighted": i_macro_future_macro,
-        "Keff_source_macro": effective_state_number(source_weights),
+        "Keff_source_macro": effective_state_number(macro_mass),
         "direct_closure_mean_js": direct_js,
         "direct_closure_relative_frobenius": direct_frob,
         "EI_direct_Q": direct_ei,
         "direct_excess_js_above_best": direct_excess_js,
         "direct_excess_frobenius_above_best": direct_excess_frob,
+        "independent_q_excess_js": direct_excess_js,
+        "independent_q_gap_js": direct_q_gap_js,
     }
 
-    names = list(map(str, source_state_names)) if source_state_names is not None else [f"S{index}" for index in range(s_t.shape[1])]
-    if len(names) != s_t.shape[1]:
-        raise ValueError("source_state_names length does not match source assignment width.")
-    state_ei = state_level_ei(q_best)
+    if source_state_names is None:
+        names = [f"S{int(col)}" for col in active_src]
+    else:
+        all_names = list(map(str, source_state_names))
+        if len(all_names) <= int(np.max(active_src)):
+            raise ValueError("source_state_names does not cover active source assignment columns.")
+        names = [all_names[int(col)] for col in active_src]
+    state_ei = state_level_ei(q_induced)
     state_rows: list[dict[str, float | str]] = []
     for state_index, name in enumerate(names):
         weights = s_t[:, state_index]
@@ -437,7 +738,7 @@ def closure_analysis(
             "closure_kl": residual_kl,
             "source_ei_to_future_macro": state_level_ei(observed),
             "source_ei_micro": state_level_ei(p),
-            "assignment_confidence": np.max(s_t, axis=1),
+            "assignment_confidence": original_confidence,
             "hard_state": np.argmax(s_t, axis=1),
         }
     )
@@ -446,10 +747,12 @@ def closure_analysis(
         state_table=pd.DataFrame(state_rows),
         source_residuals=source_table,
         observed=observed,
-        q_best=q_best,
-        predicted_best=predicted_best,
+        q_induced=q_induced,
+        predicted_induced=predicted_induced,
         q_direct=direct,
         predicted_direct=predicted_direct,
+        source_active_columns=np.asarray(active_src, dtype=int),
+        target_active_columns=np.asarray(active_tgt, dtype=int),
     )
 
 
@@ -470,26 +773,47 @@ def multistep_closure(
     mapping: str,
     interval: str,
 ) -> dict[str, float | str]:
+    """Hard-macro multi-step closure/semigroup diagnostic.
+
+    The induced endpoint kernel is an oracle reference; composed independent Q
+    tests operational semigroup consistency.
+    """
     if len(assignments) != len(p_chain) + 1 or len(q_chain) != len(p_chain):
         raise ValueError("Multistep chain lengths are inconsistent.")
+    hard_assignments=[]; active_cols=[]
+    for a in assignments:
+        h, active=compact_hard_assignment(a); hard_assignments.append(h); active_cols.append(active)
     p_composed = compose_matrices(p_chain)
-    observed = p_composed @ normalize_assignment(assignments[-1])
-    q_composed = compose_matrices(q_chain)
-    predicted = normalize_assignment(assignments[0]) @ q_composed
-    q_best, _ = best_macro_q(observed, assignments[0])
-    predicted_best = normalize_assignment(assignments[0]) @ q_best
+    observed = row_normalize(p_composed @ hard_assignments[-1])
+    weights = state_balanced_micro_weights(hard_assignments[0])
+    # Compact each independent macro Q to active state coordinates at the
+    # corresponding source/target time before composition.
+    q_compact=[]
+    for step,q in enumerate(q_chain):
+        qq=row_normalize(q)
+        q_compact.append(row_normalize(qq[np.ix_(active_cols[step],active_cols[step+1])]))
+    q_composed = compose_matrices(q_compact)
+    predicted = row_normalize(hard_assignments[0] @ q_composed)
+    q_induced, macro_mass = induced_macro_q(observed, hard_assignments[0], weights)
+    predicted_induced = row_normalize(hard_assignments[0] @ q_induced)
+    induced_js=float(np.sum(weights*js_rows(observed,predicted_induced)))
+    composed_js=float(np.sum(weights*js_rows(observed,predicted)))
     return {
         "mapping": mapping,
         "interval": interval,
         "steps": float(len(p_chain)),
-        "composed_mean_js": float(np.mean(js_rows(observed, predicted))),
-        "composed_relative_frobenius": relative_frobenius(predicted, observed),
-        "best_possible_mean_js": float(np.mean(js_rows(observed, predicted_best))),
-        "best_possible_relative_frobenius": relative_frobenius(predicted_best, observed),
-        "semigroup_excess_js": float(np.mean(js_rows(observed, predicted)) - np.mean(js_rows(observed, predicted_best))),
-        "semigroup_excess_frobenius": relative_frobenius(predicted, observed) - relative_frobenius(predicted_best, observed),
-        "EI_composed_Q": effective_information(q_composed),
-        "EI_best_Q": effective_information(q_best),
+        "composed_mean_js": composed_js,
+        "composed_relative_frobenius": relative_frobenius(predicted * weights[:,None]**0.5, observed * weights[:,None]**0.5),
+        "best_possible_mean_js": induced_js,
+        "best_possible_relative_frobenius": relative_frobenius(predicted_induced * weights[:,None]**0.5, observed * weights[:,None]**0.5),
+        "induced_endpoint_mean_js": induced_js,
+        "semigroup_excess_js": composed_js-induced_js,
+        "semigroup_excess_frobenius": relative_frobenius(predicted * weights[:,None]**0.5, observed * weights[:,None]**0.5)-relative_frobenius(predicted_induced * weights[:,None]**0.5, observed * weights[:,None]**0.5),
+        "EI_composed_Q": weighted_information(q_composed, macro_mass),
+        "EI_best_Q": weighted_information(q_induced, macro_mass),
+        "I_endpoint_available_bits": weighted_information(observed,weights),
+        "I_endpoint_macro_retained_bits": weighted_information(q_induced,macro_mass),
+        "endpoint_closure_leakage_bits": float(np.sum(weights*kl_rows(observed,predicted_induced))),
     }
 
 
@@ -566,27 +890,33 @@ def matched_partition_null(
     repeats: int,
     seed: int,
 ) -> pd.DataFrame:
+    """Matched hard-partition null under state-balanced macro interventions."""
     observed = row_normalize(observed_micro_to_macro)
-    source = normalize_assignment(source_assignment)
+    source, _ = compact_hard_assignment(source_assignment)
     hard = np.argmax(source, axis=1)
     states = source.shape[1]
     rng = np.random.default_rng(seed)
-    rows: list[dict[str, float]] = []
-    i_xb = effective_information(observed)
+    rows: list[dict[str, float | str]] = []
+    threshold=max(0.01,0.01*np.log2(max(observed.shape[1],2)))
     for repeat in range(int(repeats)):
         permuted_hard = rng.permutation(hard)
         permuted = np.zeros((len(hard), states), dtype=float)
         permuted[np.arange(len(hard)), permuted_hard] = 1.0
-        q, mass = best_macro_q(observed, permuted)
-        predicted = permuted @ q
-        i_ab = weighted_information(q, mass / max(float(mass.sum()), EPS))
-        rows.append(
-            {
-                "repeat": float(repeat),
-                "macro_sufficiency": i_ab / max(i_xb, EPS),
-                "residual_fraction": max(0.0, i_xb - i_ab) / max(i_xb, EPS),
-                "mean_js": float(np.mean(js_rows(observed, predicted))),
-                "relative_frobenius": relative_frobenius(predicted, observed),
-            }
-        )
+        weights=state_balanced_micro_weights(permuted)
+        q, mass = induced_macro_q(observed, permuted, weights)
+        predicted = row_normalize(permuted @ q)
+        i_xb = weighted_information(observed,weights)
+        i_ab = weighted_information(q,mass)
+        leak=float(np.sum(weights*kl_rows(observed,predicted)))
+        rows.append({
+            "repeat": float(repeat),
+            "macro_sufficiency": (i_ab/i_xb) if i_xb>=threshold else np.nan,
+            "residual_fraction": (leak/i_xb) if i_xb>=threshold else np.nan,
+            "closure_leakage_bits": leak,
+            "macro_predictive_bits": i_ab,
+            "available_information_bits": i_xb,
+            "signal_status": "informative" if i_xb>=threshold else "low-signal",
+            "mean_js": float(np.sum(weights*js_rows(observed,predicted))),
+            "relative_frobenius": relative_frobenius(predicted*weights[:,None]**0.5, observed*weights[:,None]**0.5),
+        })
     return pd.DataFrame(rows)

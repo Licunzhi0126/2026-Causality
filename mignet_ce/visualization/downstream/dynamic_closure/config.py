@@ -27,6 +27,9 @@ class DynamicClosureConfig:
     repair_random_repeats: int = 40
     device: str = "cpu"
     force: bool = False
+    output_mode: str = "both"
+    crossfit_folds: int = 5
+    low_signal_threshold_bits: float | None = None
 
     def normalized(self) -> "DynamicClosureConfig":
         return replace(
@@ -47,6 +50,9 @@ class DynamicClosureConfig:
             repair_random_repeats=int(self.repair_random_repeats),
             device=str(self.device),
             force=bool(self.force),
+            output_mode=str(self.output_mode),
+            crossfit_folds=int(self.crossfit_folds),
+            low_signal_threshold_bits=(None if self.low_signal_threshold_bits is None else float(self.low_signal_threshold_bits)),
         )
 
     def validate(self) -> None:
@@ -54,6 +60,12 @@ class DynamicClosureConfig:
             raise FileNotFoundError(f"Dynamic-closure data root does not exist: {self.data_root}")
         if len(self.time_points) != 4 or len(set(self.time_points)) != 4:
             raise ValueError("The extended dynamic-closure suite requires four unique ordered time points.")
+        if self.output_mode not in {"paper", "diagnostic", "both"}:
+            raise ValueError("output_mode must be paper, diagnostic, or both")
+        if self.crossfit_folds < 2:
+            raise ValueError("crossfit_folds must be at least 2")
+        if self.low_signal_threshold_bits is not None and self.low_signal_threshold_bits < 0:
+            raise ValueError("low_signal_threshold_bits must be nonnegative")
         if self.k_optimal < 2:
             raise ValueError("k_optimal must be at least 2")
         if self.optimal_epochs < 1:
@@ -87,6 +99,10 @@ class DynamicClosureConfig:
     @property
     def ultradeep_root(self) -> Path:
         return self.output_root / "ultradeep"
+
+    @property
+    def paper_root(self) -> Path:
+        return self.output_root / "paper"
 
 
 # Backwards-compatible name used by the museum implementation.

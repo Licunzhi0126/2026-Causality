@@ -175,10 +175,15 @@ def plot_null(null: pd.DataFrame, out: Path) -> Path:
             ax=axes[r,c]
             for mapping in mappings:
                 frame=null[(null["mapping"]==mapping)&(null["time_pair"]==pair)]
-                values=frame[metric].astype(float)
+                values=frame[metric].astype(float).to_numpy()
+                values=values[np.isfinite(values)]
                 observed=float(frame[f"observed_{'best_closure_mean_js' if metric=='mean_js' else metric}"].iloc[0])
-                ax.hist(values,bins=24,alpha=.45,color=COLORS[mapping],label=f"{mapping} null")
-                ax.axvline(observed,color=COLORS[mapping],lw=2.0,ls="--")
+                if values.size:
+                    ax.hist(values,bins=24,alpha=.45,color=COLORS[mapping],label=f"{mapping} null")
+                else:
+                    ax.text(.5,.5,f"{mapping}: low-signal / undefined",transform=ax.transAxes,ha="center",va="center",fontsize=7,color=COLORS[mapping])
+                if np.isfinite(observed):
+                    ax.axvline(observed,color=COLORS[mapping],lw=2.0,ls="--")
             ax.set_xlabel(title); ax.set_ylabel("Random partitions"); ax.grid(axis="y")
             _panel(ax,chr(65+r*3+c),f"Matched partition null | {pair.replace('->','–')}")
             if r==0 and c==0: ax.legend(fontsize=6.5)
@@ -249,4 +254,3 @@ def render_all_closure_figures(*, summary_frame, source_frame, null_frame, multi
         plot_ei_spatial(optimal_spatial_frame,output_dir),
         plot_optimized_diagnostics(summary_frame,source_frame,output_dir),
     ]
-

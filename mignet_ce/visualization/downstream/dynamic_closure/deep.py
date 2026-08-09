@@ -11,7 +11,12 @@ import scipy.sparse as sp
 
 from .analysis import (
     EPS,
-    best_macro_q,
+    induced_macro_q,
+    information_closure_budget,
+    compact_hard_assignment,
+    state_balanced_micro_weights,
+    to_hard_assignment,
+    crossfit_macro_q_error,
     effective_information,
     entropy_rows,
     js_rows,
@@ -47,7 +52,7 @@ class MappingRecord:
 
     @property
     def observed(self) -> np.ndarray:
-        return row_normalize(self.p_micro @ normalize_assignment(self.target_assignment))
+        return row_normalize(self.p_micro @ self.target_assignment)
 
 
 def load_npz_matrix(path: Path) -> np.ndarray:
@@ -97,6 +102,7 @@ def load_mapping_records(
     organ: str = "heart",
     time_points: tuple[str, ...] = TIME_POINTS,
 ) -> list[MappingRecord]:
+    """Load records in a mathematically uniform hard-macro representation."""
     data_root = Path(data_root)
     closure_root = Path(closure_root)
     assignments, units = _spot_assignments(data_root, organ, time_points)
@@ -105,42 +111,30 @@ def load_mapping_records(
         pair = f"{source}->{target}"
         p = row_normalize(load_npz_matrix(closure_root / "matrices" / f"pij_spot_{source}_to_{target}.npz"))
         for layer, mapping in (("seurat_k150", "Seurat K150"), ("seurat_k40", "Seurat K40")):
-            q_best = row_normalize(np.load(closure_root / "tables" / f"q_best_{layer}_{source}_to_{target}.npy"))
+            hs, active_s = compact_hard_assignment(assignments[(layer, source)])
+            ht, active_t = compact_hard_assignment(assignments[(layer, target)])
+            budget = information_closure_budget(p, hs, ht, weighting="state_balanced")
             q_direct = row_normalize(np.load(closure_root / "tables" / f"q_direct_{layer}_{source}_to_{target}.npy"))
-            records.append(
-                MappingRecord(
-                    mapping=mapping,
-                    time_pair=pair,
-                    source_time=source,
-                    target_time=target,
-                    p_micro=p,
-                    source_assignment=assignments[(layer, source)],
-                    target_assignment=assignments[(layer, target)],
-                    q_best=q_best,
-                    q_direct=q_direct,
-                    source_names=units[(layer, source)],
-                )
-            )
+            records.append(MappingRecord(
+                mapping=mapping, time_pair=pair, source_time=source, target_time=target,
+                p_micro=p, source_assignment=hs, target_assignment=ht,
+                q_best=budget["q_induced"], q_direct=q_direct,
+                source_names=[units[(layer, source)][int(i)] for i in active_s],
+            ))
         opt = closure_root / "optimal_coarse" / f"{source}_to_{target}"
         p_opt = row_normalize(load_npz_matrix(opt / "PIJ_micro.npz"))
-        s_t = normalize_assignment(np.load(opt / "S_t.npy"))
-        s_tp = normalize_assignment(np.load(opt / "S_tp.npy"))
-        q_best = row_normalize(np.load(closure_root / "tables" / f"q_best_optimized_{source}_to_{target}.npy"))
+        s_t_soft = normalize_assignment(np.load(opt / "S_t.npy"))
+        s_tp_soft = normalize_assignment(np.load(opt / "S_tp.npy"))
+        hs, active_s = compact_hard_assignment(s_t_soft)
+        ht, active_t = compact_hard_assignment(s_tp_soft)
+        budget = information_closure_budget(p_opt, hs, ht, weighting="state_balanced")
         q_direct = row_normalize(np.load(closure_root / "tables" / f"q_direct_optimized_{source}_to_{target}.npy"))
-        records.append(
-            MappingRecord(
-                mapping="Optimized coarse-graining",
-                time_pair=pair,
-                source_time=source,
-                target_time=target,
-                p_micro=p_opt,
-                source_assignment=s_t,
-                target_assignment=s_tp,
-                q_best=q_best,
-                q_direct=q_direct,
-                source_names=[f"M{i:02d}" for i in range(s_t.shape[1])],
-            )
-        )
+        records.append(MappingRecord(
+            mapping="Optimized coarse-graining", time_pair=pair, source_time=source, target_time=target,
+            p_micro=p_opt, source_assignment=hs, target_assignment=ht,
+            q_best=budget["q_induced"], q_direct=q_direct,
+            source_names=[f"M{int(i):02d}" for i in active_s],
+        ))
     return records
 
 
@@ -173,21 +167,13 @@ def weighted_best_q(observed: np.ndarray, assignment: np.ndarray, weights: np.nd
 
 
 def source_weight_schemes(assignment: np.ndarray) -> dict[str, np.ndarray]:
-    assignment = normalize_assignment(assignment)
-    n = assignment.shape[0]
+    hard = to_hard_assignment(assignment)
+    n = hard.shape[0]
     uniform_spot = np.full(n, 1.0 / n, dtype=float)
-    mass = assignment.sum(axis=0)
-    active = mass > EPS
-    inv_mass = np.zeros_like(mass)
-    inv_mass[active] = 1.0 / mass[active]
-    state_balanced = assignment @ inv_mass
-    state_balanced /= max(float(state_balanced.sum()), EPS)
-    confidence = np.max(assignment, axis=1)
-    confidence_weighted = confidence / max(float(confidence.sum()), EPS)
+    state_balanced = state_balanced_micro_weights(hard)
     return {
-        "Uniform spot": uniform_spot,
         "State balanced": state_balanced,
-        "Confidence weighted": confidence_weighted,
+        "Uniform spot": uniform_spot,
     }
 
 
@@ -203,29 +189,30 @@ def strong_lumpability_tables(records: Iterable[MappingRecord]) -> tuple[pd.Data
     summary_rows: list[dict[str, float | str]] = []
     for record in records:
         observed = record.observed
-        assignment = normalize_assignment(record.source_assignment)
+        assignment = to_hard_assignment(record.source_assignment)
         hard = np.argmax(assignment, axis=1)
+        primary_weights = state_balanced_micro_weights(assignment)
         predicted_best = row_normalize(assignment @ record.q_best)
         residual_js = js_rows(observed, predicted_best)
         residual_kl = kl_rows(observed, predicted_best)
         residual_tv = 0.5 * np.sum(np.abs(observed - predicted_best), axis=1)
-        total_kl = float(np.sum(residual_kl))
+        total_kl = float(np.sum(primary_weights * residual_kl))
         for state_index in range(assignment.shape[1]):
-            weights = assignment[:, state_index]
-            member = weights > 1e-8
+            membership = assignment[:, state_index]
+            member = membership > 0.5
             if not np.any(member):
                 continue
-            local_weights = weights[member]
+            local_weights = primary_weights[member]
             local_weights /= max(float(local_weights.sum()), EPS)
             q_disagreement = float(js_rows(record.q_best[state_index:state_index+1], record.q_direct[state_index:state_index+1])[0])
             tv_disagreement = float(0.5 * np.sum(np.abs(record.q_best[state_index] - record.q_direct[state_index])))
-            contribution = float(np.sum(weights * residual_kl) / max(total_kl, EPS))
+            contribution = float(np.sum(primary_weights[member] * residual_kl[member]) / max(total_kl, EPS))
             state_rows.append({
                 "mapping": record.mapping,
                 "time_pair": record.time_pair,
                 "state_index": state_index,
                 "state": record.source_names[state_index] if state_index < len(record.source_names) else f"S{state_index}",
-                "mass": float(weights.sum()),
+                "mass": float(np.sum(member)),
                 "hard_mass": int(np.sum(hard == state_index)),
                 "mean_js": _weighted_mean(residual_js[member], local_weights),
                 "p95_js": weighted_quantile(residual_js[member], 0.95, local_weights),
@@ -246,15 +233,15 @@ def strong_lumpability_tables(records: Iterable[MappingRecord]) -> tuple[pd.Data
         summary_rows.append({
             "mapping": record.mapping,
             "time_pair": record.time_pair,
-            "mean_js": float(np.mean(residual_js)),
+            "mean_js": _weighted_mean(residual_js, primary_weights),
             "p95_js": float(np.quantile(residual_js, 0.95)),
             "max_js": float(np.max(residual_js)),
-            "mean_tv": float(np.mean(residual_tv)),
+            "mean_tv": _weighted_mean(residual_tv, primary_weights),
             "p95_tv": float(np.quantile(residual_tv, 0.95)),
             "max_tv": float(np.max(residual_tv)),
             "top10_state_residual_share": float(frame.nlargest(min(10, len(frame)), "residual_kl_share")["residual_kl_share"].sum()) if len(frame) else np.nan,
             "active_states": int((assignment.sum(axis=0) > EPS).sum()),
-            "mean_q_best_direct_js": float(np.average(frame["q_best_direct_js"], weights=np.maximum(frame["mass"], EPS))) if len(frame) else np.nan,
+            "mean_q_best_direct_js": float(frame["q_best_direct_js"].mean()) if len(frame) else np.nan,
         })
     return pd.DataFrame(summary_rows), pd.DataFrame(state_rows)
 
@@ -263,7 +250,7 @@ def intervention_weighting_table(records: Iterable[MappingRecord]) -> pd.DataFra
     rows: list[dict[str, float | str]] = []
     for record in records:
         observed = record.observed
-        assignment = normalize_assignment(record.source_assignment)
+        assignment = to_hard_assignment(record.source_assignment)
         for scheme, weights in source_weight_schemes(assignment).items():
             q_weighted, macro_mass = weighted_best_q(observed, assignment, weights)
             predicted = row_normalize(assignment @ q_weighted)
@@ -278,7 +265,8 @@ def intervention_weighting_table(records: Iterable[MappingRecord]) -> pd.DataFra
                 "micro_information": micro_info,
                 "macro_information": macro_info,
                 "residual_information": residual_info,
-                "macro_sufficiency": macro_info / max(micro_info, EPS),
+                "macro_sufficiency": (macro_info / micro_info) if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else np.nan,
+                "signal_status": "informative" if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else "low-signal",
                 "best_mean_js": _weighted_mean(js_rows(observed, predicted), weights),
                 "best_mean_kl": _weighted_mean(kl_rows(observed, predicted), weights),
                 "direct_mean_js": _weighted_mean(js_rows(observed, predicted_direct), weights),
@@ -396,7 +384,7 @@ def directional_closure_table(records: Iterable[MappingRecord]) -> pd.DataFrame:
                 s_source = record.target_assignment
                 s_target = record.source_assignment
             observed = row_normalize(p @ normalize_assignment(s_target))
-            q, mass = best_macro_q(observed, s_source)
+            q, mass = induced_macro_q(observed, s_source)
             predicted = row_normalize(normalize_assignment(s_source) @ q)
             micro_info = effective_information(observed)
             macro_weights = mass / max(float(mass.sum()), EPS)
@@ -407,7 +395,8 @@ def directional_closure_table(records: Iterable[MappingRecord]) -> pd.DataFrame:
                 "direction": direction,
                 "micro_information": micro_info,
                 "macro_information": macro_info,
-                "macro_sufficiency": macro_info / max(micro_info, EPS),
+                "macro_sufficiency": (macro_info / micro_info) if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else np.nan,
+                "signal_status": "informative" if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else "low-signal",
                 "residual_fraction": max(0.0, micro_info - macro_info) / max(micro_info, EPS),
                 "mean_js": float(np.mean(js_rows(observed, predicted))),
                 "p95_js": float(np.quantile(js_rows(observed, predicted), 0.95)),
@@ -465,11 +454,12 @@ def horizon_closure_table(
                     target_assignment,
                     time_points,
                 )
-                q_best, mass = best_macro_q(observed, source_assignment)
-                predicted = row_normalize(normalize_assignment(source_assignment) @ q_best)
-                micro_info = effective_information(observed)
-                macro_weights = mass / max(float(mass.sum()), EPS)
-                macro_info = weighted_information(q_best, macro_weights)
+                source_assignment = to_hard_assignment(source_assignment)
+                weights = state_balanced_micro_weights(source_assignment)
+                q_best, mass = induced_macro_q(observed, source_assignment, weights)
+                predicted = row_normalize(source_assignment @ q_best)
+                micro_info = weighted_information(observed, weights)
+                macro_info = weighted_information(q_best, mass)
                 rows.append({
                     "mapping": mapping,
                     "interval": f"{start}->{end}",
@@ -478,10 +468,12 @@ def horizon_closure_table(
                     "horizon_steps": end_index - start_index,
                     "micro_information": micro_info,
                     "macro_information": macro_info,
-                    "macro_sufficiency": macro_info / max(micro_info, EPS),
+                    "macro_sufficiency": (macro_info / micro_info) if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else np.nan,
+                "signal_status": "informative" if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else "low-signal",
                     "residual_information": max(0.0, micro_info - macro_info),
-                    "residual_fraction": max(0.0, micro_info - macro_info) / max(micro_info, EPS),
-                    "best_mean_js": float(np.mean(js_rows(observed, predicted))),
+                    "closure_leakage_bits": max(0.0, micro_info - macro_info),
+                    "residual_fraction": (max(0.0, micro_info - macro_info) / micro_info) if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else np.nan,
+                    "best_mean_js": _weighted_mean(js_rows(observed, predicted), weights),
                     "best_p95_js": float(np.quantile(js_rows(observed, predicted), 0.95)),
                     "best_q_ei": effective_information(q_best),
                 })
@@ -551,24 +543,27 @@ def stratified_bootstrap_table(records: Iterable[MappingRecord], repeats: int = 
     rows: list[dict[str, float | str | int]] = []
     for record in records:
         observed = record.observed
-        assignment = normalize_assignment(record.source_assignment)
+        assignment = to_hard_assignment(record.source_assignment)
         hard = np.argmax(assignment, axis=1)
         groups = [np.where(hard == state)[0] for state in np.unique(hard)]
         for repeat in range(repeats):
             sampled = np.concatenate([rng.choice(group, size=len(group), replace=True) for group in groups if len(group)])
             obs = observed[sampled]
             assn = assignment[sampled]
-            q, mass = best_macro_q(obs, assn)
+            weights = state_balanced_micro_weights(assn)
+            q, mass = induced_macro_q(obs, assn, weights)
             predicted = row_normalize(assn @ q)
-            micro_info = effective_information(obs)
-            macro_info = weighted_information(q, mass / max(float(mass.sum()), EPS))
+            micro_info = weighted_information(obs, weights)
+            macro_info = weighted_information(q, mass)
             rows.append({
                 "mapping": record.mapping,
                 "time_pair": record.time_pair,
                 "repeat": repeat,
-                "macro_sufficiency": macro_info / max(micro_info, EPS),
-                "mean_js": float(np.mean(js_rows(obs, predicted))),
+                "macro_sufficiency": (macro_info / micro_info) if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else np.nan,
+                "signal_status": "informative" if micro_info >= max(0.01, 0.01*np.log2(max(observed.shape[1],2))) else "low-signal",
+                "mean_js": _weighted_mean(js_rows(obs, predicted), weights),
                 "residual_information": max(0.0, micro_info - macro_info),
+                "closure_leakage_bits": max(0.0, micro_info - macro_info),
             })
     return pd.DataFrame(rows)
 
@@ -576,8 +571,11 @@ def stratified_bootstrap_table(records: Iterable[MappingRecord], repeats: int = 
 def bootstrap_summary(bootstrap: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, float | str]] = []
     for (mapping, pair), frame in bootstrap.groupby(["mapping", "time_pair"]):
-        for metric in ("macro_sufficiency", "mean_js", "residual_information"):
+        for metric in ("macro_sufficiency", "mean_js", "residual_information", "closure_leakage_bits"):
             values = frame[metric].to_numpy(float)
+            values = values[np.isfinite(values)]
+            if len(values) == 0:
+                continue
             rows.append({
                 "mapping": mapping,
                 "time_pair": pair,
