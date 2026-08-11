@@ -18,6 +18,10 @@ import torch
 
 from mignet_ce.representations.coarse_input import MacroPijInputs, PreparedCoarseInput
 from wyt_deltaei_coarse_grain.assignment import usage_stats
+from wyt_deltaei_coarse_grain.development import (
+    developmental_loss,
+    hard_assignment_maturity_summary,
+)
 from wyt_deltaei_coarse_grain.macro_builder import (
     macro_matrix,
     pool_feature_blocks,
@@ -64,6 +68,8 @@ class WYTDeltaEIConfig:
     lambda_proto: float = 0.2
     lambda_min_usage: float = 10.0
     lambda_max_usage: float = 10.0
+    lambda_dev: float = 0.0
+    development_min_state_mass: float = 1e-8
     embedding_target_std: float = 0.05
     prototype_max_cosine: float = 0.2
     min_usage_frac: float = 0.01
@@ -103,6 +109,24 @@ class WYTDeltaEIConfig:
             raise ValueError("epochs, lr, and log_every must be positive.")
         if self.device not in {"cpu", "cuda", "auto"}:
             raise ValueError("device must be one of cpu, cuda, auto.")
+        if self.lambda_dev < 0.0:
+            raise ValueError("lambda_dev must be non-negative.")
+        if self.development_min_state_mass <= 0.0:
+            raise ValueError("development_min_state_mass must be positive.")
+        if self.lambda_dev > 0.0 and (
+            prepared.maturity_t is None or prepared.maturity_tp is None
+        ):
+            raise ValueError(
+                "lambda_dev > 0 requires maturity_t and maturity_tp in PreparedCoarseInput."
+            )
+        if prepared.method in {
+            "complete_combined_coarse_maturity_cci",
+            "complete_combined_coarse_maturity_cci_grn",
+        } and self.lambda_dev <= 0.0:
+            raise ValueError(
+                f"{prepared.method} requires lambda_dev > 0; use the non-maturity "
+                "baseline or an explicit ablation harness for lambda_dev=0."
+            )
 
 
 @dataclass(frozen=True)
@@ -272,6 +296,26 @@ def train_deltaei(
         for name, values in prepared.feature_blocks_tp.items()
     }
     fixed_micro_ei = torch.tensor(prepared.micro_ei, dtype=torch.float32, device=device)
+    maturity_t = (
+        torch.tensor(prepared.maturity_t, dtype=torch.float32, device=device)
+        if prepared.maturity_t is not None
+        else None
+    )
+    maturity_tp = (
+        torch.tensor(prepared.maturity_tp, dtype=torch.float32, device=device)
+        if prepared.maturity_tp is not None
+        else None
+    )
+    maturity_confidence_t = (
+        torch.tensor(prepared.maturity_confidence_t, dtype=torch.float32, device=device)
+        if prepared.maturity_confidence_t is not None
+        else None
+    )
+    maturity_confidence_tp = (
+        torch.tensor(prepared.maturity_confidence_tp, dtype=torch.float32, device=device)
+        if prepared.maturity_confidence_tp is not None
+        else None
+    )
 
     encoder = PrototypeEncoder(
         in_dim=features_t.shape[1],
@@ -299,6 +343,12 @@ def train_deltaei(
         _log(log_handle, f"K: {config.k}; mid_dim: {config.mid_dim}; device: {device}")
         _log(log_handle, f"local_graph_mode: {config.local_graph_mode}")
         _log(log_handle, f"fixed EI_micro: {prepared.micro_ei:.6f}")
+        _log(
+            log_handle,
+            "developmental maturity constraint: "
+            f"{bool(maturity_t is not None and maturity_tp is not None)}; "
+            f"lambda_dev={config.lambda_dev}",
+        )
         _log(log_handle, "No macro dynamics. No anti-coarsening. No reconstruction.")
         _log(log_handle, "================================================")
 
@@ -360,6 +410,24 @@ def train_deltaei(
                 + local_smoothness(assignment_tp, adjacency_tp)
             )
             sharp = sharpness_loss(assignment_t, assignment_tp)
+            if maturity_t is not None and maturity_tp is not None:
+                dev_t = developmental_loss(
+                    assignment_t,
+                    maturity_t,
+                    maturity_confidence_t,
+                    min_state_mass=config.development_min_state_mass,
+                )
+                dev_tp = developmental_loss(
+                    assignment_tp,
+                    maturity_tp,
+                    maturity_confidence_tp,
+                    min_state_mass=config.development_min_state_mass,
+                )
+                dev = 0.5 * (dev_t + dev_tp)
+            else:
+                dev_t = torch.zeros((), dtype=torch.float32, device=device)
+                dev_tp = torch.zeros((), dtype=torch.float32, device=device)
+                dev = torch.zeros((), dtype=torch.float32, device=device)
             proto = prototype_repulsion(
                 encoder.prototypes,
                 config.prototype_max_cosine,
@@ -376,6 +444,7 @@ def train_deltaei(
                 + config.lambda_var * var
                 + config.lambda_local * local
                 + config.lambda_sharp * sharp
+                + config.lambda_dev * dev
                 + config.lambda_proto * proto
                 + config.lambda_min_usage * min_usage
                 + config.lambda_max_usage * max_usage
@@ -402,6 +471,9 @@ def train_deltaei(
                 "L_var": float(var.detach().cpu()),
                 "L_local": float(local.detach().cpu()),
                 "L_sharp": float(sharp.detach().cpu()),
+                "L_dev": float(dev.detach().cpu()),
+                "L_dev_t": float(dev_t.detach().cpu()),
+                "L_dev_tp": float(dev_tp.detach().cpu()),
                 "L_proto": float(proto.detach().cpu()),
                 "L_min_usage": float(min_usage.detach().cpu()),
                 "L_max_usage": float(max_usage.detach().cpu()),
@@ -434,6 +506,7 @@ def train_deltaei(
                     f"[wyt] {epoch:04d} loss={row['loss']:.6f} | "
                     f"Lalign={row['L_align']:.6f} | EI_macro={row['EI_macro']:.6f} | "
                     f"delta={row['delta_EI']:.6f} | "
+                    f"Ldev={row['L_dev']:.6f} | "
                     f"Keff=[{row['Keff_t']:.1f},{row['Keff_tp']:.1f}] | "
                     f"hardK=[{row['hardK_t']},{row['hardK_tp']}]",
                 )
@@ -473,13 +546,40 @@ def train_deltaei(
             )
             final_macro_ei = effective_information(macro_pij)
             final_delta = final_macro_ei - fixed_micro_ei
+            if maturity_t is not None and maturity_tp is not None:
+                final_dev_t = developmental_loss(
+                    assignment_t,
+                    maturity_t,
+                    maturity_confidence_t,
+                    min_state_mass=config.development_min_state_mass,
+                )
+                final_dev_tp = developmental_loss(
+                    assignment_tp,
+                    maturity_tp,
+                    maturity_confidence_tp,
+                    min_state_mass=config.development_min_state_mass,
+                )
+                final_dev = 0.5 * (final_dev_t + final_dev_tp)
+            else:
+                final_dev_t = torch.zeros((), dtype=torch.float32, device=device)
+                final_dev_tp = torch.zeros((), dtype=torch.float32, device=device)
+                final_dev = torch.zeros((), dtype=torch.float32, device=device)
         summary = {
             "method": prepared.method,
+            "method_version": "maturity_v1" if config.lambda_dev > 0.0 else "baseline",
             "best_epoch": best_epoch,
             "best_delta_EI_recorded": best_delta,
             "EI_micro_fixed": float(fixed_micro_ei.cpu()),
             "EI_macro_best_checkpoint": float(final_macro_ei.cpu()),
             "delta_EI_best_checkpoint": float(final_delta.cpu()),
+            "development_constraint_enabled": bool(config.lambda_dev > 0.0),
+            "development_maturity_available": bool(
+                maturity_t is not None and maturity_tp is not None
+            ),
+            "lambda_dev": float(config.lambda_dev),
+            "L_dev_best_checkpoint": float(final_dev.cpu()),
+            "L_dev_t_best_checkpoint": float(final_dev_t.cpu()),
+            "L_dev_tp_best_checkpoint": float(final_dev_tp.cpu()),
             "K": int(config.k),
             "device": str(device),
             "elapsed_seconds": float(perf_counter() - started),
@@ -514,15 +614,25 @@ def train_deltaei(
             )
             summary[f"assignment_entropy_mean_{label}"] = float(entropy.mean())
             summary[f"prototype_collapse_{label}"] = bool(np.count_nonzero(counts) < config.k)
+            maturity_values = prepared.maturity_t if label == "t" else prepared.maturity_tp
+            if maturity_values is not None:
+                for key, value in hard_assignment_maturity_summary(
+                    values,
+                    maturity_values,
+                ).items():
+                    summary[f"{key}_{label}"] = value
         if prepared.posthoc_evaluator is not None:
             strict_evaluation = dict(
                 prepared.posthoc_evaluator(assignment_t_np, assignment_tp_np)
             )
-            write_json(
-                out_dir / "strict_native_v7_evaluation.json",
-                strict_evaluation,
+            strict_filename = str(
+                prepared.provenance.get(
+                    "strict_posthoc_filename",
+                    "strict_native_v7_evaluation.json",
+                )
             )
-            summary["strict_posthoc_file"] = "strict_native_v7_evaluation.json"
+            write_json(out_dir / strict_filename, strict_evaluation)
+            summary["strict_posthoc_file"] = strict_filename
             for key, value in strict_evaluation.items():
                 if (
                     isinstance(value, (int, float, np.generic))

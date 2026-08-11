@@ -32,6 +32,21 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-tp", type=Path, default=None)
     parser.add_argument("--k", type=int, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--maturity-t", type=Path, default=None)
+    parser.add_argument("--maturity-tp", type=Path, default=None)
+    parser.add_argument("--maturity-id-column", default="spot_id")
+    parser.add_argument("--maturity-column", default="maturity")
+    parser.add_argument("--maturity-confidence-column", default=None)
+    parser.add_argument(
+        "--maturity-normalization",
+        choices=["none", "minmax", "rank"],
+        default="minmax",
+    )
+    parser.add_argument(
+        "--maturity-direction",
+        choices=["higher_is_more_mature", "higher_is_more_primitive"],
+        default="higher_is_more_mature",
+    )
 
     parser.add_argument("--cci-min", type=float, default=0.0)
     parser.add_argument("--regsim-knn-k", type=int, default=50)
@@ -70,6 +85,16 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-proto", type=float, default=0.2)
     parser.add_argument("--lambda-min-usage", type=float, default=10.0)
     parser.add_argument("--lambda-max-usage", type=float, default=10.0)
+    parser.add_argument(
+        "--lambda-dev",
+        type=float,
+        default=None,
+        help=(
+            "Maturity-loss weight. Defaults to 0.05 for the two maturity methods "
+            "and 0.0 for all existing methods."
+        ),
+    )
+    parser.add_argument("--development-min-state-mass", type=float, default=1e-8)
     parser.add_argument("--embedding-target-std", type=float, default=0.05)
     parser.add_argument("--prototype-max-cosine", type=float, default=0.2)
     parser.add_argument("--min-usage-frac", type=float, default=0.01)
@@ -82,6 +107,28 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_argparser().parse_args()
+    maturity_methods = {
+        "complete_combined_coarse_maturity_cci",
+        "complete_combined_coarse_maturity_cci_grn",
+    }
+    lambda_dev = (
+        float(args.lambda_dev)
+        if args.lambda_dev is not None
+        else (0.05 if args.method in maturity_methods else 0.0)
+    )
+    if args.method in maturity_methods:
+        if args.maturity_t is None or args.maturity_tp is None:
+            raise SystemExit(
+                f"{args.method} requires --maturity-t and --maturity-tp."
+            )
+        if lambda_dev <= 0.0:
+            raise SystemExit(f"{args.method} requires --lambda-dev > 0.")
+    if args.method == "complete_combined_coarse_maturity_cci_grn" and (
+        args.grn_t is None or args.grn_tp is None
+    ):
+        raise SystemExit(
+            "complete_combined_coarse_maturity_cci_grn requires --grn-t and --grn-tp."
+        )
     frontend_request = CoarseFrontendRequest(
         h5ad_t=args.h5ad_t,
         h5ad_tp=args.h5ad_tp,
@@ -105,6 +152,13 @@ def main() -> None:
         grn_projection_seed=args.grn_projection_seed,
         grn_knn_k=args.grn_knn_k,
         grn_graph_weight=args.grn_graph_weight,
+        maturity_t=args.maturity_t,
+        maturity_tp=args.maturity_tp,
+        maturity_id_column=args.maturity_id_column,
+        maturity_column=args.maturity_column,
+        maturity_confidence_column=args.maturity_confidence_column,
+        maturity_normalization=args.maturity_normalization,
+        maturity_direction=args.maturity_direction,
     )
     prepared = prepare_coarse_input(args.method, frontend_request)
     config = WYTDeltaEIConfig(
@@ -129,6 +183,8 @@ def main() -> None:
         lambda_proto=args.lambda_proto,
         lambda_min_usage=args.lambda_min_usage,
         lambda_max_usage=args.lambda_max_usage,
+        lambda_dev=lambda_dev,
+        development_min_state_mass=args.development_min_state_mass,
         embedding_target_std=args.embedding_target_std,
         prototype_max_cosine=args.prototype_max_cosine,
         min_usage_frac=args.min_usage_frac,

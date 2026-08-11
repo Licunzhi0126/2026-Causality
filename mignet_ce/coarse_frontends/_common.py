@@ -43,6 +43,13 @@ class CoarseFrontendRequest:
     grn_projection_seed: int = 20260713
     grn_knn_k: int = 50
     grn_graph_weight: float = 0.2
+    maturity_t: Path | None = None
+    maturity_tp: Path | None = None
+    maturity_id_column: str = "spot_id"
+    maturity_column: str = "maturity"
+    maturity_confidence_column: str | None = None
+    maturity_normalization: str = "minmax"
+    maturity_direction: str = "higher_is_more_mature"
 
     def validate(self) -> None:
         for name, value in (
@@ -78,6 +85,26 @@ class CoarseFrontendRequest:
             raise ValueError("grn_knn_k must be positive.")
         if not 0.0 <= self.grn_graph_weight <= 1.0:
             raise ValueError("grn_graph_weight must be between 0 and 1.")
+        if (self.maturity_t is None) != (self.maturity_tp is None):
+            raise ValueError(
+                "maturity_t and maturity_tp must either both be provided or both be omitted."
+            )
+        for name, value in (
+            ("maturity_t", self.maturity_t),
+            ("maturity_tp", self.maturity_tp),
+        ):
+            if value is not None and not Path(value).exists():
+                raise FileNotFoundError(f"{name} does not exist: {value}")
+        if self.maturity_normalization not in {"none", "minmax", "rank"}:
+            raise ValueError("maturity_normalization must be one of none, minmax, rank.")
+        if self.maturity_direction not in {
+            "higher_is_more_mature",
+            "higher_is_more_primitive",
+        }:
+            raise ValueError(
+                "maturity_direction must be higher_is_more_mature or "
+                "higher_is_more_primitive."
+            )
 
 
 @dataclass(frozen=True)

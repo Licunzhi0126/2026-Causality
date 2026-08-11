@@ -117,4 +117,18 @@ def write_final_arrays(
         np.save(out_dir / "coords_t.npy", np.asarray(prepared.coords_t, dtype=np.float32))
     if prepared.coords_tp is not None:
         np.save(out_dir / "coords_tp.npy", np.asarray(prepared.coords_tp, dtype=np.float32))
+    if prepared.maturity_t is not None:
+        np.save(out_dir / "maturity_t.npy", np.asarray(prepared.maturity_t, dtype=np.float32))
+    if prepared.maturity_tp is not None:
+        np.save(out_dir / "maturity_tp.npy", np.asarray(prepared.maturity_tp, dtype=np.float32))
+    if prepared.maturity_confidence_t is not None:
+        np.save(
+            out_dir / "maturity_confidence_t.npy",
+            np.asarray(prepared.maturity_confidence_t, dtype=np.float32),
+        )
+    if prepared.maturity_confidence_tp is not None:
+        np.save(
+            out_dir / "maturity_confidence_tp.npy",
+            np.asarray(prepared.maturity_confidence_tp, dtype=np.float32),
+        )
     write_json(out_dir / "summary.json", summary)

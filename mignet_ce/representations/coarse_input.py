@@ -46,6 +46,11 @@ class PreparedCoarseInput:
     independent_width_feature_blocks: frozenset[str] = field(default_factory=frozenset)
     coords_t: np.ndarray | None = None
     coords_tp: np.ndarray | None = None
+    maturity_t: np.ndarray | None = None
+    maturity_tp: np.ndarray | None = None
+    maturity_confidence_t: np.ndarray | None = None
+    maturity_confidence_tp: np.ndarray | None = None
+    maturity_provenance: Mapping[str, object] = field(default_factory=dict)
     provenance: Mapping[str, object] = field(default_factory=dict)
     posthoc_evaluator: PosthocEvaluator | None = None
 
@@ -115,6 +120,23 @@ class PreparedCoarseInput:
                 array = np.asarray(coords)
                 if array.ndim != 2 or array.shape[0] != expected_rows:
                     raise ValueError(f"{name} row count does not match units.")
+        if (self.maturity_t is None) != (self.maturity_tp is None):
+            raise ValueError("maturity_t and maturity_tp must be provided together.")
+        for name, values, expected_rows in (
+            ("maturity_t", self.maturity_t, n_t),
+            ("maturity_tp", self.maturity_tp, n_tp),
+            ("maturity_confidence_t", self.maturity_confidence_t, n_t),
+            ("maturity_confidence_tp", self.maturity_confidence_tp, n_tp),
+        ):
+            if values is None:
+                continue
+            array = np.asarray(values)
+            if array.ndim != 1 or array.shape[0] != expected_rows:
+                raise ValueError(f"{name} must have shape ({expected_rows},).")
+            if not np.isfinite(array).all():
+                raise ValueError(f"{name} contains non-finite values.")
+            if name.startswith("maturity_confidence") and np.any(array < 0.0):
+                raise ValueError(f"{name} must contain non-negative values.")
 
     def manifest(self) -> dict[str, object]:
         return {
@@ -141,6 +163,11 @@ class PreparedCoarseInput:
             ),
             "coords_available_t": self.coords_t is not None,
             "coords_available_tp": self.coords_tp is not None,
+            "maturity_available_t": self.maturity_t is not None,
+            "maturity_available_tp": self.maturity_tp is not None,
+            "maturity_confidence_available_t": self.maturity_confidence_t is not None,
+            "maturity_confidence_available_tp": self.maturity_confidence_tp is not None,
+            "maturity_provenance": dict(self.maturity_provenance),
             "posthoc_evaluation_available": self.posthoc_evaluator is not None,
             "provenance": dict(self.provenance),
         }
