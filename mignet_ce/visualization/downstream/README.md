@@ -1,5 +1,45 @@
 # 因果涌现下游分析基础设施
 
+## 正式四映射全量入口（2026-08-11）
+
+正式下游分析使用现有主题目录，不使用单体 `unified_suite.py`：
+
+- `determinism_degeneracy/`：四映射 EI、ΔEI 与分解；
+- `spatial/`：state EI 空间图、有效状态数与空间形态；
+- `dynamic_closure/`：信息闭合恒等式、三面板闭合主图和六组表示一致性；
+- `null_model/`：matched partition null；
+- `grn_cci/`：共同 spot 基底上的 GRN/CCI mechanism；
+- `fate_path/`：四时点 macro fate chain；
+- `perturbation/`：targeted 与 matched-random 虚拟扰动。
+
+四个正式宏观研究对象为：
+
+1. Seurat K150；
+2. Seurat K40；
+3. `complete_combined_coarse`；
+4. `complete_combined_coarse_maturity_cci_grn`。
+
+Spot 仅作为微观 EI/空间参考，不作为第五个粗粒化结果。
+
+```powershell
+python -u scripts/run_unified_downstream_analysis.py `
+  --data-root <E1S1_domain_factory> `
+  --cache-root <full_cache_root> `
+  --output-dir <new_output_directory> `
+  --device auto
+```
+
+正式入口锁定完整 benchmark：两个 optimized 方法乘三个相邻时间对，共六个
+DeltaEI 作业；`K=40`、`epochs=1500`、NMF `5/300`（大目标 `60`）、matched
+null `200`、perturbation random `200`。正式 CLI 不提供降低这些参数的选项，
+也不会读取 preview、残缺或 manifest 不匹配的缓存。正式缓存位于
+`<cache-root>/full/<profile-id>/`，旧结果不会被删除或覆盖。
+
+正式输出为 11 张 CSV 表、9 张 PNG、9 张 PDF，以及
+`audit/validation_checks.csv` 和 `audit/manifest.json`。
+
+下文是保留的历史 K150/K40 分析入口与兼容说明。
+
 本目录只提供分析、数据读取和六面板绘图函数，不包含可直接运行的模块入口。
 正式代码不会读取或导入 `output/report` 中的博物馆代码。
 

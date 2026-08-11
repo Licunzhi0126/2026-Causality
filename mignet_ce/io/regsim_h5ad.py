@@ -19,7 +19,10 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
-import anndata as ad
+try:
+    import anndata as ad
+except ImportError:  # optional in lightweight full-downstream environments
+    ad = None
 import numpy as np
 import pandas as pd
 
@@ -66,6 +69,8 @@ def discover_regulatory_columns(h5ad_path: Path) -> dict[str, str]:
     path = Path(h5ad_path)
     if not path.exists():
         raise FileNotFoundError(f"RegSim activity H5AD does not exist: {path}")
+    if ad is None:
+        raise ImportError("anndata is required only for RegSim H5AD activity readers")
     adata = ad.read_h5ad(path, backed="r")
     try:
         return regulatory_column_map(list(adata.obs.columns))
@@ -97,6 +102,8 @@ def _read_obs_activity(
     path = Path(h5ad_path)
     if not path.exists():
         raise FileNotFoundError(f"RegSim activity H5AD does not exist: {path}")
+    if ad is None:
+        raise ImportError("anndata is required only for RegSim H5AD activity readers")
     adata = ad.read_h5ad(path, backed="r")
     try:
         obs = adata.obs.copy()
@@ -121,6 +128,8 @@ def _read_formal_units(unit_h5ad_path: Path) -> list[str]:
     path = Path(unit_h5ad_path)
     if not path.exists():
         raise FileNotFoundError(f"Formal unit H5AD does not exist: {path}")
+    if ad is None:
+        raise ImportError("anndata is required only for RegSim H5AD activity readers")
     adata = ad.read_h5ad(path, backed="r")
     try:
         return adata.obs_names.astype(str).tolist()

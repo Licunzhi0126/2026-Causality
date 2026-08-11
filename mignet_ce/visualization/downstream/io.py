@@ -77,12 +77,57 @@ def read_h5ad_expression(path: Path, *, prefer_counts: bool = True) -> tuple[sp.
     return matrix, units, genes
 
 
+def read_h5ad_units_coords(path: Path) -> tuple[list[str], np.ndarray]:
+    """Read spot identifiers and two-dimensional coordinates without AnnData."""
+
+    source = Path(path)
+    with h5py.File(source, "r") as handle:
+        units = read_h5ad_index(handle["obs"]).astype(str).tolist()
+        if "obsm" in handle and "spatial" in handle["obsm"]:
+            coords = np.asarray(handle["obsm"]["spatial"][()], dtype=float)[:, :2]
+        elif "x" in handle["obs"] and "y" in handle["obs"]:
+            coords = np.column_stack(
+                [
+                    np.asarray(handle["obs"]["x"][()], dtype=float),
+                    np.asarray(handle["obs"]["y"][()], dtype=float),
+                ]
+            )
+        else:
+            coords = np.zeros((len(units), 2), dtype=float)
+    if coords.shape != (len(units), 2):
+        raise ValueError(f"Coordinate shape {coords.shape} does not match {len(units)} units in {source}")
+    return units, coords
+
+
+def load_npz_matrix(path: Path) -> np.ndarray:
+    """Load a scipy sparse archive or a regular NumPy archive as a dense matrix."""
+
+    source = Path(path)
+    try:
+        return np.asarray(sp.load_npz(source).toarray(), dtype=float)
+    except (OSError, ValueError, KeyError):
+        archive = np.load(source)
+        if isinstance(archive, np.ndarray):
+            return np.asarray(archive, dtype=float)
+        try:
+            key = "pij" if "pij" in archive.files else archive.files[0]
+            return np.asarray(archive[key], dtype=float)
+        finally:
+            archive.close()
+
+
 def _layer_stems(layer: str, organ: str, time: str) -> tuple[str, ...]:
     try:
         prefixes = LAYER_PREFIXES[layer]
     except KeyError as exc:
         raise ValueError(f"Unsupported layer {layer!r}") from exc
     return tuple(f"{prefix}_{organ}_{time}" for prefix in prefixes)
+
+
+def canonical_layer_stem(layer: str, organ: str, time: str) -> str:
+    """Return the primary on-disk stem used by the production data factory."""
+
+    return _layer_stems(layer, organ, time)[0]
 
 
 def _first_existing(candidates: Iterable[Path], description: str) -> Path:
@@ -137,6 +182,25 @@ def cci_path(data_root: Path, layer: str, time: str, organ: str = "heart") -> Pa
         ),
         f"{layer} CCI for {organ} {time}",
     )
+
+
+def cci_index_path(data_root: Path, layer: str, time: str, organ: str = "heart") -> Path:
+    stems = _layer_stems(layer, organ, time)
+    return _first_existing(
+        (
+            Path(data_root) / folder / layer / f"{stem}_index.tsv"
+            for folder in ("cci", "cci_clean")
+            for stem in stems
+        ),
+        f"{layer} CCI index for {organ} {time}",
+    )
+
+
+def read_index(path: Path) -> list[str]:
+    frame = pd.read_csv(path, sep="\t")
+    if frame.empty:
+        raise ValueError(f"CCI index is empty: {path}")
+    return frame.iloc[:, 0].astype(str).tolist()
 
 
 def grn_path(data_root: Path, layer: str, time: str, organ: str = "heart") -> Path:

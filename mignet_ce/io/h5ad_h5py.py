@@ -37,9 +37,16 @@ def read_h5ad_axis_names(path: Path | str) -> tuple[list[str], list[str]]:
 def read_h5ad_spatial(path: Path | str) -> np.ndarray | None:
     source = Path(path)
     with h5py.File(source, "r") as handle:
-        if "obsm" not in handle or "spatial" not in handle["obsm"]:
-            return None
-        return np.asarray(handle["obsm"]["spatial"][()], dtype=np.float32)[:, :2]
+        if "obsm" in handle and "spatial" in handle["obsm"]:
+            return np.asarray(handle["obsm"]["spatial"][()], dtype=np.float32)[:, :2]
+        if "obs" in handle and "x" in handle["obs"] and "y" in handle["obs"]:
+            return np.column_stack(
+                [
+                    np.asarray(handle["obs"]["x"][()], dtype=np.float32),
+                    np.asarray(handle["obs"]["y"][()], dtype=np.float32),
+                ]
+            )
+        return None
 
 
 def _encoding_type(node: h5py.Group) -> str:

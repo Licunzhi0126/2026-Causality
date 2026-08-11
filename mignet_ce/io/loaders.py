@@ -10,11 +10,15 @@ import numpy as np
 if not hasattr(np, "unicode_"):
     np.unicode_ = np.str_
 
-import anndata as ad
+try:
+    import anndata as ad
+except ImportError:  # optional for sparse full downstream preparation
+    ad = None
 import pandas as pd
 import scipy.sparse as sp
 
 from mignet_ce.config import LAYER_SPECS, LayerSpec
+from mignet_ce.io.h5ad_h5py import read_h5ad_axis_names, read_h5ad_csr_matrix, read_h5ad_spatial
 
 
 @dataclass(frozen=True)
@@ -97,7 +101,7 @@ def natural_sort(values: Sequence[str]) -> List[str]:
     return sorted(map(str, values), key=key)
 
 
-def choose_count_matrix(adata: ad.AnnData):
+def choose_count_matrix(adata):
     for key in ("count", "counts"):
         if key in adata.layers:
             return adata.layers[key]
@@ -113,6 +117,25 @@ def safe_dense(x) -> np.ndarray:
 
 
 def read_expression_h5ad(path: Path) -> ExpressionData:
+    if ad is None:
+        units, genes = read_h5ad_axis_names(path)
+        matrix = read_h5ad_csr_matrix(path, layer="count").astype(float)
+        expr = pd.DataFrame.sparse.from_spmatrix(matrix, index=units, columns=genes)
+        spatial = read_h5ad_spatial(path)
+        if spatial is None:
+            coords = pd.DataFrame(
+                np.zeros((len(units), 2), dtype=float),
+                index=units,
+                columns=["x", "y"],
+            )
+        else:
+            coords = pd.DataFrame(
+                np.asarray(spatial, dtype=float)[:, :2],
+                index=units,
+                columns=["x", "y"],
+            )
+        obs = pd.DataFrame(index=pd.Index(units, name="unit_id"))
+        return ExpressionData(units=units, genes=genes, expr=expr, coords=coords, obs=obs)
     adata = ad.read_h5ad(path)
     matrix = safe_dense(choose_count_matrix(adata)).astype(float, copy=False)
     units = adata.obs_names.astype(str).tolist()
@@ -132,6 +155,8 @@ def read_expression_h5ad(path: Path) -> ExpressionData:
 
 
 def peek_h5ad_units(path: Path) -> List[str]:
+    if ad is None:
+        return read_h5ad_axis_names(path)[0]
     adata = ad.read_h5ad(path, backed="r")
     try:
         return adata.obs_names.astype(str).tolist()
@@ -141,6 +166,8 @@ def peek_h5ad_units(path: Path) -> List[str]:
 
 
 def peek_h5ad_genes(path: Path) -> List[str]:
+    if ad is None:
+        return read_h5ad_axis_names(path)[1]
     adata = ad.read_h5ad(path, backed="r")
     try:
         return adata.var_names.astype(str).tolist()

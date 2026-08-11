@@ -174,24 +174,39 @@ def test_cci_method_calls_registered_light_cci(monkeypatch, tmp_path) -> None:
     assert prepared.maturity_t is not None
 
 
-def test_cci_grn_method_calls_registered_light_cci_grn(monkeypatch, tmp_path) -> None:
-    calls: list[str] = []
-
-    def fake_get(method: str):
-        calls.append(method)
-        return _FakeBuilder(method)
-
-    monkeypatch.setattr(
-        "wyt_deltaei_coarse_grain.complete_combined_maturity.get_network_builder",
-        fake_get,
+def test_cci_grn_method_uses_sparse_complete_stage(tmp_path) -> None:
+    source = _write_real_network_stage(tmp_path, "sparse_t")
+    target = _write_real_network_stage(tmp_path, "sparse_tp")
+    maturity_t = tmp_path / "sparse_maturity_t.csv"
+    maturity_tp = tmp_path / "sparse_maturity_tp.csv"
+    _write_maturity(maturity_t, ["a", "b", "c"])
+    _write_maturity(maturity_tp, ["a", "b", "c"])
+    request = CoarseFrontendRequest(
+        h5ad_t=source.h5ad,
+        h5ad_tp=target.h5ad,
+        cci_t=source.cci_total,
+        cci_tp=target.cci_total,
+        cci_index_t=source.cci_index,
+        cci_index_tp=target.cci_index,
+        grn_t=source.grn_edges,
+        grn_tp=target.grn_edges,
+        maturity_t=maturity_t,
+        maturity_tp=maturity_tp,
+        nmf_components=2,
+        nmf_max_iter=2,
+        mid_dim=2,
+        grn_topk_targets=3,
+        grn_state_dim=4,
     )
-    prepared = prepare_cci_grn(_request(tmp_path))
-    assert calls == ["light_cci_grn"]
+    prepared = prepare_cci_grn(request)
     assert prepared.method == "complete_combined_coarse_maturity_cci_grn"
     assert prepared.provenance["source_network_method"] == "light_cci_grn"
-    assert prepared.provenance["network_builder_class"] == "LightCCIGRNNetworkBuilder"
+    assert prepared.provenance["loader_optimization"].startswith("sparse_complete_stage")
+    assert prepared.provenance["network_adjacency_policy"] == "row_normalized_true_CCI"
     assert prepared.provenance["uses_grn"] is True
     assert set(prepared.feature_blocks_t) == {"N", "X"}
+    assert prepared.maturity_t is not None
+    assert prepared.maturity_tp is not None
 
 
 def _write_real_network_stage(tmp_path: Path, label: str) -> CoarseTemporalStageRequest:

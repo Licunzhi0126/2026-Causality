@@ -36,6 +36,36 @@ from .plots import (
     plot_single_step_closure,
     plot_spatial_state_ei,
 )
+from .determinism_degeneracy.analysis import build_unified_ei_tables
+from .determinism_degeneracy.plots import plot_unified_ei_overview
+from .dynamic_closure.analysis import (
+    build_cross_representation_consistency,
+    build_unified_closure_table,
+)
+from .dynamic_closure.plots import (
+    plot_cross_representation_consistency,
+    plot_dynamical_closure_three_panels,
+)
+from .fate_path.analysis import build_unified_fate_paths
+from .fate_path.plots import plot_unified_fate_paths
+from .grn_cci.analysis import build_unified_mechanism_table
+from .grn_cci.plots import plot_unified_mechanism
+from .mappings import load_all_mapping_records
+from .null_model.analysis import build_unified_matched_null
+from .null_model.plots import plot_unified_random_null
+from .perturbation.analysis import build_unified_perturbation_curves
+from .perturbation.plots import plot_unified_perturbation
+from .preparation import ensure_full_unified_inputs
+from .reporting import audit_unified_outputs, unified_run_manifest
+from .spatial.analysis import (
+    build_unified_effective_states,
+    build_unified_spatial_metrics,
+    build_unified_spatial_spots,
+)
+from .spatial.plots import (
+    plot_unified_effective_spatial,
+    plot_unified_spatial_state_ei,
+)
 
 
 TABLE_FILES = {
@@ -69,6 +99,34 @@ FIGURE_FILES = {
     "mechanism": "fig08_grn_cci_mechanism.png",
     "fate": "fig09_macro_fate_paths.png",
     "perturbation": "fig10_virtual_perturbation.png",
+}
+
+
+UNIFIED_TABLE_FILES = {
+    "metrics": "01_metrics.csv",
+    "states": "02_states.csv",
+    "spatial_spots": "03_spatial_spots.csv",
+    "closure": "04_dynamical_closure.csv",
+    "spatial": "05_spatial_state_metrics.csv",
+    "effective": "06_effective_states.csv",
+    "mechanism": "07_grn_cci_mechanism.csv",
+    "null": "08_matched_random_null.csv",
+    "consistency": "09_cross_representation_consistency.csv",
+    "fate": "10_macro_fate_paths.csv",
+    "perturbation": "11_virtual_perturbation.csv",
+}
+
+
+UNIFIED_FIGURE_FILES = {
+    "ei": "fig01_causal_emergence_decomposition.png",
+    "spatial_ei": "fig02_state_level_ei_spatial.png",
+    "null": "fig03_matched_random_null.png",
+    "consistency": "fig04_cross_representation_consistency.png",
+    "effective": "fig05_effective_states_spatial.png",
+    "mechanism": "fig06_grn_cci_mechanism.png",
+    "fate": "fig07_macro_fate_paths.png",
+    "perturbation": "fig08_virtual_perturbation.png",
+    "closure": "fig09_dynamical_closure_three_panels.png",
 }
 
 
@@ -253,3 +311,102 @@ def render_downstream_figures(
     manifest_path = results_dir / "manifest.json"
     _write_json(_manifest(results_dir), manifest_path)
     return {"output_dir": results_dir, "figures_dir": figures_dir, "manifest": manifest_path}
+
+
+def _render_unified(
+    tables: dict[str, pd.DataFrame],
+    figures_dir: Path,
+) -> list[Path]:
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    paths = {name: figures_dir / filename for name, filename in UNIFIED_FIGURE_FILES.items()}
+    plot_unified_ei_overview(tables["metrics"], paths["ei"])
+    plot_unified_spatial_state_ei(tables["spatial_spots"], paths["spatial_ei"])
+    plot_unified_random_null(tables["null"], paths["null"])
+    plot_cross_representation_consistency(tables["consistency"], paths["consistency"])
+    plot_unified_effective_spatial(tables["effective"], tables["spatial"], paths["effective"])
+    plot_unified_mechanism(tables["mechanism"], paths["mechanism"])
+    plot_unified_fate_paths(tables["fate"], paths["fate"])
+    plot_unified_perturbation(tables["perturbation"], paths["perturbation"])
+    plot_dynamical_closure_three_panels(tables["closure"], tables["metrics"], paths["closure"])
+    return [paths[name] for name in UNIFIED_FIGURE_FILES]
+
+
+def run_unified_downstream_analysis(config) -> dict[str, Path]:
+    """Run the formal four-representation workflow with locked full DeltaEI jobs."""
+
+    cfg = config.normalized()
+    cfg.validate()
+    output_dir = cfg.output_dir
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise RuntimeError(
+            f"Formal output directory is not empty: {output_dir}. "
+            "Use a new output directory; existing downstream results are never overwritten."
+        )
+    tables_dir = output_dir / "tables"
+    figures_dir = output_dir / "figures"
+    audit_dir = output_dir / "audit"
+
+    ensure_full_unified_inputs(cfg)
+    records = load_all_mapping_records(cfg)
+    metrics, states = build_unified_ei_tables(cfg, records)
+    spatial_spots = build_unified_spatial_spots(cfg, records)
+    closure = build_unified_closure_table(cfg, records)
+    spatial = build_unified_spatial_metrics(cfg, records)
+    effective = build_unified_effective_states(cfg, records)
+    mechanism = build_unified_mechanism_table(cfg, records)
+    matched_null = build_unified_matched_null(cfg, records)
+    consistency = build_cross_representation_consistency(cfg, records)
+    fate = build_unified_fate_paths(cfg, records)
+    perturbation = build_unified_perturbation_curves(cfg, records, mechanism)
+    tables = {
+        "metrics": metrics,
+        "states": states,
+        "spatial_spots": spatial_spots,
+        "closure": closure,
+        "spatial": spatial,
+        "effective": effective,
+        "mechanism": mechanism,
+        "null": matched_null,
+        "consistency": consistency,
+        "fate": fate,
+        "perturbation": perturbation,
+    }
+    # Delay materializing the formal results tree until all full-scale caches
+    # and downstream tables are ready.  A failed DeltaEI job can then be
+    # resumed with the same result path instead of leaving an empty tree that
+    # the no-overwrite guard rejects.
+    for name, frame in tables.items():
+        _write_csv(frame, tables_dir / UNIFIED_TABLE_FILES[name])
+
+    figure_pngs = _render_unified(tables, figures_dir)
+    checks = audit_unified_outputs(cfg, tables, figure_pngs)
+    checks_path = audit_dir / "validation_checks.csv"
+    _write_csv(checks, checks_path)
+    manifest = unified_run_manifest(cfg, tables, figure_pngs)
+    manifest["validation_passed"] = bool(checks["passed"].all())
+    manifest_path = audit_dir / "manifest.json"
+    _write_json(manifest, manifest_path)
+    if not bool(checks["passed"].all()):
+        failures = checks.loc[~checks["passed"], ["check", "detail"]].to_dict(orient="records")
+        raise RuntimeError(f"Unified downstream audit failed: {failures}")
+    return {
+        "output_dir": output_dir,
+        "tables_dir": tables_dir,
+        "figures_dir": figures_dir,
+        "validation": checks_path,
+        "manifest": manifest_path,
+    }
+
+
+def render_unified_downstream_figures(results_dir: Path) -> dict[str, object]:
+    """Re-render figures only from an existing formal table directory."""
+
+    root = Path(results_dir).resolve()
+    tables_dir = root / "tables"
+    tables = {
+        name: pd.read_csv(tables_dir / filename)
+        for name, filename in UNIFIED_TABLE_FILES.items()
+    }
+    figures_dir = root / "figures"
+    figure_pngs = _render_unified(tables, figures_dir)
+    return {"output_dir": root, "figures_dir": figures_dir, "figure_count": len(figure_pngs)}

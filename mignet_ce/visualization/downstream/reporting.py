@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from typing import Iterable
 
 from .config import DownstreamConfig
+from .mappings import MAPPINGS
 
 
 def summarize_findings(
@@ -96,4 +99,86 @@ def summarize_findings(
         "perturbation_mean_full_dose_drop": {
             key: float(value) for key, value in perturbation_summary.items()
         },
+    }
+
+
+def audit_unified_outputs(
+    cfg,
+    tables: dict[str, pd.DataFrame],
+    figure_pngs: Iterable[Path],
+) -> pd.DataFrame:
+    checks: list[dict[str, object]] = []
+
+    def add(name: str, passed: bool, detail: object = "") -> None:
+        checks.append({"check": name, "passed": bool(passed), "detail": str(detail)})
+
+    full_manifest = cfg.full_cache_root / "full_benchmark_manifest.json"
+    add("full benchmark manifest exists", full_manifest.exists(), full_manifest)
+    if full_manifest.exists():
+        import json
+
+        payload = json.loads(full_manifest.read_text(encoding="utf-8"))
+        add("exactly six full DeltaEI jobs", payload.get("deltaei_job_count") == 6, payload.get("deltaei_job_count"))
+        add("exactly nine natural NG_KLot caches", payload.get("natural_cache_count") == 9, payload.get("natural_cache_count"))
+        add("locked full profile id", payload.get("profile_id") == cfg.profile.profile_id, payload.get("profile_id"))
+
+    mapping_tables = (
+        "metrics",
+        "states",
+        "spatial_spots",
+        "closure",
+        "spatial",
+        "effective",
+        "mechanism",
+        "null",
+        "fate",
+        "perturbation",
+    )
+    expected_mappings = set(MAPPINGS)
+    for name in mapping_tables:
+        table = tables[name]
+        present = set(table["mapping"].dropna().astype(str)) if "mapping" in table else set()
+        add(f"{name}: all four mappings", expected_mappings.issubset(present), sorted(present))
+
+    closure = tables["closure"]
+    identity = (
+        closure["I_available_bits"]
+        - closure["I_retained_bits"]
+        - closure["closure_leakage_bits"]
+    ).abs()
+    add("closure information identity", bool((identity < 1e-8).all()), float(identity.max()))
+    add(
+        "direct-induced Q consistency complete",
+        "direct_induced_q_js" in closure and closure["direct_induced_q_js"].notna().all(),
+    )
+
+    consistency = tables["consistency"]
+    pair_count = consistency[["mapping_a", "mapping_b"]].drop_duplicates().shape[0]
+    add("all six representation pairs", pair_count == 6, pair_count)
+    add(
+        "consistency covers all four times",
+        set(consistency["time"].astype(str)) == set(cfg.times),
+        sorted(consistency["time"].astype(str).unique()),
+    )
+
+    pngs = tuple(map(Path, figure_pngs))
+    add("exactly nine expected PNG figures", len(pngs) == 9 and all(path.exists() for path in pngs), [path.name for path in pngs])
+    pdfs = tuple(path.with_suffix(".pdf") for path in pngs)
+    add("exactly nine matching PDF figures", len(pdfs) == 9 and all(path.exists() for path in pdfs), [path.name for path in pdfs])
+    return pd.DataFrame(checks)
+
+
+def unified_run_manifest(cfg, tables: dict[str, pd.DataFrame], figure_pngs: Iterable[Path]) -> dict[str, object]:
+    pngs = tuple(map(Path, figure_pngs))
+    return {
+        "workflow": "formal_full_unified_downstream",
+        "profile_id": cfg.profile.profile_id,
+        "full_profile": cfg.profile.__dict__,
+        "organ": cfg.organ,
+        "time_points": list(cfg.times),
+        "mappings": list(MAPPINGS),
+        "tables": {name: int(len(frame)) for name, frame in tables.items()},
+        "figures_png": [str(path) for path in pngs],
+        "figures_pdf": [str(path.with_suffix('.pdf')) for path in pngs],
+        "full_cache_root": str(cfg.full_cache_root),
     }

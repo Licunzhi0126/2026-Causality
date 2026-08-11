@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from ..mappings import COLORS as UNIFIED_COLORS, MAPPINGS
+
 from ..style import (
     MUTED,
     NAVY,
@@ -139,3 +141,87 @@ def plot_perturbation(curves: pd.DataFrame, path: Path) -> None:
     ax.grid(axis="y")
     add_panel_label(ax, "F")
     savefig(fig, path)
+
+
+def plot_unified_perturbation(curves: pd.DataFrame, path: Path) -> None:
+    set_publication_style()
+    pairs = list(dict.fromkeys(curves["time_pair"].astype(str)))
+    targets = ["high_state_ei", "high_cci_out", "high_grn_concentration", "matched_random"]
+    figure, axes = plt.subplots(2, 4, figsize=(18.0, 9.0), constrained_layout=True)
+    for column, mapping in enumerate(MAPPINGS):
+        ax = axes[0, column]
+        aggregate = (
+            curves[curves["mapping"] == mapping]
+            .groupby(["target", "dose"])["ei_drop_mean"]
+            .mean()
+            .reset_index()
+        )
+        for target in targets:
+            subset = aggregate[aggregate["target"] == target]
+            ax.plot(
+                subset["dose"],
+                subset["ei_drop_mean"],
+                marker="o",
+                ms=3.5,
+                lw=1.6,
+                color=TARGET_COLORS[target],
+                label=TARGET_LABELS[target],
+            )
+        ax.axhline(0, color=MUTED, lw=0.9)
+        ax.set_xlabel("Perturbation dose")
+        ax.set_ylabel("Mean EI decrease (bit)")
+        ax.set_title(mapping, fontsize=8)
+        ax.grid(True)
+        if column == 3:
+            ax.legend(fontsize=6.0)
+        add_panel_label(ax, chr(ord("A") + column))
+
+    for column, target in enumerate(targets[:3]):
+        ax = axes[1, column]
+        x_values = np.arange(len(pairs))
+        width = min(0.78 / len(MAPPINGS), 0.22)
+        offsets = (np.arange(len(MAPPINGS)) - (len(MAPPINGS) - 1) / 2) * width
+        for offset, mapping in zip(offsets, MAPPINGS):
+            values = []
+            for pair in pairs:
+                targeted = curves[
+                    (curves["mapping"] == mapping)
+                    & (curves["time_pair"] == pair)
+                    & (curves["target"] == target)
+                    & np.isclose(curves["dose"], 1.0)
+                ]["ei_drop_mean"]
+                random = curves[
+                    (curves["mapping"] == mapping)
+                    & (curves["time_pair"] == pair)
+                    & (curves["target"] == "matched_random")
+                    & np.isclose(curves["dose"], 1.0)
+                ]["ei_drop_mean"]
+                values.append(float(targeted.iloc[0] - random.iloc[0]))
+            ax.bar(x_values + offset, values, width * 0.92, color=UNIFIED_COLORS[mapping])
+        ax.axhline(0, color=MUTED, lw=0.9)
+        ax.set_xticks(x_values, [pair.replace("->", "→") for pair in pairs])
+        ax.set_ylabel("Targeted − random EI decrease")
+        ax.set_title(TARGET_LABELS[target])
+        ax.grid(axis="y")
+        add_panel_label(ax, chr(ord("E") + column))
+
+    ax = axes[1, 3]
+    ax.axis("off")
+    for index, mapping in enumerate(MAPPINGS):
+        ax.text(
+            0.05,
+            0.88 - index * 0.16,
+            mapping,
+            color=UNIFIED_COLORS[mapping],
+            fontsize=8,
+            weight="bold",
+            transform=ax.transAxes,
+        )
+    add_panel_label(ax, "H")
+    figure.suptitle(
+        "Virtual perturbation response across four representations",
+        color=NAVY,
+        fontsize=16,
+        weight="bold",
+    )
+    savefig(figure, path)

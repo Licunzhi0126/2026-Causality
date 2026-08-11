@@ -6,6 +6,11 @@ import pandas as pd
 from ..config import DownstreamConfig
 from ..io import load_domain_map, load_pij, load_units
 from ..metrics import aggregate_transition_by_overlap, ei_decomposition
+from ..dynamic_closure.analysis import (
+    effective_information,
+    information_closure_budget,
+    information_closure_budget_from_observed,
+)
 
 
 def build_random_null(
@@ -62,4 +67,47 @@ def build_random_null(
                     "EI": ei_decomposition(q_matrix)["EI"],
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def build_unified_matched_null(
+    cfg,
+    records_by_pair: dict[tuple[str, str], object],
+) -> pd.DataFrame:
+    """State-size-matched source partition null for every formal mapping."""
+
+    rng = np.random.default_rng(cfg.profile.random_seed)
+    rows: list[dict[str, object]] = []
+    for pair in cfg.adjacent_pairs:
+        for mapping in cfg.mapping_names:
+            record = records_by_pair[(mapping, pair)]
+            baseline = information_closure_budget(record.p, record.hs, record.ht)
+            observed = baseline["observed"]
+            labels = np.argmax(baseline["source_hard"], axis=1)
+            rows.append(
+                {
+                    "mapping": mapping,
+                    "time_pair": pair,
+                    "kind": "observed",
+                    "repeat": -1,
+                    "EI": effective_information(baseline["q_induced"]),
+                    "closure_leakage_bits": baseline["closure_leakage_bits"],
+                }
+            )
+            for repeat in range(cfg.profile.matched_null_repeats):
+                shuffled = labels.copy()
+                rng.shuffle(shuffled)
+                hard = np.zeros_like(baseline["source_hard"])
+                hard[np.arange(len(shuffled)), shuffled] = 1.0
+                random_budget = information_closure_budget_from_observed(observed, hard)
+                rows.append(
+                    {
+                        "mapping": mapping,
+                        "time_pair": pair,
+                        "kind": "matched_random",
+                        "repeat": repeat,
+                        "EI": effective_information(random_budget["q_induced"]),
+                        "closure_leakage_bits": random_budget["closure_leakage_bits"],
+                    }
+                )
     return pd.DataFrame(rows)

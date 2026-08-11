@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import anndata as ad
 import numpy as np
 import scipy.sparse as sp
 
 from mignet_ce.io.loaders import read_commot_index
+from mignet_ce.io.h5ad_h5py import read_h5ad_axis_names, read_h5ad_spatial
 from mignet_ce.io.regsim_h5ad import (
     RegSimFeatureBlock,
     build_regsim_feature_block,
@@ -153,25 +153,16 @@ def _load_cci(path: Path, index_path: Path, cci_min: float) -> tuple[sp.csr_matr
 
 
 def _h5ad_coords(path: Path, units: list[str]) -> np.ndarray | None:
-    data = ad.read_h5ad(path, backed="r")
-    try:
-        obs_names = data.obs_names.astype(str).tolist()
-        lookup = {unit: index for index, unit in enumerate(obs_names)}
-        missing = [unit for unit in units if unit not in lookup]
-        if missing:
-            raise ValueError(f"CCI units are missing from H5AD {path}: {missing[:10]}")
-        order = np.asarray([lookup[unit] for unit in units], dtype=int)
-        if "spatial" in data.obsm:
-            spatial = np.asarray(data.obsm["spatial"], dtype=np.float32)
-            return spatial[order, :2]
-        obs = data.obs
-        if {"x", "y"}.issubset(obs.columns):
-            values = obs.loc[:, ["x", "y"]].to_numpy(dtype=np.float32)
-            return values[order]
-        return None
-    finally:
-        if getattr(data, "isbacked", False):
-            data.file.close()
+    obs_names, _ = read_h5ad_axis_names(path)
+    lookup = {unit: index for index, unit in enumerate(obs_names)}
+    missing = [unit for unit in units if unit not in lookup]
+    if missing:
+        raise ValueError(f"CCI units are missing from H5AD {path}: {missing[:10]}")
+    order = np.asarray([lookup[unit] for unit in units], dtype=int)
+    spatial = read_h5ad_spatial(path)
+    if spatial is not None:
+        return np.asarray(spatial, dtype=np.float32)[order, :2]
+    return None
 
 
 def load_spot_pair(request: CoarseFrontendRequest) -> SpotPairData:
