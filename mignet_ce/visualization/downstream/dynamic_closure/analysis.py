@@ -425,25 +425,32 @@ def build_unified_closure_table(cfg, records_by_pair: dict[tuple[str, str], obje
         source, target = pair.split("->")
         for mapping in cfg.mapping_names:
             record = records_by_pair[(mapping, pair)]
-            budget = information_closure_budget(record.p, record.hs, record.ht)
-            direct = row_normalize(record.q_direct)
-            if direct.shape != budget["q_induced"].shape:
+            budget = information_closure_budget(
+                record.p_model_micro,
+                record.hard_s_full,
+                record.hard_t_full,
+            )
+            direct_full = row_normalize(record.q_model_full)
+            active_source = np.asarray(budget["source_active_columns"], dtype=int)
+            active_target = np.asarray(budget["target_active_columns"], dtype=int)
+            if (
+                len(active_source) == 0
+                or len(active_target) == 0
+                or active_source.max() >= direct_full.shape[0]
+                or active_target.max() >= direct_full.shape[1]
+            ):
                 raise ValueError(
-                    f"Compact direct Q {direct.shape} does not match induced Q "
+                    f"Full direct Q {direct_full.shape} cannot cover closure-active states "
+                    f"for {mapping} {pair}"
+                )
+            direct_compact = row_normalize(
+                direct_full[np.ix_(active_source, active_target)]
+            )
+            if direct_compact.shape != budget["q_induced"].shape:
+                raise ValueError(
+                    f"Closure-compact direct Q {direct_compact.shape} does not match induced Q "
                     f"{budget['q_induced'].shape} for {mapping} {pair}"
                 )
-            crossfit = crossfit_macro_q_error(
-                budget["observed"],
-                budget["source_hard"],
-                folds=cfg.profile.crossfit_folds,
-                weights=budget["weights"],
-                seed=cfg.profile.random_seed,
-            )
-            predicted_direct = row_normalize(budget["source_hard"] @ direct)
-            direct_js = float(np.sum(budget["weights"] * js_rows(budget["observed"], predicted_direct)))
-            induced_js = float(
-                np.sum(budget["weights"] * js_rows(budget["observed"], budget["predicted_induced"]))
-            )
             rows.append(
                 {
                     "mapping": mapping,
@@ -456,13 +463,14 @@ def build_unified_closure_table(cfg, records_by_pair: dict[tuple[str, str], obje
                     "closure_quality": budget["closure_quality"],
                     "signal_status": budget["signal_status"],
                     "information_identity_error": budget["information_identity_error"],
-                    "direct_induced_q_js": float(np.mean(js_rows(direct, budget["q_induced"]))),
-                    "induced_mean_js": induced_js,
-                    "separately_estimated_mean_js": direct_js,
-                    "q_operational_gap_js": direct_js - induced_js,
+                    "direct_induced_q_js": float(
+                        np.mean(js_rows(direct_compact, budget["q_induced"]))
+                    ),
                     "active_k_source": budget["source_hard"].shape[1],
                     "active_k_target": budget["target_hard"].shape[1],
-                    **crossfit,
+                    "model_k_source": direct_full.shape[0],
+                    "model_k_target": direct_full.shape[1],
+                    "analysis_space": "closure_hard_active",
                 }
             )
     return pd.DataFrame(rows)
@@ -473,10 +481,10 @@ def build_cross_representation_consistency(cfg, records_by_pair: dict[tuple[str,
         index = cfg.times.index(time)
         if index < len(cfg.times) - 1:
             record = records_by_pair[(mapping, cfg.adjacent_pairs[index])]
-            assignment, spots = record.hs, record.spots_s
+            assignment, spots = record.hard_s_full, record.spots_s
         else:
             record = records_by_pair[(mapping, cfg.adjacent_pairs[-1])]
-            assignment, spots = record.ht, record.spots_t
+            assignment, spots = record.hard_t_full, record.spots_t
         labels = np.argmax(assignment, axis=1)
         return dict(zip(map(str, spots), map(int, labels)))
 
@@ -498,6 +506,7 @@ def build_cross_representation_consistency(cfg, records_by_pair: dict[tuple[str,
                         "common_spots": len(common),
                         "NMI": normalized_mutual_info_score(left_values, right_values),
                         "ARI": adjusted_rand_score(left_values, right_values),
+                        "analysis_space": "hard_partition",
                     }
                 )
     return pd.DataFrame(rows)

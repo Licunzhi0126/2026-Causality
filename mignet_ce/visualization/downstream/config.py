@@ -95,8 +95,6 @@ class FullDeltaEIBenchmarkProfile:
     optimized_epochs: int = 1500
     nmf_components: int = 5
     nmf_max_iter: int = 300
-    large_target_nmf_max_iter: int = 60
-    large_target_threshold: int = 2500
     matched_null_repeats: int = 200
     perturb_random_repeats: int = 200
     crossfit_folds: int = 5
@@ -114,9 +112,9 @@ class FullDeltaEIBenchmarkProfile:
     @property
     def profile_id(self) -> str:
         return (
-            f"k{self.optimized_k}_e{self.optimized_epochs}_"
+            f"fullv2_k{self.optimized_k}_e{self.optimized_epochs}_"
             f"nmf{self.nmf_components}_i{self.nmf_max_iter}_"
-            f"l{self.large_target_nmf_max_iter}_seed{self.random_seed}"
+            f"seed{self.random_seed}"
         )
 
 

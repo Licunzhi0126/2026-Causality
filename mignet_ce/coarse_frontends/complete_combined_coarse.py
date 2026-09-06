@@ -101,6 +101,9 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             "encoder": "pairwise_zscore(concat(N,G))",
             "macro_feature_mode": "pool_expression_then_recompute_true_GRN_G",
             "macro_N_training_interface": "pool_spot_N_then_pairwise_zscore",
+            "nmf_components": int(request.nmf_components),
+            "nmf_max_iter_used": int(request.nmf_max_iter),
+            "feature_seed": int(request.seed),
             "strict_posthoc_protocol": (
                 "raw_and_rownorm_S_transpose_A_S_reextract_N_recompute_G"
             ),

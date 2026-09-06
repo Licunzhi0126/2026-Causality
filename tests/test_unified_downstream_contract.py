@@ -12,9 +12,10 @@ from mignet_ce.visualization.downstream.determinism_degeneracy.analysis import b
 from mignet_ce.visualization.downstream.dynamic_closure.analysis import (
     build_cross_representation_consistency,
     build_unified_closure_table,
+    effective_information,
 )
 from mignet_ce.visualization.downstream.fate_path.analysis import build_unified_fate_paths
-from mignet_ce.visualization.downstream.mappings import MAPPINGS, MappingRecord
+from mignet_ce.visualization.downstream.mappings import MAPPINGS, MappingRecord, is_optimized
 from mignet_ce.visualization.downstream.null_model.analysis import build_unified_matched_null
 from mignet_ce.visualization.downstream.perturbation.analysis import build_unified_perturbation_curves
 from mignet_ce.visualization.downstream.spatial.analysis import (
@@ -51,6 +52,7 @@ def test_formal_cli_exposes_no_reduced_deltaei_controls() -> None:
     assert "--nmf-max-iter" not in option_strings
     assert "--skip-prepare" not in option_strings
     assert "--cache-root" in option_strings
+    assert "--large-target-nmf-max-iter" not in option_strings
 
 
 def test_unified_output_contract_is_eleven_tables_and_nine_figures() -> None:
@@ -73,7 +75,7 @@ def _synthetic_records():
     pairs = ("11.5->12.5", "12.5->13.5", "13.5->14.5")
     spots = tuple(f"s{index}" for index in range(6))
     labels = np.asarray([0, 0, 0, 1, 1, 1])
-    assignment = np.zeros((6, 2), dtype=float)
+    assignment = np.zeros((6, 3), dtype=float)
     assignment[np.arange(6), labels] = 1.0
     transition = np.asarray(
         [
@@ -86,12 +88,27 @@ def _synthetic_records():
         ],
         dtype=float,
     )
-    q_matrix = np.asarray([[0.82, 0.18], [0.22, 0.78]], dtype=float)
+    q_matrix = np.asarray(
+        [[0.72, 0.18, 0.10], [0.17, 0.73, 0.10], [0.20, 0.20, 0.60]],
+        dtype=float,
+    )
     coords = np.asarray([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]], dtype=float)
     records = {}
     for mapping in MAPPINGS:
         method = mapping.replace("Optimized ", "")
         for pair in pairs:
+            micro_ei = effective_information(transition)
+            macro_ei = effective_information(q_matrix)
+            summary = (
+                {
+                    "K": 3,
+                    "EI_micro_fixed": micro_ei,
+                    "EI_macro_best_checkpoint": macro_ei,
+                    "delta_EI_best_checkpoint": macro_ei - micro_ei,
+                }
+                if is_optimized(mapping)
+                else {}
+            )
             records[(mapping, pair)] = MappingRecord(
                 mapping=mapping,
                 pair=pair,
@@ -105,7 +122,7 @@ def _synthetic_records():
                 soft_t=assignment,
                 coords_s=coords,
                 coords_t=coords,
-                summary={"K": 2},
+                summary=summary,
                 method=method,
             )
     return pairs, records
@@ -131,7 +148,7 @@ def test_topic_split_pipeline_renders_nine_png_and_pdf_figures(tmp_path) -> None
     mechanism_rows = []
     for pair in pairs:
         for mapping in MAPPINGS:
-            for state in range(2):
+            for state in range(3):
                 mechanism_rows.append(
                     {
                         "mapping": mapping,
@@ -145,6 +162,11 @@ def test_topic_split_pipeline_renders_nine_png_and_pdf_figures(tmp_path) -> None
                 )
     mechanism = pd.DataFrame(mechanism_rows)
     perturbation = build_unified_perturbation_curves(cfg, records, mechanism)
+    assert set(metrics["model_source_states"]) == {3}
+    assert set(metrics["hard_active_source_states"]) == {2}
+    assert set(closure["model_k_source"]) == {3}
+    assert set(closure["active_k_source"]) == {2}
+    assert set(states["state_index"]) == {0, 1, 2}
     tables = {
         "metrics": metrics,
         "states": states,

@@ -90,6 +90,46 @@ def _maturity_source(cfg: UnifiedDownstreamConfig, time: str) -> tuple[str, Path
     )
 
 
+def _validated_maturity_source(
+    cfg: UnifiedDownstreamConfig,
+    time: str,
+) -> tuple[str, Path, str, str]:
+    """Validate maturity schema and spot coverage before any DeltaEI training."""
+
+    kind, source = _maturity_source(cfg, time)
+    expected_columns = {"spot_id", "unit_id", "maturity", "pseudotime"}
+    frame = pd.read_csv(source, usecols=lambda column: column in expected_columns)
+    id_column = (
+        "spot_id"
+        if kind == "maturity" and "spot_id" in frame
+        else (
+            "spot_id"
+            if "spot_id" in frame
+            else "unit_id" if kind == "developmental_features" and "unit_id" in frame else ""
+        )
+    )
+    value_column = "maturity" if kind == "maturity" else "pseudotime"
+    if not id_column or value_column not in frame:
+        expected = (
+            "spot_id + maturity"
+            if kind == "maturity"
+            else "unit_id/spot_id + pseudotime"
+        )
+        raise ValueError(f"{source} must contain {expected}")
+    ids = frame[id_column].astype(str)
+    if ids.duplicated().any():
+        duplicates = ids[ids.duplicated()].head(10).tolist()
+        raise ValueError(f"Maturity input {source} contains duplicate IDs: {duplicates}")
+    values = pd.to_numeric(frame[value_column], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError(f"Maturity input {source} contains non-finite {value_column} values")
+    spot_ids = read_index(cci_index_path(cfg.data_root, "spot", time, cfg.organ))
+    missing = sorted(set(map(str, spot_ids)) - set(ids))
+    if missing:
+        raise ValueError(f"Maturity input {source} misses spot IDs: {missing[:10]}")
+    return kind, source, id_column, value_column
+
+
 def preflight_full_inputs(cfg: UnifiedDownstreamConfig) -> pd.DataFrame:
     """Resolve every required input before any expensive DeltaEI job starts."""
 
@@ -98,15 +138,35 @@ def preflight_full_inputs(cfg: UnifiedDownstreamConfig) -> pd.DataFrame:
     for layer in NATURAL_LAYERS:
         for time in cfg.times:
             for kind, path in stage_input_paths(cfg, layer, time).items():
-                rows.append({"layer": layer, "time": time, "kind": kind, **_input_descriptor(path)})
+                rows.append(
+                    {
+                        "layer": layer,
+                        "time": time,
+                        "kind": kind,
+                        "id_column": "not_applicable",
+                        "value_column": "not_applicable",
+                        "schema_validated": False,
+                        **_input_descriptor(path),
+                    }
+                )
     for time in cfg.times:
-        kind, path = _maturity_source(cfg, time)
-        rows.append({"layer": "spot", "time": time, "kind": kind, **_input_descriptor(path)})
+        kind, path, id_column, value_column = _validated_maturity_source(cfg, time)
+        rows.append(
+            {
+                "layer": "spot",
+                "time": time,
+                "kind": kind,
+                "id_column": id_column,
+                "value_column": value_column,
+                "schema_validated": True,
+                **_input_descriptor(path),
+            }
+        )
     return pd.DataFrame(rows)
 
 
 def _materialize_maturity_csv(cfg: UnifiedDownstreamConfig, time: str) -> Path:
-    kind, source = _maturity_source(cfg, time)
+    kind, source, id_column, _value_column = _validated_maturity_source(cfg, time)
     if kind == "maturity":
         return source
     output = cfg.full_cache_root / "derived_maturity" / f"{cfg.organ}_{time}_maturity.csv"
@@ -125,9 +185,6 @@ def _materialize_maturity_csv(cfg: UnifiedDownstreamConfig, time: str) -> Path:
             "Use a new cache root; existing files will not be overwritten."
         )
     frame = pd.read_csv(source)
-    id_column = "unit_id" if "unit_id" in frame else "spot_id" if "spot_id" in frame else frame.columns[0]
-    if "pseudotime" not in frame:
-        raise ValueError(f"{source} must contain pseudotime to derive maturity")
     output.parent.mkdir(parents=True, exist_ok=True)
     frame[[id_column, "pseudotime"]].rename(
         columns={id_column: "spot_id", "pseudotime": "maturity"}
@@ -164,6 +221,7 @@ def _natural_expected_manifest(
     source, target = pair.split("->")
     return {
         "cache_kind": "formal_full_natural_ngklot",
+        "cache_protocol": "full_model_space_v2",
         "profile_id": cfg.profile.profile_id,
         "layer": layer,
         "time_pair": pair,
@@ -182,12 +240,7 @@ def ensure_full_natural_caches(cfg: UnifiedDownstreamConfig) -> list[Path]:
     for layer in NATURAL_LAYERS:
         for pair in cfg.adjacent_pairs:
             source, target = pair.split("->")
-            target_count = len(read_index(stage_input_paths(cfg, layer, target)["index"]))
-            nmf_iterations = (
-                cfg.profile.large_target_nmf_max_iter
-                if target_count >= cfg.profile.large_target_threshold
-                else cfg.profile.nmf_max_iter
-            )
+            nmf_iterations = cfg.profile.nmf_max_iter
             output = natural_cache_path(cfg, layer, pair)
             manifest = natural_cache_manifest_path(cfg, layer, pair)
             expected = _natural_expected_manifest(cfg, layer, pair, nmf_iterations)
@@ -238,6 +291,8 @@ def _optimized_expected_manifest(
         inputs["maturity_tp"] = _input_descriptor(maturity_tp)
     return {
         "cache_kind": "formal_full_deltaei",
+        "cache_protocol": "full_model_space_v2",
+        "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "mapping": mapping,
         "method": method,
@@ -266,7 +321,30 @@ def _is_valid_optimized_cache(root: Path, expected: dict[str, object]) -> bool:
         "seed": expected["random_seed"],
         "lambda_dev": expected["lambda_dev"],
     }
-    return all(trainer.get(key) == value for key, value in required.items())
+    if not all(trainer.get(key) == value for key, value in required.items()):
+        return False
+    if expected.get("cache_protocol") == "full_model_space_v2":
+        if expected.get("nmf_max_iter_used") != 300:
+            return False
+        summary = _read_json(root / "summary.json")
+        feature_manifest = _read_json(root / "feature_manifest.json")
+        k = int(expected["optimized_k"])
+        if int(summary.get("K", -1)) != k:
+            return False
+        provenance = feature_manifest.get("provenance", {})
+        if provenance.get("nmf_max_iter_used") != expected["nmf_max_iter_used"]:
+            return False
+        try:
+            source_soft = np.load(root / "S_t.npy", mmap_mode="r")
+            target_soft = np.load(root / "S_tp.npy", mmap_mode="r")
+            macro = np.load(root / "PIJ_macro_train.npy", mmap_mode="r")
+        except (OSError, ValueError):
+            return False
+        if source_soft.ndim != 2 or target_soft.ndim != 2 or macro.shape != (k, k):
+            return False
+        if source_soft.shape[1] != k or target_soft.shape[1] != k:
+            return False
+    return True
 
 
 def ensure_full_deltaei_caches(cfg: UnifiedDownstreamConfig) -> list[Path]:
@@ -282,12 +360,7 @@ def ensure_full_deltaei_caches(cfg: UnifiedDownstreamConfig) -> list[Path]:
             source, target = pair.split("->")
             source_paths = stage_input_paths(cfg, "spot", source)
             target_paths = stage_input_paths(cfg, "spot", target)
-            target_count = len(read_index(target_paths["index"]))
-            nmf_iterations = (
-                cfg.profile.large_target_nmf_max_iter
-                if target_count >= cfg.profile.large_target_threshold
-                else cfg.profile.nmf_max_iter
-            )
+            nmf_iterations = cfg.profile.nmf_max_iter
             maturity_t = _materialize_maturity_csv(cfg, source) if mapping == MAPPING_MATURITY else None
             maturity_tp = _materialize_maturity_csv(cfg, target) if mapping == MAPPING_MATURITY else None
             expected = _optimized_expected_manifest(
@@ -361,20 +434,34 @@ def ensure_full_unified_inputs(cfg: UnifiedDownstreamConfig) -> dict[str, object
     cfg.full_cache_root.mkdir(parents=True, exist_ok=True)
     preflight_path = cfg.full_cache_root / "input_preflight.csv"
     if preflight_path.exists():
-        existing = pd.read_csv(preflight_path)
+        existing = pd.read_csv(
+            preflight_path,
+            dtype={
+                "layer": str,
+                "time": str,
+                "kind": str,
+                "id_column": str,
+                "value_column": str,
+                "path": str,
+            },
+        )
         if existing.to_dict(orient="records") != preflight.to_dict(orient="records"):
             raise RuntimeError(
                 f"Full-cache input preflight changed at {preflight_path}; use a new cache root."
             )
     else:
         preflight.to_csv(preflight_path, index=False)
+    derived_maturity = [_materialize_maturity_csv(cfg, time) for time in cfg.times]
     natural = ensure_full_natural_caches(cfg)
     deltaei = ensure_full_deltaei_caches(cfg)
     payload = {
+        "cache_protocol": "full_model_space_v2",
+        "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "full_profile": cfg.profile.__dict__,
         "natural_cache_count": len(natural),
         "deltaei_job_count": len(deltaei),
+        "derived_maturity": [str(path) for path in derived_maturity],
         "natural_caches": [str(path) for path in natural],
         "deltaei_caches": [str(path) for path in deltaei],
     }

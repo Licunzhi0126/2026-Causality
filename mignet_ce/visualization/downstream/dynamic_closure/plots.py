@@ -10,7 +10,12 @@ import pandas as pd
 from itertools import combinations
 from matplotlib.lines import Line2D
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import (
+    COLORS as UNIFIED_COLORS,
+    DISPLAY_NAMES,
+    MARKERS as UNIFIED_MARKERS,
+    MAPPINGS,
+)
 
 from ..style import (
     BLUE,
@@ -344,7 +349,7 @@ def _unified_legend(ax) -> None:
             marker=UNIFIED_MARKERS[mapping],
             color="none",
             markerfacecolor=UNIFIED_COLORS[mapping],
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
         for mapping in MAPPINGS
     ]
@@ -360,7 +365,7 @@ def plot_dynamical_closure_three_panels(
 
     set_publication_style()
     data = closure.merge(
-        metrics[["mapping", "time_pair", "delta_EI_vs_spot"]],
+        metrics[["mapping", "time_pair", "delta_EI_matched_spot"]],
         on=["mapping", "time_pair"],
         how="left",
     )
@@ -371,25 +376,25 @@ def plot_dynamical_closure_three_panels(
     for mapping in MAPPINGS:
         subset = data[data["mapping"] == mapping]
         ax.scatter(
-            subset["delta_EI_vs_spot"],
+            subset["delta_EI_matched_spot"],
             subset["closure_quality"],
             color=UNIFIED_COLORS[mapping],
             marker=UNIFIED_MARKERS[mapping],
             s=76,
             edgecolor="white",
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
         for _, row in subset.iterrows():
             ax.annotate(
                 str(row["time_pair"]).split("->")[0],
-                (row["delta_EI_vs_spot"], row["closure_quality"]),
+                (row["delta_EI_matched_spot"], row["closure_quality"]),
                 xytext=(4, 3),
                 textcoords="offset points",
                 fontsize=6.2,
             )
     ax.axvline(0, color=MUTED, ls="--", lw=0.9)
     ax.set_ylim(-0.03, 1.03)
-    ax.set_xlabel("ΔEI vs spot (bit)")
+    ax.set_xlabel("ΔEI vs matched spot (bit)")
     ax.set_ylabel("ClosureQuality = Iretain / Iavailable")
     ax.set_title("Causal emergence × closure")
     ax.grid(True)
@@ -417,7 +422,7 @@ def plot_dynamical_closure_three_panels(
                 hatch="//",
             )
             positions.append(position)
-            labels.append(mapping.replace("Optimized ", "Opt-"))
+            labels.append(DISPLAY_NAMES[mapping])
             position += 1.0
         position += 0.8
     ax.set_xticks(positions, labels, rotation=58, ha="right", fontsize=5.9)
@@ -466,7 +471,10 @@ def plot_cross_representation_consistency(consistency: pd.DataFrame, path: Path)
         ax.set_ylim(-0.05, 1.03)
         ax.set_xticks(range(len(times)), times)
         ax.set_ylabel("Agreement")
-        ax.set_title(f"{left} vs {right}", fontsize=7.5)
+        ax.set_title(
+            f"{DISPLAY_NAMES[left]} vs {DISPLAY_NAMES[right]}",
+            fontsize=7.5,
+        )
         ax.grid(axis="y")
         if panel == 0:
             ax.legend()

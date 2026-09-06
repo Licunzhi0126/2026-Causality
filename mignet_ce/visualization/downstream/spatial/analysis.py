@@ -125,8 +125,8 @@ def build_unified_spatial_spots(
             )
         for mapping in cfg.mapping_names:
             record = records_by_pair[(mapping, pair)]
-            labels = np.argmax(record.hs, axis=1)
-            macro_ei = state_level_ei(record.q_direct)
+            labels = np.argmax(record.hard_s_full, axis=1)
+            macro_ei = state_level_ei(record.q_model_full)
             for spot, label, coords in zip(record.spots_s, labels, record.coords_s):
                 rows.append(
                     {
@@ -138,7 +138,8 @@ def build_unified_spatial_spots(
                         "state_index": int(label),
                         "state_ei": float(macro_ei[label]),
                         "x": float(coords[0]),
-                        "y": float(coords[1]),
+                    "y": float(coords[1]),
+                    "analysis_space": "full_model_ei_hard_projection",
                     }
                 )
     return pd.DataFrame(rows)
@@ -151,14 +152,15 @@ def build_unified_spatial_metrics(
     rows: list[dict[str, object]] = []
     for (mapping, pair), record in records_by_pair.items():
         source, _target = pair.split("->")
-        labels = np.argmax(record.hs, axis=1)
+        labels = np.argmax(record.hard_s_full, axis=1)
         coords = np.asarray(record.coords_s, dtype=float)
         frame = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
         graph = _spatial_graph(frame, cfg.spatial_knn)
         count = len(labels)
-        state_ei_values = state_level_ei(record.q_direct)
+        state_ei_values = state_level_ei(record.q_model_full)
         span = max(float(np.linalg.norm(coords.max(axis=0) - coords.min(axis=0))), 1e-12)
-        for state in range(record.hs.shape[1]):
+        active_states = np.flatnonzero(np.asarray(record.hard_s_full).sum(axis=0) > 0)
+        for state in active_states:
             indices = np.flatnonzero(labels == state)
             mask = np.zeros(count, dtype=bool)
             mask[indices] = True
@@ -199,6 +201,7 @@ def build_unified_spatial_metrics(
                     "radius_norm": radius / span,
                     "moran_i": moran,
                     "state_ei": float(state_ei_values[state]),
+                    "analysis_space": "hard_projection_morphology",
                 }
             )
     return pd.DataFrame(rows)
@@ -213,16 +216,19 @@ def build_unified_effective_states(
         for mapping in cfg.mapping_names:
             if time_index < len(cfg.times) - 1:
                 record = records_by_pair[(mapping, cfg.adjacent_pairs[time_index])]
-                hard, soft = record.hs, record.soft_s
+                hard, soft = record.hard_s_full, record.soft_s_full
             else:
                 record = records_by_pair[(mapping, cfg.adjacent_pairs[-1])]
-                hard, soft = record.ht, record.soft_t
+                hard, soft = record.hard_t_full, record.soft_t_full
             labels = np.argmax(hard, axis=1)
             counts = np.bincount(labels, minlength=hard.shape[1]).astype(float)
-            usage = counts / counts.sum()
-            positive = usage[usage > 0]
+            hard_usage = counts / counts.sum()
+            hard_positive = hard_usage[hard_usage > 0]
+            soft_usage = np.asarray(soft, dtype=float).mean(axis=0)
+            soft_usage /= max(float(soft_usage.sum()), 1e-12)
+            positive = soft_usage[soft_usage > 0]
             usage_entropy = float(-np.sum(positive * np.log2(positive)))
-            nominal = int(record.summary.get("K", soft.shape[1])) if is_optimized(mapping) else hard.shape[1]
+            nominal = soft.shape[1]
             rows.append(
                 {
                     "mapping": mapping,
@@ -231,11 +237,15 @@ def build_unified_effective_states(
                     "nominal_k": nominal,
                     "Keff": float(2**usage_entropy),
                     "usage_entropy_bits": usage_entropy,
-                    "max_usage": float(usage.max()),
+                    "max_usage": float(soft_usage.max()),
                     "min_usage": float(positive.min()),
                     "spot_count": int(counts.sum()),
                     "assignment_confidence": float(np.mean(np.max(soft, axis=1))),
                     "assignment_entropy_bits": float(np.mean(entropy_rows(soft))),
+                    "hard_usage_entropy_bits": float(
+                        -np.sum(hard_positive * np.log2(hard_positive))
+                    ),
+                    "analysis_space": "full_soft_assignment",
                 }
             )
     return pd.DataFrame(rows)

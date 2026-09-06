@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ..mappings import COLORS as UNIFIED_COLORS, MAPPINGS
+from ..mappings import COLORS as UNIFIED_COLORS, DISPLAY_NAMES, MAPPINGS
 
 from ..style import (
     MUTED,
@@ -170,7 +170,7 @@ def plot_unified_perturbation(curves: pd.DataFrame, path: Path) -> None:
         ax.axhline(0, color=MUTED, lw=0.9)
         ax.set_xlabel("Perturbation dose")
         ax.set_ylabel("Mean EI decrease (bit)")
-        ax.set_title(mapping, fontsize=8)
+        ax.set_title(DISPLAY_NAMES[mapping], fontsize=8)
         ax.grid(True)
         if column == 3:
             ax.legend(fontsize=6.0)
@@ -211,7 +211,7 @@ def plot_unified_perturbation(curves: pd.DataFrame, path: Path) -> None:
         ax.text(
             0.05,
             0.88 - index * 0.16,
-            mapping,
+            DISPLAY_NAMES[mapping],
             color=UNIFIED_COLORS[mapping],
             fontsize=8,
             weight="bold",

@@ -81,7 +81,11 @@ def build_unified_matched_null(
     for pair in cfg.adjacent_pairs:
         for mapping in cfg.mapping_names:
             record = records_by_pair[(mapping, pair)]
-            baseline = information_closure_budget(record.p, record.hs, record.ht)
+            baseline = information_closure_budget(
+                record.p_model_micro,
+                record.hard_s_full,
+                record.hard_t_full,
+            )
             observed = baseline["observed"]
             labels = np.argmax(baseline["source_hard"], axis=1)
             rows.append(
@@ -92,6 +96,7 @@ def build_unified_matched_null(
                     "repeat": -1,
                     "EI": effective_information(baseline["q_induced"]),
                     "closure_leakage_bits": baseline["closure_leakage_bits"],
+                    "analysis_space": "hard_partition",
                 }
             )
             for repeat in range(cfg.profile.matched_null_repeats):
@@ -108,6 +113,7 @@ def build_unified_matched_null(
                         "repeat": repeat,
                         "EI": effective_information(random_budget["q_induced"]),
                         "closure_leakage_bits": random_budget["closure_leakage_bits"],
+                        "analysis_space": "hard_partition",
                     }
                 )
     return pd.DataFrame(rows)

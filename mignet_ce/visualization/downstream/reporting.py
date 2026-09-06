@@ -106,6 +106,8 @@ def audit_unified_outputs(
     cfg,
     tables: dict[str, pd.DataFrame],
     figure_pngs: Iterable[Path],
+    *,
+    deltaei_contract: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     checks: list[dict[str, object]] = []
 
@@ -121,6 +123,40 @@ def audit_unified_outputs(
         add("exactly six full DeltaEI jobs", payload.get("deltaei_job_count") == 6, payload.get("deltaei_job_count"))
         add("exactly nine natural NG_KLot caches", payload.get("natural_cache_count") == 9, payload.get("natural_cache_count"))
         add("locked full profile id", payload.get("profile_id") == cfg.profile.profile_id, payload.get("profile_id"))
+        add(
+            "full model-space cache protocol",
+            payload.get("cache_protocol") == "full_model_space_v2",
+            payload.get("cache_protocol"),
+        )
+
+    metrics = tables["metrics"]
+    optimized = metrics[metrics["mapping"].astype(str).str.startswith("Optimized ")]
+    add(
+        "optimized metrics use complete K=40 model space",
+        bool(
+            (optimized["model_source_states"] == 40).all()
+            and (optimized["model_target_states"] == 40).all()
+        ),
+        optimized[
+            ["mapping", "time_pair", "model_source_states", "model_target_states"]
+        ].to_dict(orient="records"),
+    )
+    add(
+        "optimized downstream DeltaEI matches trainer summaries",
+        bool(
+            optimized["delta_EI_consistency_error"].notna().all()
+            and (optimized["delta_EI_consistency_error"].abs() <= 1e-5).all()
+        ),
+        float(optimized["delta_EI_consistency_error"].abs().max()),
+    )
+    if deltaei_contract is not None:
+        add(
+            "six-row formal DeltaEI contract passes",
+            len(deltaei_contract) == 6 and bool(deltaei_contract["passed"].all()),
+            deltaei_contract.loc[
+                ~deltaei_contract["passed"], ["mapping", "time_pair"]
+            ].to_dict(orient="records"),
+        )
 
     mapping_tables = (
         "metrics",
@@ -168,10 +204,18 @@ def audit_unified_outputs(
     return pd.DataFrame(checks)
 
 
-def unified_run_manifest(cfg, tables: dict[str, pd.DataFrame], figure_pngs: Iterable[Path]) -> dict[str, object]:
+def unified_run_manifest(
+    cfg,
+    tables: dict[str, pd.DataFrame],
+    figure_pngs: Iterable[Path],
+    *,
+    deltaei_contract: pd.DataFrame | None = None,
+) -> dict[str, object]:
     pngs = tuple(map(Path, figure_pngs))
     return {
         "workflow": "formal_full_unified_downstream",
+        "cache_protocol": "full_model_space_v2",
+        "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "full_profile": cfg.profile.__dict__,
         "organ": cfg.organ,
@@ -181,4 +225,7 @@ def unified_run_manifest(cfg, tables: dict[str, pd.DataFrame], figure_pngs: Iter
         "figures_png": [str(path) for path in pngs],
         "figures_pdf": [str(path.with_suffix('.pdf')) for path in pngs],
         "full_cache_root": str(cfg.full_cache_root),
+        "deltaei_contract_passed": (
+            bool(deltaei_contract["passed"].all()) if deltaei_contract is not None else None
+        ),
     }

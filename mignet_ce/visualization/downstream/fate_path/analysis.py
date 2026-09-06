@@ -78,6 +78,28 @@ def _hard_alignment(
     return row_normalize(counts)
 
 
+def _soft_alignment(
+    left_spots,
+    left_assignment: np.ndarray,
+    right_spots,
+    right_assignment: np.ndarray,
+) -> np.ndarray:
+    """Align complete model prototypes through common intermediate spots."""
+
+    left_lookup = {unit: index for index, unit in enumerate(map(str, left_spots))}
+    right_lookup = {unit: index for index, unit in enumerate(map(str, right_spots))}
+    common = sorted(set(left_lookup) & set(right_lookup))
+    if not common:
+        raise ValueError("Consecutive optimized mappings have no common intermediate spots")
+    left = np.asarray(
+        [left_assignment[left_lookup[unit]] for unit in common], dtype=float
+    )
+    right = np.asarray(
+        [right_assignment[right_lookup[unit]] for unit in common], dtype=float
+    )
+    return row_normalize(left.T @ right)
+
+
 def build_unified_fate_paths(
     cfg,
     records_by_pair: dict[tuple[str, str], object],
@@ -85,15 +107,15 @@ def build_unified_fate_paths(
     rows: list[dict[str, object]] = []
     for mapping in cfg.mapping_names:
         records = [records_by_pair[(mapping, pair)] for pair in cfg.adjacent_pairs]
-        transitions = [row_normalize(record.q_direct) for record in records]
+        transitions = [row_normalize(record.q_model_full) for record in records]
         alignments: list[np.ndarray] = []
         for index in range(len(records) - 1):
             if is_optimized(mapping):
-                alignment = _hard_alignment(
+                alignment = _soft_alignment(
                     records[index].spots_t,
-                    records[index].ht,
+                    records[index].soft_t_full,
                     records[index + 1].spots_s,
-                    records[index + 1].hs,
+                    records[index + 1].soft_s_full,
                 )
             else:
                 if transitions[index].shape[1] != transitions[index + 1].shape[0]:
@@ -132,7 +154,12 @@ def build_unified_fate_paths(
                     "endpoint_entropy": float(entropy_rows(composed[source_state : source_state + 1])[0]),
                     "source_ei": float(source_ei[source_state]),
                     "first_branch_entropy": float(first_entropy[source_state]),
-                    "path_method": "greedy_aligned_macro_chain",
+                    "path_method": (
+                        "greedy_full_soft_aligned_macro_chain"
+                        if is_optimized(mapping)
+                        else "greedy_full_macro_chain"
+                    ),
+                    "analysis_space": "full_model",
                 }
             )
     return pd.DataFrame(rows)

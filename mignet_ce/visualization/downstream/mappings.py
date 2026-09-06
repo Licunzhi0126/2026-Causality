@@ -18,7 +18,7 @@ from .config import (
     UNIFIED_MAPPINGS,
     UnifiedDownstreamConfig,
 )
-from .dynamic_closure.analysis import compact_hard_assignment
+from .dynamic_closure.analysis import to_hard_assignment
 from .io import (
     cci_index_path,
     layer_h5ad,
@@ -51,6 +51,12 @@ MARKERS = {
     MAPPING_COMPLETE: "D",
     MAPPING_MATURITY: "^",
 }
+DISPLAY_NAMES = {
+    MAPPING_K150: "K150",
+    MAPPING_K40: "K40",
+    MAPPING_COMPLETE: "Opt-Complete",
+    MAPPING_MATURITY: "Opt-Maturity",
+}
 
 
 def is_optimized(mapping: str) -> bool:
@@ -59,6 +65,15 @@ def is_optimized(mapping: str) -> bool:
 
 @dataclass(frozen=True)
 class MappingRecord:
+    """One mapping/pair in the complete model state space.
+
+    The historical field names are retained for compatibility, but their
+    formal contract is now explicit: ``p`` is the matched model micro P,
+    ``q_direct`` is the complete model Q, ``soft_s``/``soft_t`` retain every
+    model prototype, and ``hs``/``ht`` are full-width argmax projections.
+    Hard-active compaction belongs exclusively to the closure module.
+    """
+
     mapping: str
     pair: str
     p: np.ndarray
@@ -73,6 +88,55 @@ class MappingRecord:
     coords_t: np.ndarray
     summary: dict[str, Any]
     method: str
+
+    def __post_init__(self) -> None:
+        p = np.asarray(self.p)
+        hs = np.asarray(self.hs)
+        ht = np.asarray(self.ht)
+        q = np.asarray(self.q_direct)
+        soft_s = np.asarray(self.soft_s)
+        soft_t = np.asarray(self.soft_t)
+        if p.shape != (len(self.spots_s), len(self.spots_t)):
+            raise ValueError(
+                f"Matched micro P {p.shape} does not match spot substrate "
+                f"{(len(self.spots_s), len(self.spots_t))} for {self.mapping} {self.pair}"
+            )
+        if hs.shape != soft_s.shape or ht.shape != soft_t.shape:
+            raise ValueError(
+                f"Hard/soft assignment shapes disagree for {self.mapping} {self.pair}: "
+                f"source={hs.shape}/{soft_s.shape}, target={ht.shape}/{soft_t.shape}"
+            )
+        if hs.shape[0] != len(self.spots_s) or ht.shape[0] != len(self.spots_t):
+            raise ValueError(f"Assignment rows do not match spots for {self.mapping} {self.pair}")
+        if q.shape != (soft_s.shape[1], soft_t.shape[1]):
+            raise ValueError(
+                f"Full model Q {q.shape} does not match full assignment widths "
+                f"{(soft_s.shape[1], soft_t.shape[1])} for {self.mapping} {self.pair}"
+            )
+
+    @property
+    def p_model_micro(self) -> np.ndarray:
+        return self.p
+
+    @property
+    def q_model_full(self) -> np.ndarray:
+        return self.q_direct
+
+    @property
+    def hard_s_full(self) -> np.ndarray:
+        return self.hs
+
+    @property
+    def hard_t_full(self) -> np.ndarray:
+        return self.ht
+
+    @property
+    def soft_s_full(self) -> np.ndarray:
+        return self.soft_s
+
+    @property
+    def soft_t_full(self) -> np.ndarray:
+        return self.soft_t
 
 
 def natural_cache_path(cfg: UnifiedDownstreamConfig, layer: str, pair: str) -> Path:
@@ -151,12 +215,14 @@ def _optimized_record(cfg: UnifiedDownstreamConfig, mapping: str, pair: str) -> 
         raise FileNotFoundError(f"Incomplete full DeltaEI cache {root}: {missing}")
     source_soft_full = row_normalize(np.load(root / "S_t.npy"))
     target_soft_full = row_normalize(np.load(root / "S_tp.npy"))
-    source_hard, active_source = compact_hard_assignment(source_soft_full)
-    target_hard, active_target = compact_hard_assignment(target_soft_full)
+    source_hard = to_hard_assignment(source_soft_full)
+    target_hard = to_hard_assignment(target_soft_full)
     direct = row_normalize(np.load(root / "PIJ_macro_train.npy"))
-    if direct.shape[0] <= int(active_source.max()) or direct.shape[1] <= int(active_target.max()):
-        raise ValueError(f"Direct Q {direct.shape} cannot cover active optimized states in {root}")
-    direct = row_normalize(direct[np.ix_(active_source, active_target)])
+    if direct.shape != (source_soft_full.shape[1], target_soft_full.shape[1]):
+        raise ValueError(
+            f"Full direct Q {direct.shape} does not match optimized assignment widths "
+            f"{(source_soft_full.shape[1], target_soft_full.shape[1])} in {root}"
+        )
     source_frame = pd.read_csv(root / "assignments_t.csv")
     target_frame = pd.read_csv(root / "assignments_tp.csv")
     source_id = "spot_id" if "spot_id" in source_frame else source_frame.columns[0]
@@ -176,8 +242,8 @@ def _optimized_record(cfg: UnifiedDownstreamConfig, mapping: str, pair: str) -> 
         q_direct=direct,
         spots_s=spots_s,
         spots_t=spots_t,
-        soft_s=row_normalize(source_soft_full[:, active_source]),
-        soft_t=row_normalize(target_soft_full[:, active_target]),
+        soft_s=source_soft_full,
+        soft_t=target_soft_full,
         coords_s=np.asarray(coords_s, dtype=float),
         coords_t=np.asarray(coords_t, dtype=float),
         summary=summary,
@@ -192,12 +258,12 @@ def _natural_record(cfg: UnifiedDownstreamConfig, mapping: str, pair: str) -> Ma
     target_spots = read_index(cci_index_path(cfg.data_root, "spot", target, cfg.organ))
     source_assignment, spots_s, _ = natural_assignment(cfg, layer, source, spot_order=source_spots)
     target_assignment, spots_t, _ = natural_assignment(cfg, layer, target, spot_order=target_spots)
-    source_hard, active_source = compact_hard_assignment(source_assignment)
-    target_hard, active_target = compact_hard_assignment(target_assignment)
     direct_full = row_normalize(np.load(natural_cache_path(cfg, layer, pair)))
-    if direct_full.shape[0] <= int(active_source.max()) or direct_full.shape[1] <= int(active_target.max()):
-        raise ValueError(f"Direct Q {direct_full.shape} cannot cover active {layer} states for {pair}")
-    direct = row_normalize(direct_full[np.ix_(active_source, active_target)])
+    if direct_full.shape != (source_assignment.shape[1], target_assignment.shape[1]):
+        raise ValueError(
+            f"Full direct Q {direct_full.shape} does not match natural assignment widths "
+            f"{(source_assignment.shape[1], target_assignment.shape[1])} for {layer} {pair}"
+        )
     p_matrix = row_normalize(load_npz_matrix(natural_cache_path(cfg, "spot", pair)))
     if p_matrix.shape != (len(spots_s), len(spots_t)):
         raise ValueError(
@@ -207,13 +273,13 @@ def _natural_record(cfg: UnifiedDownstreamConfig, mapping: str, pair: str) -> Ma
         mapping=mapping,
         pair=pair,
         p=p_matrix,
-        hs=source_hard,
-        ht=target_hard,
-        q_direct=direct,
+        hs=source_assignment,
+        ht=target_assignment,
+        q_direct=direct_full,
         spots_s=spots_s,
         spots_t=spots_t,
-        soft_s=source_hard,
-        soft_t=target_hard,
+        soft_s=source_assignment,
+        soft_t=target_assignment,
         coords_s=_coords_in_order(cfg, source, list(spots_s)),
         coords_t=_coords_in_order(cfg, target, list(spots_t)),
         summary={},

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import COLORS as UNIFIED_COLORS, DISPLAY_NAMES, MARKERS as UNIFIED_MARKERS, MAPPINGS
 
 from ..style import (
     BLUE,
@@ -171,7 +171,13 @@ def plot_unified_random_null(null_table: pd.DataFrame, path: Path) -> None:
                         edgecolor="white",
                         zorder=4,
                     )
-            ax.set_xticks(range(len(MAPPINGS)), [mapping.replace("Optimized ", "Opt-") for mapping in MAPPINGS], rotation=22, ha="right", fontsize=6.0)
+            ax.set_xticks(
+                range(len(MAPPINGS)),
+                [DISPLAY_NAMES[mapping] for mapping in MAPPINGS],
+                rotation=22,
+                ha="right",
+                fontsize=6.0,
+            )
             ax.set_ylabel(ylabel)
             ax.set_title(f"{title} · {pair.replace('->', '→')}", fontsize=8)
             ax.grid(axis="y")

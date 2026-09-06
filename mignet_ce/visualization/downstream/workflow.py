@@ -38,6 +38,7 @@ from .plots import (
 )
 from .determinism_degeneracy.analysis import build_unified_ei_tables
 from .determinism_degeneracy.plots import plot_unified_ei_overview
+from .deltaei_contract import build_deltaei_contract_table
 from .dynamic_closure.analysis import (
     build_cross_representation_consistency,
     build_unified_closure_table,
@@ -349,6 +350,7 @@ def run_unified_downstream_analysis(config) -> dict[str, Path]:
     ensure_full_unified_inputs(cfg)
     records = load_all_mapping_records(cfg)
     metrics, states = build_unified_ei_tables(cfg, records)
+    deltaei_contract = build_deltaei_contract_table(cfg, records, metrics, fail=True)
     spatial_spots = build_unified_spatial_spots(cfg, records)
     closure = build_unified_closure_table(cfg, records)
     spatial = build_unified_spatial_metrics(cfg, records)
@@ -379,10 +381,22 @@ def run_unified_downstream_analysis(config) -> dict[str, Path]:
         _write_csv(frame, tables_dir / UNIFIED_TABLE_FILES[name])
 
     figure_pngs = _render_unified(tables, figures_dir)
-    checks = audit_unified_outputs(cfg, tables, figure_pngs)
+    deltaei_contract_path = audit_dir / "deltaei_contract.csv"
+    _write_csv(deltaei_contract, deltaei_contract_path)
+    checks = audit_unified_outputs(
+        cfg,
+        tables,
+        figure_pngs,
+        deltaei_contract=deltaei_contract,
+    )
     checks_path = audit_dir / "validation_checks.csv"
     _write_csv(checks, checks_path)
-    manifest = unified_run_manifest(cfg, tables, figure_pngs)
+    manifest = unified_run_manifest(
+        cfg,
+        tables,
+        figure_pngs,
+        deltaei_contract=deltaei_contract,
+    )
     manifest["validation_passed"] = bool(checks["passed"].all())
     manifest_path = audit_dir / "manifest.json"
     _write_json(manifest, manifest_path)
@@ -394,6 +408,7 @@ def run_unified_downstream_analysis(config) -> dict[str, Path]:
         "tables_dir": tables_dir,
         "figures_dir": figures_dir,
         "validation": checks_path,
+        "deltaei_contract": deltaei_contract_path,
         "manifest": manifest_path,
     }
 

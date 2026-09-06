@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,13 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    warnings.warn(
+        "scripts/run_downstream_analysis.py is deprecated and only supports the "
+        "historical K150/K40 workflow; use scripts/run_unified_downstream_analysis.py "
+        "for the formal four-representation benchmark.",
+        FutureWarning,
+        stacklevel=2,
+    )
     args = build_argparser().parse_args(argv)
     if args.command == "analyze":
         outputs = run_downstream_analysis(

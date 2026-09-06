@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import COLORS as UNIFIED_COLORS, DISPLAY_NAMES, MARKERS as UNIFIED_MARKERS, MAPPINGS
 
 from ..style import (
     BLUE,
@@ -215,7 +215,8 @@ def plot_unified_spatial_state_ei(spatial_spots: pd.DataFrame, path: Path) -> No
             ax.invert_yaxis()
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_title(f"{mapping} · {pair.replace('->', '→')}", fontsize=8)
+            display = "Spot" if mapping == "Spot" else DISPLAY_NAMES[mapping]
+            ax.set_title(f"{display} · {pair.replace('->', '→')}", fontsize=8)
             add_panel_label(ax, chr(ord("A") + panel) if panel < 26 else f"P{panel + 1}")
             panel += 1
     if scatter is not None:
@@ -256,7 +257,7 @@ def plot_unified_effective_spatial(
                 marker=UNIFIED_MARKERS[mapping],
                 color=UNIFIED_COLORS[mapping],
                 lw=1.8,
-                label=mapping,
+                label=DISPLAY_NAMES[mapping],
             )
         ax.set_xticks(range(len(times)), times)
         ax.set_ylabel(ylabel)

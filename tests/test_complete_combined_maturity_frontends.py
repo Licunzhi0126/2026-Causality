@@ -204,6 +204,8 @@ def test_cci_grn_method_uses_sparse_complete_stage(tmp_path) -> None:
     assert prepared.provenance["loader_optimization"].startswith("sparse_complete_stage")
     assert prepared.provenance["network_adjacency_policy"] == "row_normalized_true_CCI"
     assert prepared.provenance["uses_grn"] is True
+    assert prepared.provenance["nmf_components"] == 2
+    assert prepared.provenance["nmf_max_iter_used"] == 2
     assert set(prepared.feature_blocks_t) == {"N", "X"}
     assert prepared.maturity_t is not None
     assert prepared.maturity_tp is not None

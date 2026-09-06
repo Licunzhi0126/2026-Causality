@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import COLORS as UNIFIED_COLORS, DISPLAY_NAMES, MARKERS as UNIFIED_MARKERS, MAPPINGS
 
 from ..style import (
     GOLD,
@@ -184,7 +184,7 @@ def plot_unified_fate_paths(paths: pd.DataFrame, path: Path) -> None:
         )
         ax.set_xlabel("First-step branch entropy (bit)")
         ax.set_ylabel("Main-path probability")
-        ax.set_title(mapping, fontsize=8)
+        ax.set_title(DISPLAY_NAMES[mapping], fontsize=8)
         ax.grid(True)
         add_panel_label(ax, chr(ord("A") + column))
         if column == 3:
@@ -200,7 +200,7 @@ def plot_unified_fate_paths(paths: pd.DataFrame, path: Path) -> None:
             alpha=0.5,
             color=UNIFIED_COLORS[mapping],
             marker=UNIFIED_MARKERS[mapping],
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
     ax.set_xlabel("Source state EI (bit)")
     ax.set_ylabel("Endpoint entropy (bit)")

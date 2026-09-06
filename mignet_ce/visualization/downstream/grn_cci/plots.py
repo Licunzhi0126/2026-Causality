@@ -10,7 +10,7 @@ import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
 from scipy.stats import spearmanr
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import COLORS as UNIFIED_COLORS, DISPLAY_NAMES, MARKERS as UNIFIED_MARKERS, MAPPINGS
 
 from ..style import (
     BLUE,
@@ -179,7 +179,7 @@ def plot_unified_mechanism(mechanism: pd.DataFrame, path: Path) -> None:
                 marker=UNIFIED_MARKERS[mapping],
                 color=UNIFIED_COLORS[mapping],
                 lw=1.8,
-                label=mapping,
+                label=DISPLAY_NAMES[mapping],
             )
         ax.axhline(0, color=MUTED, lw=0.9)
         ax.set_xticks(range(len(pairs)), [pair.replace("->", "→") for pair in pairs])

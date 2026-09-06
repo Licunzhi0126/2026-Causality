@@ -10,7 +10,12 @@ import pandas as pd
 from matplotlib.patches import FancyArrowPatch
 from matplotlib.lines import Line2D
 
-from ..mappings import COLORS as UNIFIED_COLORS, MARKERS as UNIFIED_MARKERS, MAPPINGS
+from ..mappings import (
+    COLORS as UNIFIED_COLORS,
+    DISPLAY_NAMES,
+    MARKERS as UNIFIED_MARKERS,
+    MAPPINGS,
+)
 
 from ..style import (
     BLUE,
@@ -195,7 +200,7 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
     offsets = (np.arange(len(MAPPINGS)) - (len(MAPPINGS) - 1) / 2) * width
     fig, axes = plt.subplots(2, 3, figsize=(15.6, 9.2), constrained_layout=True)
     fig.suptitle(
-        "Causal emergence across four complete macro representations",
+        "Causal emergence across four full model representations",
         color=NAVY,
         fontsize=16,
         weight="bold",
@@ -204,11 +209,16 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
     ax = axes[0, 0]
     for offset, mapping in zip(offsets, MAPPINGS):
         subset = metrics[metrics["mapping"] == mapping].set_index("time_pair").reindex(pairs)
-        ax.bar(x_values + offset, subset["delta_EI_vs_spot"], width * 0.92, color=UNIFIED_COLORS[mapping])
+        ax.bar(
+            x_values + offset,
+            subset["delta_EI_matched_spot"],
+            width * 0.92,
+            color=UNIFIED_COLORS[mapping],
+        )
     ax.axhline(0, color=MUTED, lw=0.9)
     ax.set_xticks(x_values, [pair.replace("->", "→") for pair in pairs])
-    ax.set_ylabel("ΔEI vs spot (bit)")
-    ax.set_title("Causal emergence relative to spot")
+    ax.set_ylabel("ΔEI vs matched spot (bit)")
+    ax.set_title("Causal emergence relative to matched spot baseline")
     ax.grid(axis="y")
     add_panel_label(ax, "A")
 
@@ -245,8 +255,19 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
             color=UNIFIED_COLORS[mapping],
             marker=UNIFIED_MARKERS[mapping],
             edgecolor="white",
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
+        for _, row in subset.iterrows():
+            ax.annotate(
+                str(row["source_time"]),
+                (row["degeneracy"], row["determinism"]),
+                xytext=(4, 3),
+                textcoords="offset points",
+                fontsize=6.0,
+            )
+    lower = min(float(metrics["degeneracy"].min()), float(metrics["determinism"].min()))
+    upper = max(float(metrics["degeneracy"].max()), float(metrics["determinism"].max()))
+    ax.plot([lower, upper], [lower, upper], "--", color=MUTED, lw=0.9, label="y=x")
     ax.set_xlabel("Degeneracy (bit)")
     ax.set_ylabel("Determinism (bit)")
     ax.set_title("Determinism–degeneracy plane")
@@ -254,17 +275,23 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
     add_panel_label(ax, "D")
 
     ax = axes[1, 1]
-    spot = metrics.groupby("time_pair")["spot_EI"].first().reindex(pairs)
-    ax.plot(x_values, spot, "--o", color=MUTED, label="Spot")
     for mapping in MAPPINGS:
         subset = metrics[metrics["mapping"] == mapping].set_index("time_pair").reindex(pairs)
         ax.plot(
             x_values,
-            subset["EI"],
+            subset["EI_micro_matched"],
+            ":",
+            color=UNIFIED_COLORS[mapping],
+            lw=1.0,
+            alpha=0.55,
+        )
+        ax.plot(
+            x_values,
+            subset["EI_macro_model_full"],
             marker=UNIFIED_MARKERS[mapping],
             color=UNIFIED_COLORS[mapping],
             lw=1.8,
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
     ax.set_xticks(x_values, [pair.replace("->", "→") for pair in pairs])
     ax.set_ylabel("Effective information (bit)")
@@ -275,14 +302,25 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
     ax = axes[1, 2]
     for mapping in MAPPINGS:
         subset = metrics[metrics["mapping"] == mapping]
+        size = 30 + 65 * subset["EI_macro_model_full"] / max(
+            float(metrics["EI_macro_model_full"].max()), 1e-12
+        )
         ax.scatter(
             subset["H_noise"],
             subset["H_effect"],
-            s=58,
+            s=size,
             color=UNIFIED_COLORS[mapping],
             marker=UNIFIED_MARKERS[mapping],
             edgecolor="white",
         )
+        for _, row in subset.iterrows():
+            ax.annotate(
+                str(row["source_time"]),
+                (row["H_noise"], row["H_effect"]),
+                xytext=(4, 3),
+                textcoords="offset points",
+                fontsize=6.0,
+            )
     ax.set_xlabel("Conditional noise H(Y|X) (bit)")
     ax.set_ylabel("Effect diversity H(Y) (bit)")
     ax.set_title("Mechanistic trade-off")
@@ -296,7 +334,7 @@ def plot_unified_ei_overview(metrics: pd.DataFrame, path: Path) -> None:
             marker=UNIFIED_MARKERS[mapping],
             color="none",
             markerfacecolor=UNIFIED_COLORS[mapping],
-            label=mapping,
+            label=DISPLAY_NAMES[mapping],
         )
         for mapping in MAPPINGS
     ]

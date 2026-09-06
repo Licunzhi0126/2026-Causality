@@ -1,14 +1,23 @@
-"""Post-hoc causal-emergence analysis and six-panel figures.
+"""Causal-emergence downstream analysis infrastructure.
 
-The package contains reusable infrastructure only.  Use
-``scripts/run_downstream_analysis.py`` as the single command-line entry.
+Use ``scripts/run_unified_downstream_analysis.py`` for the formal four-
+representation benchmark.  ``scripts/run_downstream_analysis.py`` remains a
+deprecated compatibility entry for historical K150/K40 results.
 """
 
-from .config import DownstreamConfig
-from .workflow import render_downstream_figures, run_downstream_analysis
+from .config import DownstreamConfig, UnifiedDownstreamConfig
+from .workflow import (
+    render_downstream_figures,
+    render_unified_downstream_figures,
+    run_downstream_analysis,
+    run_unified_downstream_analysis,
+)
 
 __all__ = [
     "DownstreamConfig",
+    "UnifiedDownstreamConfig",
     "render_downstream_figures",
+    "render_unified_downstream_figures",
     "run_downstream_analysis",
+    "run_unified_downstream_analysis",
 ]

@@ -329,22 +329,26 @@ def build_unified_mechanism_table(
                 )
             activity_order = np.asarray([activity_lookup[unit] for unit in record.spots_s], dtype=int)
             ordered_activity = activity[activity_order]
-            hard = np.asarray(record.hs, dtype=float)
-            sizes = hard.sum(axis=0)
-            state_activity = (hard.T @ ordered_activity) / np.maximum(sizes[:, None], 1.0)
+            assignment = np.asarray(record.soft_s_full, dtype=float)
+            sizes = assignment.sum(axis=0)
+            state_activity = (assignment.T @ ordered_activity) / np.maximum(
+                sizes[:, None], 1e-12
+            )
             cci_order = np.asarray([cci_lookup[unit] for unit in record.spots_s], dtype=int)
             ordered_cci = cci[cci_order][:, cci_order]
             macro_cci = (
-                sp.csr_matrix(hard).T @ ordered_cci @ sp.csr_matrix(hard)
+                sp.csr_matrix(assignment).T
+                @ ordered_cci
+                @ sp.csr_matrix(assignment)
             ).toarray()
             outgoing = macro_cci.sum(axis=1)
             incoming = macro_cci.sum(axis=0)
             outgoing_prob = row_normalize(macro_cci)
             incoming_prob = row_normalize(macro_cci.T)
             log_capacity = np.log2(max(macro_cci.shape[0], 2))
-            state_ei_values = state_level_ei(record.q_direct)
-            transition_entropy = entropy_rows(record.q_direct)
-            for state in range(hard.shape[1]):
+            state_ei_values = state_level_ei(record.q_model_full)
+            transition_entropy = entropy_rows(record.q_model_full)
+            for state in range(assignment.shape[1]):
                 values = np.maximum(state_activity[state], 0.0)
                 total = float(values.sum())
                 probabilities = values / max(total, 1e-12)
@@ -369,7 +373,12 @@ def build_unified_mechanism_table(
                         "cci_in_log": float(np.log1p(incoming[state])),
                         "cci_out_entropy_norm": float(entropy(outgoing_prob[state]) / log_capacity),
                         "cci_in_entropy_norm": float(entropy(incoming_prob[state]) / log_capacity),
-                        "spot_count": int(sizes[state]),
+                        "spot_mass": float(sizes[state]),
+                        "spot_count": int(
+                            np.count_nonzero(np.argmax(record.hard_s_full, axis=1) == state)
+                        ),
+                        "state_substrate": "full_soft_assignment",
+                        "analysis_space": "full_model",
                     }
                 )
     return pd.DataFrame(rows)

@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run the formal unified downstream benchmark. DeltaEI is always 2 methods x "
-            "3 adjacent pairs at K=40 and 1500 epochs; reduced preview parameters are not accepted."
+            "3 adjacent pairs at K=40, 1500 epochs, and NMF max_iter=300 for every pair; "
+            "reduced preview parameters are not accepted."
         )
     )
     parser.add_argument("--data-root", type=Path, required=True)

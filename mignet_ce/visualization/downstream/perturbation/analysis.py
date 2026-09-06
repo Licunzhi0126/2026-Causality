@@ -89,7 +89,7 @@ def build_unified_perturbation_curves(
     for pair in cfg.adjacent_pairs:
         for mapping in cfg.mapping_names:
             record = records_by_pair[(mapping, pair)]
-            transition = row_normalize(record.q_direct)
+            transition = row_normalize(record.q_model_full)
             mechanism_states = mechanism[
                 (mechanism["mapping"] == mapping) & (mechanism["time_pair"] == pair)
             ].set_index("state_index")
@@ -119,6 +119,7 @@ def build_unified_perturbation_curves(
                             "ei_drop_low": float(drop),
                             "ei_drop_high": float(drop),
                             "perturbation": "Pij_row_homogenization",
+                            "analysis_space": "full_model",
                         }
                     )
             for dose in doses:
@@ -138,6 +139,7 @@ def build_unified_perturbation_curves(
                         "ei_drop_low": float(np.quantile(drops, 0.025)),
                         "ei_drop_high": float(np.quantile(drops, 0.975)),
                         "perturbation": "Pij_row_homogenization",
+                        "analysis_space": "full_model",
                     }
                 )
     return pd.DataFrame(rows)

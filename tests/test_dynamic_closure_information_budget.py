@@ -62,8 +62,8 @@ def test_consistency_contains_all_six_mapping_pairs_at_four_times() -> None:
             labels = [(index + mapping_index + pair_index) % 2 for index in range(4)]
             assignment = _hard(labels, 2)
             records[(mapping, pair)] = SimpleNamespace(
-                hs=assignment,
-                ht=assignment,
+                hard_s_full=assignment,
+                hard_t_full=assignment,
                 spots_s=spots,
                 spots_t=spots,
             )
