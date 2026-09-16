@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from mignet_ce.visualization.downstream import preparation
+from mignet_ce.downstream.analysis import preparation
 
 
 def _cfg(root: Path):

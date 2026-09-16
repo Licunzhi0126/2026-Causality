@@ -1,0 +1,1 @@
+"""Determinism and degeneracy figures."""

@@ -8,6 +8,7 @@ if not hasattr(np, "unicode_"):
 import anndata as ad
 import pandas as pd
 import scipy.sparse as sp
+import pytest
 
 from mignet_ce.io.developmental_feature_builder import (
     DevelopmentalFeatureBuildConfig,
@@ -144,3 +145,107 @@ def test_builder_spot_csv_auto_aggregates_to_domain_layer(tmp_path) -> None:
     assert table.metadata["aggregated_from_spot"] is True
     assert list(table.values.index) == ["d1", "d2"]
     assert np.isfinite(table.values.to_numpy(dtype=float)).all()
+
+
+def _write_domain_inputs(data_root, layer: str, stage: str, units: list[str], spot_units: list[str]) -> None:
+    prefix = "seurat150" if layer == "seurat_k150" else "seurat"
+    stem = f"{prefix}_heart_{stage}"
+    path = data_root / layer / "heart" / f"{stem}.h5ad"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ad.AnnData(
+        X=sp.csr_matrix(np.ones((len(units), 2), dtype=float)),
+        obs=pd.DataFrame(index=units),
+        var=pd.DataFrame(index=["g1", "g2"]),
+    ).write_h5ad(path)
+    pd.DataFrame(
+        {
+            "spot_id": spot_units,
+            "domain_id": [units[idx % len(units)] for idx in range(len(spot_units))],
+        }
+    ).to_csv(path.with_name(f"{stem}_spot_domain_map.csv"), index=False)
+
+
+def test_builder_materializes_seurat_layers_in_standard_feature_root(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "developmental_features"
+    spot_units = _write_spot_h5ad(data_root, "11.5", np.arange(160 * 4, dtype=float).reshape(160, 4) + 1.0)
+    units150 = [f"domain_{idx:03d}" for idx in range(1, 151)]
+    units40 = [f"domain_{idx:03d}" for idx in range(1, 41)]
+    _write_domain_inputs(data_root, "seurat_k150", "11.5", units150, spot_units)
+    _write_domain_inputs(data_root, "seurat_k40", "11.5", units40, spot_units)
+
+    result = build_developmental_features(
+        DevelopmentalFeatureBuildConfig(
+            data_root=data_root,
+            output_root=output_root,
+            organs=("heart",),
+            time_points=("11.5",),
+            layers=("spot", "seurat_k150", "seurat_k40"),
+            velocity_components=2,
+        )
+    )
+
+    for layer, expected_units in (("seurat_k150", units150), ("seurat_k40", units40)):
+        output = pd.read_csv(output_root / layer / "heart_11.5_features.csv")
+        assert output["unit_id"].tolist() == expected_units
+        assert "spot_count" in output.columns
+        assert np.isfinite(output.drop(columns=["unit_id"]).to_numpy(dtype=float)).all()
+        assert (output_root / "qc" / layer / "heart_11.5_feature_stats.csv").exists()
+    assert set(result.manifest["layer"]) == {"spot", "seurat_k150", "seurat_k40"}
+    domain_rows = result.manifest[result.manifest["layer"] != "spot"]
+    assert set(domain_rows["aggregation"]) == {"mean_over_member_spots"}
+
+
+def test_builder_domain_materialization_rejects_missing_spot_features(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "developmental_features"
+    spot_units = _write_spot_h5ad(data_root, "11.5", np.arange(9, dtype=float).reshape(3, 3) + 1.0)
+    units40 = [f"domain_{idx:03d}" for idx in range(1, 41)]
+    _write_domain_inputs(data_root, "seurat_k40", "11.5", units40, [*spot_units, "missing_spot"])
+
+    with pytest.raises(ValueError, match="missing from spot developmental features"):
+        build_developmental_features(
+            DevelopmentalFeatureBuildConfig(
+                data_root=data_root,
+                output_root=output_root,
+                organs=("heart",),
+                time_points=("11.5",),
+                layers=("spot", "seurat_k40"),
+                velocity_components=2,
+            )
+        )
+
+
+def test_domain_only_build_uses_existing_spot_feature_values(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "developmental_features"
+    spot_units = _write_spot_h5ad(data_root, "11.5", np.ones((40, 3), dtype=float))
+    units40 = [f"domain_{idx:03d}" for idx in range(1, 41)]
+    _write_domain_inputs(data_root, "seurat_k40", "11.5", units40, spot_units)
+    spot_path = output_root / "spot" / "heart_11.5_features.csv"
+    spot_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "unit_id": spot_units,
+            "pseudotime": np.linspace(0.0, 1.0, 40),
+            "sr": np.linspace(1.0, 0.0, 40),
+            "potency_score": np.linspace(1.0, 0.0, 40),
+            "velocity_0": np.zeros(40),
+            "velocity_1": np.ones(40),
+        }
+    ).to_csv(spot_path, index=False)
+
+    result = build_developmental_features(
+        DevelopmentalFeatureBuildConfig(
+            data_root=data_root,
+            output_root=output_root,
+            organs=("heart",),
+            time_points=("11.5",),
+            layers=("seurat_k40",),
+            velocity_components=2,
+        )
+    )
+
+    output = pd.read_csv(output_root / "seurat_k40" / "heart_11.5_features.csv")
+    assert output["pseudotime"].tolist() == pytest.approx(np.linspace(0.0, 1.0, 40))
+    assert result.manifest.iloc[0]["sr_source"] == "precomputed_spot_features"

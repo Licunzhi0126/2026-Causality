@@ -19,6 +19,9 @@ from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci import (
 from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci_grn import (
     prepare as prepare_cci_grn,
 )
+from mignet_ce.coarse_frontends.maturity_cci_grn_two_stage import (
+    prepare as prepare_two_stage,
+)
 from mignet_ce.graph.builder import LayerGraph
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import (
@@ -209,6 +212,59 @@ def test_cci_grn_method_uses_sparse_complete_stage(tmp_path) -> None:
     assert set(prepared.feature_blocks_t) == {"N", "X"}
     assert prepared.maturity_t is not None
     assert prepared.maturity_tp is not None
+
+
+def test_two_stage_frontend_is_value_identical_to_maturity_cci_grn(tmp_path) -> None:
+    source = _write_real_network_stage(tmp_path, "identity_t")
+    target = _write_real_network_stage(tmp_path, "identity_tp")
+    maturity_t = tmp_path / "identity_maturity_t.csv"
+    maturity_tp = tmp_path / "identity_maturity_tp.csv"
+    _write_maturity(maturity_t, ["a", "b", "c"])
+    _write_maturity(maturity_tp, ["a", "b", "c"])
+    request = CoarseFrontendRequest(
+        h5ad_t=source.h5ad,
+        h5ad_tp=target.h5ad,
+        cci_t=source.cci_total,
+        cci_tp=target.cci_total,
+        cci_index_t=source.cci_index,
+        cci_index_tp=target.cci_index,
+        grn_t=source.grn_edges,
+        grn_tp=target.grn_edges,
+        maturity_t=maturity_t,
+        maturity_tp=maturity_tp,
+        nmf_components=2,
+        nmf_max_iter=2,
+        mid_dim=2,
+        grn_topk_targets=3,
+        grn_state_dim=4,
+    )
+    legacy = prepare_cci_grn(request)
+    two_stage = prepare_two_stage(request)
+    assert legacy.unit_ids_t == two_stage.unit_ids_t
+    assert legacy.unit_ids_tp == two_stage.unit_ids_tp
+    for name in (
+        "encoder_features_t",
+        "encoder_features_tp",
+        "micro_features_t",
+        "micro_features_tp",
+        "micro_pij",
+        "coords_t",
+        "coords_tp",
+        "maturity_t",
+        "maturity_tp",
+        "maturity_confidence_t",
+        "maturity_confidence_tp",
+    ):
+        np.testing.assert_array_equal(getattr(legacy, name), getattr(two_stage, name))
+    assert (legacy.network_t != two_stage.network_t).nnz == 0
+    assert (legacy.network_tp != two_stage.network_tp).nnz == 0
+    assert legacy.feature_blocks_t.keys() == two_stage.feature_blocks_t.keys()
+    for key in legacy.feature_blocks_t:
+        np.testing.assert_array_equal(legacy.feature_blocks_t[key], two_stage.feature_blocks_t[key])
+        np.testing.assert_array_equal(legacy.feature_blocks_tp[key], two_stage.feature_blocks_tp[key])
+    assert legacy.micro_ei == two_stage.micro_ei
+    assert two_stage.method == "maturity_cci_grn_two_stage"
+    assert two_stage.provenance["frontend_delegate"] == legacy.method
 
 
 def _write_real_network_stage(tmp_path: Path, label: str) -> CoarseTemporalStageRequest:

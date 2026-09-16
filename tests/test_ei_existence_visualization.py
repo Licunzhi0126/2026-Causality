@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from mignet_ce.visualization.common import apply_spatial_orientation
-from mignet_ce.visualization.ei_existence import (
+from mignet_ce.downstream.analysis.visualization.common import apply_spatial_orientation
+from mignet_ce.downstream.analysis.visualization.ei_existence import (
     LevelPair,
     build_time_pair_mean_table,
     compute_domain_parent_by_overlap,
@@ -83,4 +83,3 @@ def test_sample_membership_edges_caps_each_group() -> None:
     sampled = sample_membership_edges(edges, group_col="domain_id", max_per_group=3, random_state=1)
 
     assert sampled.groupby("domain_id").size().to_dict() == {"a": 3, "b": 2}
-

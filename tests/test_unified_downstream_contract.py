@@ -7,26 +7,30 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from mignet_ce.visualization.downstream.config import FullDeltaEIBenchmarkProfile
-from mignet_ce.visualization.downstream.determinism_degeneracy.analysis import build_unified_ei_tables
-from mignet_ce.visualization.downstream.dynamic_closure.analysis import (
+from mignet_ce.downstream.analysis.config import FullDeltaEIBenchmarkProfile
+from mignet_ce.downstream.analysis.determinism_degeneracy.analysis import build_unified_ei_tables
+from mignet_ce.downstream.analysis.dynamic_closure.analysis import (
     build_cross_representation_consistency,
     build_unified_closure_table,
     effective_information,
 )
-from mignet_ce.visualization.downstream.fate_path.analysis import build_unified_fate_paths
-from mignet_ce.visualization.downstream.mappings import MAPPINGS, MappingRecord, is_optimized
-from mignet_ce.visualization.downstream.null_model.analysis import build_unified_matched_null
-from mignet_ce.visualization.downstream.perturbation.analysis import build_unified_perturbation_curves
-from mignet_ce.visualization.downstream.spatial.analysis import (
+from mignet_ce.downstream.analysis.fate_path.analysis import build_unified_fate_paths
+from mignet_ce.downstream.analysis.mappings import MAPPINGS, MappingRecord, is_optimized
+from mignet_ce.downstream.analysis.null_model.analysis import (
+    build_unified_matched_null,
+    summarize_unified_matched_null,
+)
+from mignet_ce.downstream.analysis.spatial.analysis import (
     build_unified_effective_states,
     build_unified_spatial_metrics,
     build_unified_spatial_spots,
 )
-from mignet_ce.visualization.downstream.workflow import (
-    UNIFIED_FIGURE_FILES,
+from mignet_ce.downstream.analysis.workflow import (
     UNIFIED_TABLE_FILES,
-    _render_unified,
+)
+from mignet_ce.downstream.analysis.visualization.workflow import (
+    UNIFIED_FIGURE_FILES,
+    render_unified_downstream_figures,
 )
 
 
@@ -55,9 +59,9 @@ def test_formal_cli_exposes_no_reduced_deltaei_controls() -> None:
     assert "--large-target-nmf-max-iter" not in option_strings
 
 
-def test_unified_output_contract_is_eleven_tables_and_nine_figures() -> None:
+def test_unified_output_contract_is_eleven_tables_and_eight_figures() -> None:
     assert len(UNIFIED_TABLE_FILES) == 11
-    assert len(UNIFIED_FIGURE_FILES) == 9
+    assert len(UNIFIED_FIGURE_FILES) == 8
     assert set(UNIFIED_FIGURE_FILES) == {
         "ei",
         "spatial_ei",
@@ -66,7 +70,6 @@ def test_unified_output_contract_is_eleven_tables_and_nine_figures() -> None:
         "effective",
         "mechanism",
         "fate",
-        "perturbation",
         "closure",
     }
 
@@ -113,13 +116,11 @@ def _synthetic_records():
                 mapping=mapping,
                 pair=pair,
                 p=transition,
-                hs=assignment,
-                ht=assignment,
+                source_assignment=assignment,
+                target_assignment=assignment,
                 q_direct=q_matrix,
                 spots_s=spots,
                 spots_t=spots,
-                soft_s=assignment,
-                soft_t=assignment,
                 coords_s=coords,
                 coords_t=coords,
                 summary=summary,
@@ -128,8 +129,10 @@ def _synthetic_records():
     return pairs, records
 
 
-def test_topic_split_pipeline_renders_nine_png_and_pdf_figures(tmp_path) -> None:
+def test_topic_split_pipeline_renders_eight_png_and_pdf_figures_without_mutating_tables(tmp_path) -> None:
     pairs, records = _synthetic_records()
+    assert len(MAPPINGS) == 5
+    assert len(records) == 15
     cfg = SimpleNamespace(
         times=("11.5", "12.5", "13.5", "14.5"),
         adjacent_pairs=pairs,
@@ -161,11 +164,9 @@ def test_topic_split_pipeline_renders_nine_png_and_pdf_figures(tmp_path) -> None
                     }
                 )
     mechanism = pd.DataFrame(mechanism_rows)
-    perturbation = build_unified_perturbation_curves(cfg, records, mechanism)
     assert set(metrics["model_source_states"]) == {3}
-    assert set(metrics["hard_active_source_states"]) == {2}
-    assert set(closure["model_k_source"]) == {3}
-    assert set(closure["active_k_source"]) == {2}
+    assert set(metrics["soft_active_source_states"]) == {2}
+    assert set(closure["source_states"]) == {3}
     assert set(states["state_index"]) == {0, 1, 2}
     tables = {
         "metrics": metrics,
@@ -175,12 +176,19 @@ def test_topic_split_pipeline_renders_nine_png_and_pdf_figures(tmp_path) -> None
         "spatial": spatial,
         "effective": effective,
         "mechanism": mechanism,
-        "null": matched_null,
+        "null_distribution": matched_null,
+        "null_summary": summarize_unified_matched_null(matched_null),
         "consistency": consistency,
         "fate": fate,
-        "perturbation": perturbation,
     }
-    figures = _render_unified(tables, tmp_path / "figures")
-    assert len(figures) == 9
-    assert all(path.exists() for path in figures)
-    assert all(path.with_suffix(".pdf").exists() for path in figures)
+    tables_dir = tmp_path / "tables"
+    tables_dir.mkdir()
+    for name, frame in tables.items():
+        frame.to_csv(tables_dir / UNIFIED_TABLE_FILES[name], index=False)
+    before = {name: (tables_dir / filename).read_bytes() for name, filename in UNIFIED_TABLE_FILES.items()}
+    rendered = render_unified_downstream_figures(tmp_path)
+    assert rendered["figure_count"] == 8
+    assert all((tmp_path / "figures" / filename).exists() for filename in UNIFIED_FIGURE_FILES.values())
+    assert all((tmp_path / "figures" / filename).with_suffix(".pdf").exists() for filename in UNIFIED_FIGURE_FILES.values())
+    after = {name: (tables_dir / filename).read_bytes() for name, filename in UNIFIED_TABLE_FILES.items()}
+    assert before == after

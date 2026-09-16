@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.visualization.ei_existence import (
+from mignet_ce.downstream.analysis.visualization.ei_existence import (
     DEFAULT_DATA_ROOT,
     DEFAULT_LEVEL_PAIRS,
     DEFAULT_NETWORK_METHOD,

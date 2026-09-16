@@ -5,13 +5,15 @@ import json
 import numpy as np
 import pandas as pd
 
-from mignet_ce.visualization.downstream.config import MAPPING_COMPLETE, MAPPING_MATURITY
-from mignet_ce.visualization.downstream.deltaei_contract import audit_full_cache_root
-from mignet_ce.visualization.downstream.dynamic_closure.analysis import effective_information
-from mignet_ce.visualization.downstream.mappings import OPTIMIZED_METHOD_BY_MAPPING
+from mignet_ce.downstream.analysis.config import MAPPING_COMPLETE, MAPPING_MATURITY, MAPPING_TWO_STAGE
+from mignet_ce.downstream.analysis.deltaei_contract import audit_full_cache_root
+from mignet_ce.downstream.analysis.dynamic_closure.analysis import effective_information
+from mignet_ce.downstream.analysis.mappings import OPTIMIZED_METHOD_BY_MAPPING
+from mignet_ce.downstream.analysis.preparation import required_optimized_outputs
+from mignet_ce.coarse_frontends.method_specs import get_coarse_method_spec
 
 
-def _build_six_cache_fixture(tmp_path):
+def _build_nine_cache_fixture(tmp_path):
     pairs = ("11.5->12.5", "12.5->13.5", "13.5->14.5")
     micro = np.asarray([[0.8, 0.2], [0.25, 0.75]], dtype=np.float32)
     macro = np.full((40, 40), 0.25 / 39.0, dtype=np.float32)
@@ -22,8 +24,9 @@ def _build_six_cache_fixture(tmp_path):
     micro_ei = effective_information(micro)
     macro_ei = effective_information(macro)
     rows = []
-    for mapping in (MAPPING_COMPLETE, MAPPING_MATURITY):
+    for mapping in (MAPPING_COMPLETE, MAPPING_MATURITY, MAPPING_TWO_STAGE):
         method = OPTIMIZED_METHOD_BY_MAPPING[mapping]
+        spec = get_coarse_method_spec(method)
         for pair in pairs:
             root = tmp_path / "optimized_coarse" / method / pair.replace("->", "_to_")
             root.mkdir(parents=True)
@@ -31,6 +34,14 @@ def _build_six_cache_fixture(tmp_path):
             np.save(root / "PIJ_macro_train.npy", macro)
             np.save(root / "S_t.npy", soft)
             np.save(root / "S_tp.npy", soft)
+            for name in required_optimized_outputs(method):
+                path = root / name
+                if path.exists():
+                    continue
+                if path.suffix == ".json":
+                    path.write_text("{}", encoding="utf-8")
+                else:
+                    path.touch()
             (root / "config.json").write_text(
                 json.dumps({"k": 40, "epochs": 1500}), encoding="utf-8"
             )
@@ -41,8 +52,12 @@ def _build_six_cache_fixture(tmp_path):
             (root / "downstream_full_manifest.json").write_text(
                 json.dumps(
                     {
-                        "cache_protocol": "full_model_space_v2",
+                        "cache_protocol": "full_model_space_v3",
                         "model_state_contract": "full_soft_k",
+                        "method": method,
+                        "frontend": spec.frontend or method,
+                        "training_mode": spec.training_mode,
+                        "objective_version": spec.objective_version,
                     }
                 ),
                 encoding="utf-8",
@@ -75,19 +90,19 @@ def _build_six_cache_fixture(tmp_path):
     return metrics
 
 
-def test_six_cache_audit_passes_for_exact_full_model_contract(tmp_path) -> None:
-    metrics = _build_six_cache_fixture(tmp_path)
+def test_nine_cache_audit_passes_for_exact_full_model_contract(tmp_path) -> None:
+    metrics = _build_nine_cache_fixture(tmp_path)
     table = audit_full_cache_root(tmp_path, metrics)
-    assert len(table) == 6
+    assert len(table) == 9
     assert table["passed"].all()
     assert (table["epochs"] == 1500).all()
     assert (table["K"] == 40).all()
     assert (table["nmf_max_iter_used"] == 300).all()
-    assert (table["cache_protocol"] == "full_model_space_v2").all()
+    assert (table["cache_protocol"] == "full_model_space_v3").all()
 
 
-def test_six_cache_audit_detects_downstream_deltaei_mismatch(tmp_path) -> None:
-    metrics = _build_six_cache_fixture(tmp_path)
+def test_nine_cache_audit_detects_downstream_deltaei_mismatch(tmp_path) -> None:
+    metrics = _build_nine_cache_fixture(tmp_path)
     frame = pd.read_csv(metrics)
     frame.loc[0, "delta_EI_matched_spot"] += 0.1
     frame.to_csv(metrics, index=False)

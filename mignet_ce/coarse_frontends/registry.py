@@ -12,6 +12,9 @@ from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci import (
 from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci_grn import (
     prepare as prepare_complete_combined_coarse_maturity_cci_grn,
 )
+from mignet_ce.coarse_frontends.maturity_cci_grn_two_stage import (
+    prepare as prepare_maturity_cci_grn_two_stage,
+)
 from mignet_ce.coarse_frontends.wyt_cg_cci import prepare as prepare_wyt_cg_cci
 from mignet_ce.coarse_frontends.wyt_cg_cci_regsim import prepare as prepare_wyt_cg_cci_regsim
 from mignet_ce.coarse_frontends.wyt_cg_regsim_v7 import prepare as prepare_wyt_cg_regsim_v7
@@ -26,6 +29,7 @@ COARSE_FRONTEND_REGISTRY: dict[
     "complete_combined_coarse": prepare_complete_combined_coarse,
     "complete_combined_coarse_maturity_cci": prepare_complete_combined_coarse_maturity_cci,
     "complete_combined_coarse_maturity_cci_grn": prepare_complete_combined_coarse_maturity_cci_grn,
+    "maturity_cci_grn_two_stage": prepare_maturity_cci_grn_two_stage,
     "wyt_cg_cci": prepare_wyt_cg_cci,
     "wyt_cg_cci_regsim": prepare_wyt_cg_cci_regsim,
     "wyt_cg_regsim_v7": prepare_wyt_cg_regsim_v7,

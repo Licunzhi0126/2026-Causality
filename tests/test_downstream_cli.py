@@ -4,24 +4,30 @@ import importlib.util
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_downstream_analysis.py"
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 
-def _load_script_module():
-    spec = importlib.util.spec_from_file_location("run_downstream_analysis_cli", SCRIPT)
+def _load_script_module(name: str):
+    script = SCRIPTS / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_single_cli_exposes_analyze_and_render_subcommands() -> None:
-    module = _load_script_module()
-    parser = module.build_argparser()
-    analyze = parser.parse_args(
-        ["analyze", "--metrics-csv", "metrics.csv", "--pair-archive", "pair_archive"]
+def test_formal_unified_cli_exposes_only_full_run_inputs() -> None:
+    module = _load_script_module("run_unified_downstream_analysis")
+    args = module.build_parser().parse_args(
+        ["--data-root", "data", "--cache-root", "cache", "--output-dir", "out"]
     )
-    render = parser.parse_args(["render"])
-    assert analyze.command == "analyze"
-    assert render.command == "render"
-    assert tuple(analyze.time_points) == module.DEFAULT_TIMES
+    assert tuple(args.time_points) == ("11.5", "12.5", "13.5", "14.5")
+    assert not hasattr(args, "epochs")
+
+
+def test_grn_perturbation_cli_defaults_to_two_stage_method() -> None:
+    module = _load_script_module("run_grn_perturbation")
+    args = module.build_parser().parse_args(
+        ["--data-root", "data", "--cache-root", "cache", "--output-dir", "out"]
+    )
+    assert args.method == "maturity_cci_grn_two_stage"

@@ -5,5 +5,15 @@ from wyt_deltaei_coarse_grain.trainer import (
     WYTDeltaEIResult,
     train_deltaei,
 )
+from wyt_deltaei_coarse_grain.two_stage_trainer import (
+    WYTTwoStageDeltaEIConfig,
+    WYTTwoStageDeltaEIResult,
+)
 
-__all__ = ["WYTDeltaEIConfig", "WYTDeltaEIResult", "train_deltaei"]
+__all__ = [
+    "WYTDeltaEIConfig",
+    "WYTDeltaEIResult",
+    "WYTTwoStageDeltaEIConfig",
+    "WYTTwoStageDeltaEIResult",
+    "train_deltaei",
+]

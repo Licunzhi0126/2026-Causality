@@ -17,11 +17,20 @@ from mignet_ce.io.developmental_feature_builder import (
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build spot-level proxy developmental feature CSVs from factory h5ad files.")
+    parser = argparse.ArgumentParser(
+        description="Build spot proxy developmental features and optional materialized Seurat domain features."
+    )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_WORK_ROOT / "output" / "developmental_features")
     parser.add_argument("--organs", nargs="+", default=["heart", "brain", "lung"])
     parser.add_argument("--time-points", nargs="+", default=["11.5", "12.5"])
+    parser.add_argument(
+        "--layers",
+        nargs="+",
+        choices=["spot", "seurat_k150", "seurat_k40"],
+        default=["spot"],
+        help="Output layers. Domain layers are mean-aggregated from the generated spot features.",
+    )
     parser.add_argument("--mode", choices=["factory_proxy"], default="factory_proxy")
     parser.add_argument("--velocity-components", type=int, default=30)
     parser.add_argument("--pseudotime-within-stage-weight", type=float, default=0.15)
@@ -39,6 +48,7 @@ def main() -> None:
         output_root=args.output_root,
         organs=args.organs,
         time_points=args.time_points,
+        layers=args.layers,
         mode=args.mode,
         velocity_components=args.velocity_components,
         pseudotime_within_stage_weight=args.pseudotime_within_stage_weight,

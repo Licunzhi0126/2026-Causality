@@ -9,19 +9,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.coarse_frontends import (  # noqa: E402
-    COARSE_FRONTEND_REGISTRY,
-    CoarseFrontendRequest,
-    prepare_coarse_input,
-)
-from wyt_deltaei_coarse_grain import WYTDeltaEIConfig, train_deltaei  # noqa: E402
+from mignet_ce.coarse_frontends import COARSE_METHOD_SPECS
+
+METHOD_CHOICES = tuple(sorted(COARSE_METHOD_SPECS))
 
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run WYT FeatureAlign-DeltaEI coarse graining from spot H5AD and CCI inputs."
     )
-    parser.add_argument("--method", choices=sorted(COARSE_FRONTEND_REGISTRY), required=True)
+    parser.add_argument("--method", choices=METHOD_CHOICES, required=True)
     parser.add_argument("--h5ad-t", type=Path, required=True)
     parser.add_argument("--h5ad-tp", type=Path, required=True)
     parser.add_argument("--cci-t", type=Path, required=True)
@@ -85,6 +82,25 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-proto", type=float, default=0.2)
     parser.add_argument("--lambda-min-usage", type=float, default=10.0)
     parser.add_argument("--lambda-max-usage", type=float, default=10.0)
+    parser.add_argument("--stage1-ratio", type=float, default=None)
+    parser.add_argument("--ei-retain-ratio", type=float, default=None)
+    parser.add_argument("--lambda-ei-constraint", type=float, default=None)
+    parser.add_argument("--lambda-closure", type=float, default=None)
+    parser.add_argument("--lambda-within", type=float, default=None)
+    parser.add_argument("--lambda-inter", type=float, default=None)
+    parser.add_argument("--lambda-retain-norm", type=float, default=None)
+    parser.add_argument("--retain-floor-ratio", type=float, default=None)
+    parser.add_argument("--lambda-retain-floor", type=float, default=None)
+    parser.add_argument("--inter-margin", type=float, default=None)
+    parser.add_argument("--active-usage-threshold", type=float, default=None)
+    parser.add_argument("--keff-min", type=float, default=None)
+    parser.add_argument("--checkpoint-keff-min", type=float, default=None)
+    parser.add_argument("--lambda-keff", type=float, default=None)
+    parser.add_argument("--lambda-dead-usage", type=float, default=None)
+    parser.add_argument("--min-usage", type=float, default=None)
+    parser.add_argument("--low-signal-pair-weight", type=float, default=None)
+    parser.add_argument("--low-signal-threshold-bits", type=float, default=None)
+    parser.add_argument("--checkpoint-retain-ratio", type=float, default=None)
     parser.add_argument(
         "--lambda-dev",
         type=float,
@@ -105,29 +121,38 @@ def build_argparser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_argparser().parse_args()
-    maturity_methods = {
-        "complete_combined_coarse_maturity_cci",
-        "complete_combined_coarse_maturity_cci_grn",
-    }
+def main(argv: list[str] | None = None) -> None:
+    args = build_argparser().parse_args(argv)
+    from mignet_ce.coarse_frontends import (
+        CoarseFrontendRequest,
+        DYNAMIC_CLOSURE_TWO_STAGE,
+        get_coarse_method_spec,
+        prepare_coarse_input,
+    )
+    from wyt_deltaei_coarse_grain import (
+        WYTDeltaEIConfig,
+        WYTTwoStageDeltaEIConfig,
+        train_deltaei,
+    )
+
+    method_spec = get_coarse_method_spec(args.method)
     lambda_dev = (
         float(args.lambda_dev)
         if args.lambda_dev is not None
-        else (0.05 if args.method in maturity_methods else 0.0)
+        else method_spec.default_lambda_dev
     )
-    if args.method in maturity_methods:
+    if method_spec.requires_maturity:
         if args.maturity_t is None or args.maturity_tp is None:
             raise SystemExit(
                 f"{args.method} requires --maturity-t and --maturity-tp."
             )
         if lambda_dev <= 0.0:
             raise SystemExit(f"{args.method} requires --lambda-dev > 0.")
-    if args.method == "complete_combined_coarse_maturity_cci_grn" and (
+    if method_spec.requires_grn and (
         args.grn_t is None or args.grn_tp is None
     ):
         raise SystemExit(
-            "complete_combined_coarse_maturity_cci_grn requires --grn-t and --grn-tp."
+            f"{args.method} requires --grn-t and --grn-tp."
         )
     frontend_request = CoarseFrontendRequest(
         h5ad_t=args.h5ad_t,
@@ -161,9 +186,7 @@ def main() -> None:
         maturity_direction=args.maturity_direction,
     )
     prepared = prepare_coarse_input(args.method, frontend_request)
-    config = WYTDeltaEIConfig(
-        k=args.k,
-        out_dir=args.out_dir,
+    common_config = dict(
         hidden_dim=args.hidden_dim,
         mid_dim=args.mid_dim,
         gnn_layers=args.gnn_layers,
@@ -181,18 +204,61 @@ def main() -> None:
         lambda_local=args.lambda_local,
         lambda_sharp=args.lambda_sharp,
         lambda_proto=args.lambda_proto,
-        lambda_min_usage=args.lambda_min_usage,
-        lambda_max_usage=args.lambda_max_usage,
         lambda_dev=lambda_dev,
         development_min_state_mass=args.development_min_state_mass,
         embedding_target_std=args.embedding_target_std,
         prototype_max_cosine=args.prototype_max_cosine,
-        min_usage_frac=args.min_usage_frac,
-        max_usage_frac=args.max_usage_frac,
         seed=args.seed,
         device=args.device,
         log_every=args.log_every,
     )
+    if method_spec.training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
+        if args.out_dir.exists() and any(args.out_dir.iterdir()):
+            raise SystemExit(
+                f"Two-stage output directory is not empty and will not be overwritten: {args.out_dir}"
+            )
+        two_stage_names = (
+            "stage1_ratio",
+            "ei_retain_ratio",
+            "lambda_ei_constraint",
+            "lambda_closure",
+            "lambda_within",
+            "lambda_inter",
+            "lambda_retain_norm",
+            "retain_floor_ratio",
+            "lambda_retain_floor",
+            "inter_margin",
+            "active_usage_threshold",
+            "keff_min",
+            "checkpoint_keff_min",
+            "lambda_keff",
+            "lambda_dead_usage",
+            "min_usage",
+            "low_signal_pair_weight",
+            "low_signal_threshold_bits",
+            "checkpoint_retain_ratio",
+        )
+        overrides = {
+            name: getattr(args, name)
+            for name in two_stage_names
+            if getattr(args, name) is not None
+        }
+        config = WYTTwoStageDeltaEIConfig(
+            k=args.k,
+            out_dir=args.out_dir,
+            **common_config,
+            **overrides,
+        )
+    else:
+        config = WYTDeltaEIConfig(
+            k=args.k,
+            out_dir=args.out_dir,
+            lambda_min_usage=args.lambda_min_usage,
+            lambda_max_usage=args.lambda_max_usage,
+            min_usage_frac=args.min_usage_frac,
+            max_usage_frac=args.max_usage_frac,
+            **common_config,
+        )
     result = train_deltaei(prepared, config)
     print(
         f"completed method={args.method} K={args.k} "

@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from mignet_ce.visualization.downstream.config import FullDeltaEIBenchmarkProfile
-from mignet_ce.visualization.downstream.preparation import (
-    REQUIRED_OPTIMIZED_OUTPUTS,
+from mignet_ce.downstream.analysis.config import FullDeltaEIBenchmarkProfile
+from mignet_ce.downstream.analysis.preparation import (
     _is_valid_optimized_cache,
+    required_optimized_outputs,
 )
 
 
@@ -18,7 +18,7 @@ def test_formal_profile_is_locked_to_full_deltaei() -> None:
     assert profile.nmf_max_iter == 300
     assert not hasattr(profile, "large_target_nmf_max_iter")
     assert not hasattr(profile, "large_target_threshold")
-    assert profile.profile_id == "fullv2_k40_e1500_nmf5_i300_seed20260809"
+    assert profile.profile_id == "fullv3_k40_e1500_nmf5_i300_seed20260809"
     assert profile.matched_null_repeats == 200
     assert profile.perturb_random_repeats == 200
 
@@ -35,14 +35,21 @@ def test_reduced_preview_profile_is_rejected() -> None:
 
 def test_preview_trainer_config_cannot_validate_as_full_cache(tmp_path) -> None:
     expected = {
-        "cache_protocol": "full_model_space_v2",
+        "cache_protocol": "full_model_space_v3",
+        "method": "complete_combined_coarse",
         "nmf_max_iter_used": 300,
         "optimized_k": 40,
         "optimized_epochs": 1500,
         "random_seed": 20260809,
         "lambda_dev": 0.0,
+        "training_hyperparameters": {
+            "k": 40,
+            "epochs": 1500,
+            "seed": 20260809,
+            "lambda_dev": 0.0,
+        },
     }
-    for name in REQUIRED_OPTIMIZED_OUTPUTS:
+    for name in required_optimized_outputs("complete_combined_coarse"):
         path = tmp_path / name
         if path.suffix == ".json":
             path.write_text("{}", encoding="utf-8")
@@ -60,14 +67,21 @@ def test_preview_trainer_config_cannot_validate_as_full_cache(tmp_path) -> None:
 
 def test_old_l60_cache_protocol_cannot_validate_as_full_v2(tmp_path) -> None:
     expected = {
-        "cache_protocol": "full_model_space_v2",
+        "cache_protocol": "full_model_space_v3",
+        "method": "complete_combined_coarse",
         "nmf_max_iter_used": 300,
         "optimized_k": 40,
         "optimized_epochs": 1500,
         "random_seed": 20260809,
         "lambda_dev": 0.0,
+        "training_hyperparameters": {
+            "k": 40,
+            "epochs": 1500,
+            "seed": 20260809,
+            "lambda_dev": 0.0,
+        },
     }
-    for name in REQUIRED_OPTIMIZED_OUTPUTS:
+    for name in required_optimized_outputs("complete_combined_coarse"):
         path = tmp_path / name
         if path.suffix == ".json":
             path.write_text("{}", encoding="utf-8")

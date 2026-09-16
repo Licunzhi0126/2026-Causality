@@ -19,6 +19,8 @@ from mignet_ce.io.loaders import LayerDataResolver
 
 SCALAR_COLUMNS = ("pseudotime", "sr", "potency_score")
 SR_OBS_CANDIDATES = ("sr", "signaling_entropy", "regulatory_entropy")
+SUPPORTED_OUTPUT_LAYERS = ("spot", "seurat_k150", "seurat_k40")
+EXPECTED_DOMAIN_COUNTS = {"seurat_k150": 150, "seurat_k40": 40}
 
 
 @dataclass
@@ -27,6 +29,7 @@ class DevelopmentalFeatureBuildConfig:
     output_root: Path
     organs: Sequence[str] = ("heart", "brain", "lung")
     time_points: Sequence[str] = ("11.5", "12.5")
+    layers: Sequence[str] = ("spot",)
     mode: str = "factory_proxy"
     velocity_components: int = 30
     pseudotime_within_stage_weight: float = 0.15
@@ -96,36 +99,249 @@ def build_organ_features(cfg: DevelopmentalFeatureBuildConfig, organ: str) -> li
     if not stage_data:
         return manifest_rows
 
-    tables, metadata = build_factory_proxy_features(stage_data, cfg)
+    if "spot" in cfg.layers:
+        tables, metadata = build_factory_proxy_features(stage_data, cfg)
+    else:
+        tables = {}
+        for item in stage_data:
+            spot_path = cfg.output_root / "spot" / f"{organ}_{item.stage}_features.csv"
+            if not spot_path.exists():
+                raise FileNotFoundError(
+                    f"Domain developmental-feature materialization requires the existing spot feature file "
+                    f"{spot_path}, or include 'spot' in layers to generate it in the same run."
+                )
+            spot_table = pd.read_csv(spot_path)
+            validate_output_table(spot_table, cfg.velocity_components)
+            tables[item.stage] = spot_table
+        metadata = {
+            "n_genes": len(_common_genes(stage_data)),
+            "sr_source": "precomputed_spot_features",
+        }
     for stage in map(str, cfg.time_points):
         if stage not in tables:
             continue
         table = tables[stage]
-        output_path = cfg.output_root / "spot" / f"{organ}_{stage}_features.csv"
-        if output_path.exists() and not cfg.overwrite:
-            raise FileExistsError(f"{output_path} already exists; pass overwrite=True or --overwrite to replace it.")
-        validate_output_table(table, cfg.velocity_components)
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        table.to_csv(output_path, index=False)
-        _write_qc_stats(table, cfg.output_root / "qc" / f"{organ}_{stage}_feature_stats.csv")
-
         input_path = next(item.path for item in stage_data if item.stage == stage)
-        manifest_rows.append(
-            {
-                "organ": organ,
-                "stage": stage,
-                "n_units": int(table.shape[0]),
-                "n_genes": int(metadata["n_genes"]),
-                "feature_mode": "factory_proxy",
-                "sr_source": metadata["sr_source"],
-                "velocity_components": cfg.velocity_components,
-                "input_path": str(input_path),
-                "output_path": str(output_path),
-                "status": "ok",
-            }
-        )
+        spot_output_path = cfg.output_root / "spot" / f"{organ}_{stage}_features.csv"
+        if "spot" in cfg.layers:
+            output_path = spot_output_path
+            _write_feature_table(output_path, table, cfg, layer="spot", organ=organ, stage=stage)
+            manifest_rows.append(
+                {
+                    "layer": "spot",
+                    "organ": organ,
+                    "stage": stage,
+                    "n_units": int(table.shape[0]),
+                    "n_genes": int(metadata["n_genes"]),
+                    "feature_mode": "factory_proxy",
+                    "sr_source": metadata["sr_source"],
+                    "velocity_components": cfg.velocity_components,
+                    "input_path": str(input_path),
+                    "source_feature_path": "",
+                    "spot_domain_map": "",
+                    "aggregation": "",
+                    "n_source_spots": int(table.shape[0]),
+                    "expected_units": "",
+                    "output_path": str(output_path),
+                    "status": "ok",
+                }
+            )
+
+        domain_source_table = table
+
+        for layer in cfg.layers:
+            if layer == "spot":
+                continue
+            try:
+                domain_table, provenance = aggregate_spot_features_to_domain_table(
+                    spot_table=domain_source_table,
+                    data_root=cfg.data_root,
+                    layer=layer,
+                    organ=organ,
+                    stage=stage,
+                )
+            except FileNotFoundError as exc:
+                if not cfg.skip_missing:
+                    raise
+                manifest_rows.append(
+                    {
+                        "layer": layer,
+                        "organ": organ,
+                        "stage": stage,
+                        "n_units": 0,
+                        "n_genes": int(metadata["n_genes"]),
+                        "feature_mode": "spot_domain_mean",
+                        "sr_source": metadata["sr_source"],
+                        "velocity_components": cfg.velocity_components,
+                        "input_path": str(input_path),
+                        "source_feature_path": str(spot_output_path),
+                        "spot_domain_map": "",
+                        "aggregation": "mean_over_member_spots",
+                        "n_source_spots": int(table.shape[0]),
+                        "expected_units": EXPECTED_DOMAIN_COUNTS[layer],
+                        "output_path": "",
+                        "status": f"missing_input: {exc}",
+                    }
+                )
+                continue
+            output_path = cfg.output_root / layer / f"{organ}_{stage}_features.csv"
+            _write_feature_table(output_path, domain_table, cfg, layer=layer, organ=organ, stage=stage)
+            manifest_rows.append(
+                {
+                    "layer": layer,
+                    "organ": organ,
+                    "stage": stage,
+                    "n_units": int(domain_table.shape[0]),
+                    "n_genes": int(metadata["n_genes"]),
+                    "feature_mode": "spot_domain_mean",
+                    "sr_source": metadata["sr_source"],
+                    "velocity_components": cfg.velocity_components,
+                    "input_path": str(provenance["domain_h5ad"]),
+                    "source_feature_path": str(spot_output_path),
+                    "spot_domain_map": str(provenance["spot_domain_map"]),
+                    "aggregation": "mean_over_member_spots",
+                    "n_source_spots": int(provenance["n_source_spots"]),
+                    "expected_units": int(provenance["expected_units"]),
+                    "output_path": str(output_path),
+                    "status": "ok",
+                }
+            )
     return manifest_rows
+
+
+def aggregate_spot_features_to_domain_table(
+    *,
+    spot_table: pd.DataFrame,
+    data_root: Path,
+    layer: str,
+    organ: str,
+    stage: str,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Materialize strict domain features by averaging existing spot features."""
+    if layer not in EXPECTED_DOMAIN_COUNTS:
+        raise ValueError(f"Unsupported domain developmental-feature layer {layer!r}.")
+    paths = LayerDataResolver(Path(data_root)).paths(layer, organ, str(stage))
+    if not paths.h5ad.exists():
+        raise FileNotFoundError(f"Missing {layer} h5ad for developmental feature aggregation: {paths.h5ad}")
+    if paths.spot_domain_map is None or not paths.spot_domain_map.exists():
+        raise FileNotFoundError(f"Missing {layer} spot-domain map: {paths.spot_domain_map}")
+
+    mapping = pd.read_csv(paths.spot_domain_map)
+    required_map_columns = {"spot_id", "domain_id"}
+    missing_columns = required_map_columns - set(mapping.columns)
+    if missing_columns:
+        raise ValueError(f"{paths.spot_domain_map} is missing columns {sorted(missing_columns)}.")
+    mapping = mapping.copy()
+    mapping["spot_id"] = mapping["spot_id"].astype(str)
+    mapping["domain_id"] = mapping["domain_id"].astype(str)
+    duplicated_spots = mapping.loc[mapping["spot_id"].duplicated(), "spot_id"].unique().tolist()
+    if duplicated_spots:
+        raise ValueError(
+            f"{paths.spot_domain_map} contains duplicate spot_id values, for example {duplicated_spots[:5]}."
+        )
+
+    if "unit_id" not in spot_table.columns:
+        raise ValueError("Spot developmental feature table must contain unit_id.")
+    source = spot_table.copy()
+    source["unit_id"] = source["unit_id"].astype(str)
+    duplicated_features = source.loc[source["unit_id"].duplicated(), "unit_id"].unique().tolist()
+    if duplicated_features:
+        raise ValueError(f"Spot developmental features contain duplicate unit_id values: {duplicated_features[:5]}.")
+    feature_index = set(source["unit_id"])
+    mapping["_feature_unit_id"] = _resolve_mapping_feature_ids(mapping, feature_index)
+    missing_spots = mapping.loc[~mapping["_feature_unit_id"].isin(feature_index), "spot_id"].tolist()
+    if missing_spots:
+        raise ValueError(
+            f"{paths.spot_domain_map} has {len(missing_spots)} spots missing from spot developmental features, "
+            f"for example {missing_spots[:5]}."
+        )
+
+    domain_ids, _ = _read_h5ad_units_and_validate(paths.h5ad)
+    expected_count = EXPECTED_DOMAIN_COUNTS[layer]
+    if len(domain_ids) != expected_count:
+        raise ValueError(f"{layer} expects {expected_count} H5AD units, found {len(domain_ids)} in {paths.h5ad}.")
+    map_domains = set(mapping["domain_id"])
+    h5ad_domains = set(domain_ids)
+    if map_domains != h5ad_domains:
+        missing_in_map = sorted(h5ad_domains - map_domains)[:5]
+        extra_in_map = sorted(map_domains - h5ad_domains)[:5]
+        raise ValueError(
+            f"Domain IDs in {paths.spot_domain_map} do not exactly match {paths.h5ad}; "
+            f"missing_in_map={missing_in_map}, extra_in_map={extra_in_map}."
+        )
+
+    numeric_columns = [column for column in source.columns if column != "unit_id"]
+    numeric = source.loc[:, ["unit_id", *numeric_columns]].copy()
+    for column in numeric_columns:
+        numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
+    if not numeric_columns or not np.isfinite(numeric[numeric_columns].to_numpy(dtype=float)).all():
+        raise ValueError("Spot developmental feature numeric columns must be present and finite before aggregation.")
+    merged = mapping.merge(numeric, left_on="_feature_unit_id", right_on="unit_id", how="left", validate="one_to_one")
+    aggregated = merged.groupby("domain_id", sort=False)[numeric_columns].mean()
+    counts = merged.groupby("domain_id", sort=False).size().rename("spot_count")
+    aggregated = aggregated.join(counts).reindex(domain_ids)
+    if aggregated.isna().any().any() or not np.isfinite(aggregated.to_numpy(dtype=float)).all():
+        raise ValueError(f"Generated {layer} developmental features contain missing or non-finite values.")
+    output = aggregated.reset_index(names="unit_id")
+    return output, {
+        "source_spot_features": "in_memory_factory_proxy",
+        "spot_domain_map": str(paths.spot_domain_map),
+        "domain_h5ad": str(paths.h5ad),
+        "layer": layer,
+        "organ": organ,
+        "stage": str(stage),
+        "n_source_spots": int(len(mapping)),
+        "n_output_domains": int(len(output)),
+        "expected_units": expected_count,
+        "aggregation": "mean_over_member_spots",
+        "maturity_column": "pseudotime",
+    }
+
+
+def _resolve_mapping_feature_ids(mapping: pd.DataFrame, feature_index: set[str]) -> pd.Series:
+    raw = mapping["spot_id"].astype(str)
+    if "organ" not in mapping.columns:
+        return raw
+    prefixed = mapping["organ"].astype(str) + "__" + raw
+    return pd.Series(
+        [plain if plain in feature_index else pref if pref in feature_index else plain for plain, pref in zip(raw, prefixed)],
+        index=mapping.index,
+    )
+
+
+def _read_h5ad_units_and_validate(path: Path) -> tuple[list[str], int]:
+    adata = ad.read_h5ad(path, backed="r")
+    try:
+        units = adata.obs_names.astype(str).tolist()
+        gene_count = int(adata.n_vars)
+    finally:
+        if getattr(adata, "isbacked", False):
+            adata.file.close()
+    if len(units) != len(set(units)):
+        raise ValueError(f"H5AD observation IDs are not unique: {path}")
+    return units, gene_count
+
+
+def _write_feature_table(
+    output_path: Path,
+    table: pd.DataFrame,
+    cfg: DevelopmentalFeatureBuildConfig,
+    *,
+    layer: str,
+    organ: str,
+    stage: str,
+) -> None:
+    if output_path.exists() and not cfg.overwrite:
+        raise FileExistsError(f"{output_path} already exists; pass overwrite=True or --overwrite to replace it.")
+    validate_output_table(table, cfg.velocity_components)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(output_path, index=False)
+    qc_path = (
+        cfg.output_root / "qc" / f"{organ}_{stage}_feature_stats.csv"
+        if layer == "spot"
+        else cfg.output_root / "qc" / layer / f"{organ}_{stage}_feature_stats.csv"
+    )
+    _write_qc_stats(table, qc_path)
 
 
 def build_factory_proxy_features(
@@ -184,6 +400,7 @@ def _normalize_config(cfg: DevelopmentalFeatureBuildConfig) -> DevelopmentalFeat
     cfg.output_root = Path(cfg.output_root)
     cfg.organs = tuple(map(str, cfg.organs))
     cfg.time_points = tuple(map(str, cfg.time_points))
+    cfg.layers = tuple(map(str, cfg.layers))
     if cfg.mode != "factory_proxy":
         raise ValueError("Only mode='factory_proxy' is implemented.")
     if cfg.velocity_components <= 0:
@@ -192,6 +409,13 @@ def _normalize_config(cfg: DevelopmentalFeatureBuildConfig) -> DevelopmentalFeat
         raise ValueError("pseudotime_within_stage_weight must be between 0 and 1.")
     if cfg.sr_source not in {"auto", "obs", "module", "regulon", "expression"}:
         raise ValueError("sr_source must be one of ['auto', 'obs', 'module', 'regulon', 'expression'].")
+    unsupported_layers = sorted(set(cfg.layers) - set(SUPPORTED_OUTPUT_LAYERS))
+    if unsupported_layers:
+        raise ValueError(
+            f"Unsupported output layers {unsupported_layers}; expected a subset of {list(SUPPORTED_OUTPUT_LAYERS)}."
+        )
+    if not cfg.layers:
+        raise ValueError("At least one developmental-feature output layer is required.")
     return cfg
 
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from mignet_ce.visualization.downstream.dynamic_closure.analysis import (
+from mignet_ce.downstream.analysis.dynamic_closure.analysis import (
     build_cross_representation_consistency,
     crossfit_macro_q_error,
     information_closure_budget,
@@ -43,16 +43,16 @@ def test_information_closure_identity_and_continuous_quality() -> None:
     )
 
 
-def test_crossfit_excludes_singletons_from_coverage() -> None:
+def test_crossfit_is_soft_native_and_covers_all_rows() -> None:
     observed = np.asarray([[0.8, 0.2], [0.7, 0.3], [0.1, 0.9]])
-    hard = _hard([0, 0, 1], 2)
-    result = crossfit_macro_q_error(observed, hard, folds=5, seed=7)
-    assert 0 < result["crossfit_coverage"] < 1
-    assert result["singleton_weight_fraction"] > 0
+    soft = np.asarray([[0.45, 0.40, 0.15], [0.70, 0.20, 0.10], [0.10, 0.25, 0.65]])
+    result = crossfit_macro_q_error(observed, soft, folds=5, seed=7)
+    assert np.isclose(result["crossfit_coverage"], 1.0)
+    assert np.isfinite(result["crossfit_js"])
 
 
-def test_consistency_contains_all_six_mapping_pairs_at_four_times() -> None:
-    mappings = ("a", "b", "c", "d")
+def test_consistency_contains_all_ten_mapping_pairs_at_four_times() -> None:
+    mappings = ("a", "b", "c", "d", "e")
     times = ("1", "2", "3", "4")
     pairs = ("1->2", "2->3", "3->4")
     records = {}
@@ -62,8 +62,8 @@ def test_consistency_contains_all_six_mapping_pairs_at_four_times() -> None:
             labels = [(index + mapping_index + pair_index) % 2 for index in range(4)]
             assignment = _hard(labels, 2)
             records[(mapping, pair)] = SimpleNamespace(
-                hard_s_full=assignment,
-                hard_t_full=assignment,
+                source_assignment=assignment,
+                target_assignment=assignment,
                 spots_s=spots,
                 spots_t=spots,
             )
@@ -73,6 +73,6 @@ def test_consistency_contains_all_six_mapping_pairs_at_four_times() -> None:
         mapping_names=mappings,
     )
     table = build_cross_representation_consistency(cfg, records)
-    assert len(table) == 24
-    assert table[["mapping_a", "mapping_b"]].drop_duplicates().shape[0] == 6
+    assert len(table) == 40
+    assert table[["mapping_a", "mapping_b"]].drop_duplicates().shape[0] == 10
     assert set(table["time"]) == set(times)

@@ -12,13 +12,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.visualization.downstream.deltaei_contract import audit_full_cache_root
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Verify all 2 methods x 3 pairs against PIJ_micro_train.npy, "
+            "Verify all 3 methods x 3 pairs against PIJ_micro_train.npy, "
             "PIJ_macro_train.npy, summary.json, and formal metrics.csv."
         )
     )
@@ -31,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from mignet_ce.downstream.analysis.deltaei_contract import audit_full_cache_root
+
     table = audit_full_cache_root(
         args.full_cache_root,
         args.metrics_csv,

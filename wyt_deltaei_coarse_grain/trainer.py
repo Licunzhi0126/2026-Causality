@@ -222,7 +222,7 @@ def _log(handle: TextIO, message: str) -> None:
     handle.flush()
 
 
-def train_deltaei(
+def _train_single_stage(
     prepared: PreparedCoarseInput,
     config: WYTDeltaEIConfig,
 ) -> WYTDeltaEIResult:
@@ -687,3 +687,28 @@ def train_deltaei(
         final_delta_ei=float(final_delta.cpu()),
         metrics=metrics,
     )
+
+
+def train_deltaei(prepared: PreparedCoarseInput, config):
+    """Dispatch without changing the historical single-stage training loop."""
+
+    from mignet_ce.coarse_frontends.method_specs import (
+        DYNAMIC_CLOSURE_TWO_STAGE,
+        training_mode_for_method,
+    )
+
+    training_mode = training_mode_for_method(prepared.method)
+    if training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
+        from wyt_deltaei_coarse_grain.two_stage_trainer import (
+            WYTTwoStageDeltaEIConfig,
+            train_deltaei_two_stage,
+        )
+
+        if not isinstance(config, WYTTwoStageDeltaEIConfig):
+            raise TypeError(
+                "maturity_cci_grn_two_stage requires WYTTwoStageDeltaEIConfig."
+            )
+        return train_deltaei_two_stage(prepared, config)
+    if not isinstance(config, WYTDeltaEIConfig):
+        raise TypeError("Legacy coarse methods require WYTDeltaEIConfig.")
+    return _train_single_stage(prepared, config)

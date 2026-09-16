@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Formal four-representation downstream entry with locked full DeltaEI runs."""
+"""Formal five-representation downstream entry with locked full DeltaEI runs."""
 
 import argparse
 import json
@@ -13,14 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mignet_ce.visualization.downstream.config import UnifiedDownstreamConfig
-from mignet_ce.visualization.downstream.workflow import run_unified_downstream_analysis
+from mignet_ce.downstream.analysis.config import UnifiedDownstreamConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the formal unified downstream benchmark. DeltaEI is always 2 methods x "
+            "Run the formal unified downstream benchmark. DeltaEI is always 3 methods x "
             "3 adjacent pairs at K=40, 1500 epochs, and NMF max_iter=300 for every pair; "
             "reduced preview parameters are not accepted."
         )
@@ -38,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from mignet_ce.downstream.analysis.workflow import run_unified_downstream_analysis
+    from mignet_ce.downstream.analysis.visualization.workflow import render_unified_downstream_figures
+
     config = UnifiedDownstreamConfig(
         data_root=args.data_root,
         cache_root=args.cache_root,
@@ -49,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         spatial_knn=args.spatial_knn,
     )
     outputs = run_unified_downstream_analysis(config)
+    visualization = render_unified_downstream_figures(outputs["output_dir"])
+    outputs["figures_dir"] = visualization["figures_dir"]
+    outputs["visualization_manifest"] = visualization["manifest"]
     print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False, indent=2))
     return 0
 
