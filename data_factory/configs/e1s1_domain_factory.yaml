@@ -26,6 +26,9 @@ domain_levels:
   seurat_k40:
     k: 40
     source_script: scripts/03_run_seurat_k40.R
+  seurat_k10:
+    k: 10
+    source_script: scripts/03_run_seurat_domains.R
   louvain_k150:
     k: 150
     source_script: scripts/05_run_louvain_k150.py

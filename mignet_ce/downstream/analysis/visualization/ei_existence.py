@@ -41,11 +41,21 @@ DEFAULT_LEVEL_PAIRS = (
     "seurat_k150:seurat_k40",
     "spot:seurat_k40",
 )
+K10_LEVEL_PAIRS = (
+    "spot:seurat_k150",
+    "seurat_k150:seurat_k40",
+    "seurat_k40:seurat_k10",
+    "spot:seurat_k40",
+    "seurat_k150:seurat_k10",
+    "spot:seurat_k10",
+)
+K10_ADJACENT_PAIRS = K10_LEVEL_PAIRS[:3]
 
 LAYER_LABELS: Dict[str, str] = {
     "spot": "Spot",
     "seurat_k150": "K150",
     "seurat_k40": "K40",
+    "seurat_k10": "K10",
     "seurat_less_than5": "Seurat <5",
     "louvain_k150": "Louvain K150",
     "louvain_k40": "Louvain K40",
@@ -58,6 +68,7 @@ LAYER_PREFIXES: Dict[str, Tuple[str, ...]] = {
     "seurat_less_than5": ("seuratLessThan5",),
     "seurat_k150": ("seurat150",),
     "seurat_k40": ("seurat", "seurat40"),
+    "seurat_k10": ("seurat10",),
     "louvain_less_than5": ("louvainLessThan5",),
     "louvain_k150": ("louvain150",),
     "louvain_k40": ("louvain40",),
@@ -74,7 +85,8 @@ HEATMAP_CMAP = LinearSegmentedColormap.from_list(
     ["#2b6cb0", "#f7f7f7", "#b2182b"],
 )
 
-STACK_Z = {"spot": 0.0, "seurat_k150": 0.55, "seurat_k40": 1.10}
+STACK_Z = {"spot": 0.0, "seurat_k150": 0.55, "seurat_k40": 1.10, "seurat_k10": 1.65}
+STACK_ORDER = ("spot", "seurat_k150", "seurat_k40", "seurat_k10")
 
 
 @dataclass(frozen=True)
@@ -247,7 +259,31 @@ def build_time_pair_mean_table(
     return pd.DataFrame(rows)
 
 
+def validate_metric_grid(
+    metrics: pd.DataFrame,
+    ordered_time_pairs: Sequence[str],
+    level_pairs: Sequence[LevelPair],
+) -> None:
+    if len({pair.key for pair in level_pairs}) != len(level_pairs):
+        raise ValueError("Level pairs contain duplicates.")
+    for time_pair in ordered_time_pairs:
+        for pair in level_pairs:
+            values = metrics.loc[
+                (metrics["time_pair"] == time_pair)
+                & (metrics["lower_layer"] == pair.lower)
+                & (metrics["upper_layer"] == pair.upper),
+                "EI_gain",
+            ]
+            if len(values) != 1 or not np.isfinite(values.iloc[0]):
+                raise ValueError(f"Expected one finite EI gain for {time_pair} {pair.key}; found {len(values)} rows.")
+
+
 def find_domain_map(data_root: Path, layer: str, organ: str, stage: str) -> Path | None:
+    if layer in {"seurat_k150", "seurat_k10"}:
+        layer_dir = data_root / layer / organ
+        prefix = LAYER_PREFIXES[layer][0]
+        candidate = layer_dir / f"{prefix}_{organ}_{stage}_spot_domain_map.csv"
+        return candidate if candidate.exists() else None
     actual_layer = LOCAL_LAYER_ALIASES.get(layer, layer)
     layer_dir = data_root / actual_layer / organ
     if not layer_dir.exists():
@@ -532,7 +568,13 @@ def draw_slat_like_wires(
         )
 
 
-def _spot_to_domain_wire_edges(domain_frame: pd.DataFrame, *, max_per_group: int, random_state: int) -> pd.DataFrame:
+def _spot_to_domain_wire_edges(
+    domain_frame: pd.DataFrame,
+    *,
+    upper_layer: str = "seurat_k150",
+    max_per_group: int,
+    random_state: int,
+) -> pd.DataFrame:
     if domain_frame.empty:
         return pd.DataFrame()
     centroids = domain_centroids(domain_frame, "nx", "ny").set_index("domain_id")
@@ -552,7 +594,7 @@ def _spot_to_domain_wire_edges(domain_frame: pd.DataFrame, *, max_per_group: int
                 "start_z": STACK_Z["spot"],
                 "end_x": float(centroid.x),
                 "end_y": float(centroid.y),
-                "end_z": STACK_Z["seurat_k150"],
+                "end_z": STACK_Z[upper_layer],
                 "domain_id": str(row.domain_id),
             }
         )
@@ -563,6 +605,8 @@ def _domain_to_domain_wire_edges(
     lower_frame: pd.DataFrame,
     upper_frame: pd.DataFrame,
     *,
+    lower_layer: str = "seurat_k150",
+    upper_layer: str = "seurat_k40",
     max_per_group: int,
     random_state: int,
 ) -> pd.DataFrame:
@@ -591,10 +635,10 @@ def _domain_to_domain_wire_edges(
             {
                 "start_x": float(lower.x),
                 "start_y": float(lower.y),
-                "start_z": STACK_Z["seurat_k150"],
+                "start_z": STACK_Z[lower_layer],
                 "end_x": float(upper.x),
                 "end_y": float(upper.y),
-                "end_z": STACK_Z["seurat_k40"],
+                "end_z": STACK_Z[upper_layer],
                 "upper_domain_id": upper_domain,
                 "n_overlap": int(row.n_overlap),
             }
@@ -608,22 +652,29 @@ def _prepare_stage_stack_data(
     organ: str,
     stage: str,
     orientation: SpatialOrientation,
+    stack_layers: Sequence[str] = STACK_ORDER[:3],
 ) -> dict[str, pd.DataFrame]:
     slice_frame = orient_frame(load_full_slice(slice_root, stage, organ), orientation)
     bounds = spatial_bounds(slice_frame)
     slice_frame = normalized_xy(slice_frame, bounds)
-    k150_map = load_domain_map(data_root, "seurat_k150", organ, stage)
-    k40_map = load_domain_map(data_root, "seurat_k40", organ, stage)
-    k150 = normalized_xy(merge_slice_domain(slice_frame, k150_map), bounds)
-    k40 = normalized_xy(merge_slice_domain(slice_frame, k40_map), bounds)
     heart = slice_frame[slice_frame["is_target_organ"]].copy()
-    return {"slice": slice_frame, "spot": heart, "seurat_k150": k150, "seurat_k40": k40}
+    stage_data = {"slice": slice_frame, "spot": heart}
+    for layer in stack_layers:
+        if layer == "spot":
+            continue
+        domain_map = load_domain_map(data_root, layer, organ, stage)
+        if domain_map is None:
+            raise FileNotFoundError(f"Missing usable domain map for {layer}, {organ}, {stage}")
+        stage_data[layer] = normalized_xy(merge_slice_domain(slice_frame, domain_map), bounds)
+        if stage_data[layer].empty:
+            raise ValueError(f"Domain map for {layer}, {organ}, {stage} has no spots matching the full slice")
+    return stage_data
 
 
-def _configure_3d_stack_axis(ax: plt.Axes) -> None:
+def _configure_3d_stack_axis(ax: plt.Axes, stack_layers: Sequence[str] = STACK_ORDER[:3]) -> None:
     ax.set_xlim(-0.54, 0.54)
     ax.set_ylim(-0.54, 0.54)
-    ax.set_zlim(-0.08, 1.22)
+    ax.set_zlim(-0.08, STACK_Z[stack_layers[-1]] + 0.12)
     ax.set_box_aspect((1.0, 1.0, 0.78))
     ax.view_init(elev=22, azim=-58)
     ax.set_axis_off()
@@ -636,12 +687,15 @@ def _plot_stage_stack(
     stage: str,
     k150_colors: Dict[str, Tuple[float, float, float, float]],
     k40_colors: Dict[str, Tuple[float, float, float, float]],
+    k10_colors: Dict[str, Tuple[float, float, float, float]] | None = None,
+    stack_layers: Sequence[str] = STACK_ORDER[:3],
     random_state: int,
     show_layer_labels: bool = True,
 ) -> None:
     full_slice = stage_data["slice"]
     background = _sample_frame(full_slice, 22000, random_state=random_state)
-    for z_value in STACK_Z.values():
+    for layer in stack_layers:
+        z_value = STACK_Z[layer]
         ax.scatter(
             background["nx"],
             background["ny"],
@@ -662,6 +716,16 @@ def _plot_stage_stack(
     )
     draw_slat_like_wires(ax, spot_to_k150, line_alpha=0.045, line_width=0.18, color="#6b7280")
     draw_slat_like_wires(ax, k150_to_k40, line_alpha=0.13, line_width=0.34, color="#6b7280")
+    if "seurat_k10" in stack_layers:
+        k40_to_k10 = _domain_to_domain_wire_edges(
+            stage_data["seurat_k40"],
+            stage_data["seurat_k10"],
+            lower_layer="seurat_k40",
+            upper_layer="seurat_k10",
+            max_per_group=6,
+            random_state=random_state,
+        )
+        draw_slat_like_wires(ax, k40_to_k10, line_alpha=0.16, line_width=0.42, color="#6b7280")
 
     draw_slat_like_layer_points(
         ax,
@@ -692,17 +756,52 @@ def _plot_stage_stack(
         alpha=0.78,
         max_points=18000,
     )
+    if "seurat_k10" in stack_layers:
+        draw_slat_like_layer_points(
+            ax,
+            stage_data["seurat_k10"],
+            z_value=STACK_Z["seurat_k10"],
+            color_col="domain_id",
+            color_lookup=k10_colors,
+            point_size=2.0,
+            alpha=0.80,
+            max_points=18000,
+        )
     if show_layer_labels:
-        for y, label in ((0.62, "K40"), (0.47, "K150"), (0.31, "Spot / Local")):
+        labels = (
+            ((0.70, "K10"), (0.57, "K40"), (0.44, "K150"), (0.31, "Spot / Local"))
+            if "seurat_k10" in stack_layers
+            else ((0.62, "K40"), (0.47, "K150"), (0.31, "Spot / Local"))
+        )
+        for y, label in labels:
             ax.text2D(0.03, y, label, transform=ax.transAxes, fontsize=9.4, ha="left", va="center", color="#1f2937")
     ax.text2D(0.50, 0.96, f"E{stage}", transform=ax.transAxes, ha="center", va="top", fontsize=12, weight="semibold")
-    _configure_3d_stack_axis(ax)
+    _configure_3d_stack_axis(ax, stack_layers)
 
 
-def draw_vertical_ei_brackets(ax: plt.Axes, values_by_pair: Dict[str, float]) -> None:
+def draw_vertical_ei_brackets(
+    ax: plt.Axes,
+    values_by_pair: Dict[str, float],
+    level_pairs: Sequence[LevelPair] | None = None,
+) -> None:
     ax.set_axis_off()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
+    if level_pairs is not None and any("seurat_k10" in (pair.lower, pair.upper) for pair in level_pairs):
+        adjacent = {pair.key for pair in parse_level_pairs(K10_ADJACENT_PAIRS)}
+        positions = {"spot": 0.14, "seurat_k150": 0.34, "seurat_k40": 0.54, "seurat_k10": 0.74}
+        for pair in level_pairs:
+            x = 0.05 if pair.key in adjacent else 0.53
+            draw_axis_brace(
+                ax,
+                x,
+                positions[pair.lower],
+                positions[pair.upper],
+                f"{pair.label}\nEI gain = {format_signed(values_by_pair[pair.key])}",
+                fontsize=8.0,
+                text_dx=0.025,
+            )
+        return
     draw_axis_brace(
         ax,
         0.13,
@@ -742,24 +841,35 @@ def plot_fig1_hierarchy(
 ) -> None:
     if len(time_points) < 2:
         raise ValueError("Figure 1 requires at least two time points.")
+    stack_layers = STACK_ORDER if any("seurat_k10" in (pair.lower, pair.upper) for pair in level_pairs) else STACK_ORDER[:3]
     pair_time = f"{time_points[0]}->{time_points[1]}"
     value_by_pair = {pair.key: metric_value(metrics, pair_time, pair) for pair in level_pairs}
     stages = [time_points[0], time_points[1]]
     stage_data = {
-        stage: _prepare_stage_stack_data(slice_root, data_root, organ, stage, orientation)
+        stage: _prepare_stage_stack_data(slice_root, data_root, organ, stage, orientation, stack_layers)
         for stage in stages
     }
 
     k150_ids: List[str] = []
     k40_ids: List[str] = []
+    k10_ids: List[str] = []
     for stage in stages:
         k150_ids.extend(stage_data[stage]["seurat_k150"]["domain_id"].astype(str).tolist())
         k40_ids.extend(stage_data[stage]["seurat_k40"]["domain_id"].astype(str).tolist())
+        if "seurat_k10" in stack_layers:
+            k10_ids.extend(stage_data[stage]["seurat_k10"]["domain_id"].astype(str).tolist())
     k150_colors = domain_color_lookup(k150_ids or ["missing"], cmap_name="tab20")
     k40_colors = domain_color_lookup(k40_ids or ["missing"], cmap_name="tab20")
+    k10_colors = domain_color_lookup(k10_ids or ["missing"], cmap_name="tab20")
 
-    fig = plt.figure(figsize=(14.8, 6.2), dpi=dpi)
-    grid = fig.add_gridspec(1, 4, width_ratios=[1.55, 0.13, 1.55, 0.90], wspace=-0.08)
+    four_layers = "seurat_k10" in stack_layers
+    fig = plt.figure(figsize=(18.0, 7.4) if four_layers else (14.8, 6.2), dpi=dpi)
+    grid = fig.add_gridspec(
+        1,
+        4,
+        width_ratios=[1.55, 0.13, 1.55, 1.55] if four_layers else [1.55, 0.13, 1.55, 0.90],
+        wspace=-0.08,
+    )
     left_ax = fig.add_subplot(grid[0, 0], projection="3d")
     arrow_ax = fig.add_subplot(grid[0, 1])
     right_ax = fig.add_subplot(grid[0, 2], projection="3d")
@@ -771,6 +881,8 @@ def plot_fig1_hierarchy(
         stage=stages[0],
         k150_colors=k150_colors,
         k40_colors=k40_colors,
+        k10_colors=k10_colors,
+        stack_layers=stack_layers,
         random_state=11,
         show_layer_labels=True,
     )
@@ -780,12 +892,14 @@ def plot_fig1_hierarchy(
         stage=stages[1],
         k150_colors=k150_colors,
         k40_colors=k40_colors,
+        k10_colors=k10_colors,
+        stack_layers=stack_layers,
         random_state=12,
         show_layer_labels=False,
     )
 
     arrow_ax.set_axis_off()
-    for y in (0.27, 0.50, 0.73):
+    for y in ((0.23, 0.43, 0.63, 0.83) if four_layers else (0.27, 0.50, 0.73)):
         arrow_ax.annotate(
             "",
             xy=(0.92, y),
@@ -795,11 +909,11 @@ def plot_fig1_hierarchy(
         )
         arrow_ax.text(0.50, y + 0.035, "Pij", ha="center", va="bottom", fontsize=10.0, weight="semibold")
 
-    draw_vertical_ei_brackets(brace_ax, value_by_pair)
+    draw_vertical_ei_brackets(brace_ax, value_by_pair, level_pairs)
     fig.patches.append(
         FancyArrowPatch(
             (0.040, 0.23),
-            (0.040, 0.79),
+            (0.040, 0.86 if four_layers else 0.79),
             transform=fig.transFigure,
             arrowstyle="->",
             mutation_scale=12,
@@ -808,6 +922,9 @@ def plot_fig1_hierarchy(
         )
     )
     fig.text(0.018, 0.51, "coarse-graining direction", rotation=90, ha="center", va="center", fontsize=9.8, color="#30343b")
+    if four_layers:
+        fig.text(0.52, 0.035, "Domain links show maximum spot overlap; independent Seurat K fits are not strictly nested.",
+                 ha="center", va="bottom", fontsize=8.5, color="#4b5563")
     fig.suptitle("EI existence hierarchy", fontsize=14, weight="semibold", y=0.98)
     fig.subplots_adjust(left=0.045, right=0.985, top=0.92, bottom=0.08)
     fig.savefig(output_path, bbox_inches="tight")
@@ -831,7 +948,7 @@ def plot_fig2_heatmap(
         vmax = vmin + 1.0
 
     norm = Normalize(vmin=vmin, vmax=vmax)
-    fig, ax = plt.subplots(figsize=(7.2, 5.6), dpi=dpi)
+    fig, ax = plt.subplots(figsize=(max(7.2, 1.65 * len(level_pairs) + 2.0), 5.6), dpi=dpi)
     image = ax.imshow(values, cmap=HEATMAP_CMAP, norm=norm, aspect="auto")
     ax.set_xticks(range(len(labels_x)))
     ax.set_xticklabels(labels_x, rotation=25, ha="right")
@@ -875,6 +992,7 @@ def draw_time_bracket_lanes(
     axes: Sequence[plt.Axes],
     time_points: Sequence[str],
     mean_by_time_pair: Dict[str, float],
+    adjacent_only: bool = False,
 ) -> None:
     top = max(ax.get_position().y1 for ax in axes)
     lane_y = {1: top + 0.025, 2: top + 0.085, 3: top + 0.145}
@@ -887,7 +1005,8 @@ def draw_time_bracket_lanes(
             x0 = left.x0 + 0.62 * (left.x1 - left.x0)
             x1 = right.x0 + 0.38 * (right.x1 - right.x0)
             value = mean_by_time_pair.get(pair_time, float("nan"))
-            label = f"{pair_time}  mean EI = {format_signed(value)}"
+            label_kind = "mean adjacent EI gain" if adjacent_only else "mean EI"
+            label = f"{pair_time}  {label_kind} = {format_signed(value)}"
             draw_figure_bracket(fig, x0, x1, lane_y[lag], label, fontsize=7.8 if lag == 1 else 8.2)
 
 
@@ -899,6 +1018,7 @@ def plot_fig3_timeline(
     output_path: Path,
     dpi: int,
     orientation: SpatialOrientation,
+    adjacent_only: bool = False,
 ) -> None:
     slice_frames = [orient_frame(load_full_slice(slice_root, stage, organ), orientation) for stage in time_points]
 
@@ -917,7 +1037,7 @@ def plot_fig3_timeline(
     fig.canvas.draw()
 
     mean_by_time = _time_pair_lookup(time_pair_means)
-    draw_time_bracket_lanes(fig, axes, time_points, mean_by_time)
+    draw_time_bracket_lanes(fig, axes, time_points, mean_by_time, adjacent_only=adjacent_only)
     for idx in range(len(time_points) - 1):
         left = axes[idx].get_position()
         right = axes[idx + 1].get_position()
@@ -965,17 +1085,25 @@ def generate_ei_existence_figures(
     parsed_pairs = list(level_pairs) if level_pairs is not None else parse_level_pairs(DEFAULT_LEVEL_PAIRS)
     ordered_time_pairs = time_pair_order(time_points)
 
-    ensure_dir(output_dir)
     metrics = load_metrics(result_root, network_method, pij_method, organ)
+    validate_metric_grid(metrics, ordered_time_pairs, parsed_pairs)
+    four_layers = any("seurat_k10" in (pair.lower, pair.upper) for pair in parsed_pairs)
+    if four_layers and {pair.key for pair in parsed_pairs} != {pair.key for pair in parse_level_pairs(K10_LEVEL_PAIRS)}:
+        raise ValueError("The Seurat K10 hierarchy figure requires all six K10_LEVEL_PAIRS comparisons.")
+    mean_pairs = parse_level_pairs(K10_ADJACENT_PAIRS) if four_layers else parsed_pairs
+    if four_layers:
+        validate_metric_grid(metrics, ordered_time_pairs, mean_pairs)
     heatmap_table = build_heatmap_table(metrics, ordered_time_pairs, parsed_pairs)
-    time_pair_means = build_time_pair_mean_table(metrics, ordered_time_pairs, parsed_pairs)
+    time_pair_means = build_time_pair_mean_table(metrics, ordered_time_pairs, mean_pairs)
+    ensure_dir(output_dir)
     fig2_table, fig3_table = write_tables(output_dir, heatmap_table, time_pair_means)
 
     fig1_path = output_dir / "fig1_hierarchy_t0_t1_brackets.png"
     fig2_path = output_dir / "fig2_time_pair_level_pair_heatmap.png"
     fig3_path = output_dir / "fig3_four_timepoint_mean_ei_timeline.png"
     plot_fig2_heatmap(heatmap_table, parsed_pairs, fig2_path, dpi)
-    plot_fig3_timeline(slice_root, organ, time_points, time_pair_means, fig3_path, dpi, orientation)
+    plot_fig3_timeline(slice_root, organ, time_points, time_pair_means, fig3_path, dpi, orientation,
+                       adjacent_only=four_layers)
     plot_fig1_hierarchy(metrics, slice_root, data_root, organ, time_points, parsed_pairs, fig1_path, dpi, orientation)
     return FigurePaths(fig1=fig1_path, fig2=fig2_path, fig3=fig3_path, fig2_table=fig2_table, fig3_table=fig3_table)
 

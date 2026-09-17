@@ -104,6 +104,76 @@ Rscript scripts/03_run_seurat_domains.R --mode exact_k --k 150 --output-prefix s
 Rscript scripts/03_run_seurat_domains.R --mode less_than_5 --output-prefix seuratLessThan5 --max-spots-per-domain 4
 ```
 
+### Seurat K10 for the heart EI existence figures
+
+The K10 extension uses the same independent exact-K Seurat procedure as K150 and K40.
+It adds four heart datasets (E11.5 through E14.5), their GRN and COMMOT CCI outputs,
+and three new EI comparisons. Run these commands after deploying the K10 registry and
+figure changes in this repository. Existing K150/K40/spot results remain separate.
+
+```bash
+cd "/home/jovyan/work/2026 Causality/data_factory"
+
+Rscript scripts/03_run_seurat_domains.R \
+  --mode exact_k --k 10 \
+  --spot-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/spot" \
+  --output-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/seurat_k10" \
+  --output-prefix seurat10 \
+  --sample-names spot_heart_11.5 spot_heart_12.5 spot_heart_13.5 spot_heart_14.5
+
+python scripts/run_grn_layer.py \
+  --layer seurat_k10 \
+  --input-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/seurat_k10" \
+  --output-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/grn/seurat_k10" \
+  --sample-names seurat10_heart_11.5 seurat10_heart_12.5 seurat10_heart_13.5 seurat10_heart_14.5 \
+  --threads 32
+
+python scripts/run_cci_layer_commot.py \
+  --layer seurat_k10 \
+  --input-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/seurat_k10" \
+  --output-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/cci/seurat_k10" \
+  --sample-names seurat10_heart_11.5 seurat10_heart_12.5 seurat10_heart_13.5 seurat10_heart_14.5 \
+  --workers 64
+
+cd "/home/jovyan/work/2026 Causality"
+
+python scripts/run_mignet_vertical.py \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --output-root "/home/jovyan/work/2026 Causality/output/ei_existence_k10_additions" \
+  --organs heart \
+  --time-points 11.5 12.5 13.5 14.5 \
+  --level-pairs seurat_k40:seurat_k10 seurat_k150:seurat_k10 spot:seurat_k10 \
+  --network-method light_cci_grn --pij-method NG_KLot \
+  --export-pij \
+  --pij-archive-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/pij_ei_existence_k10" \
+  --max-workers 8 --progress
+
+python scripts/assemble_ei_existence_metrics.py \
+  --base "/home/jovyan/work/2026 Causality/output/paper_asset_table/01_full_NG_KLot/metrics.csv" \
+  --addition "/home/jovyan/work/2026 Causality/output/ei_existence_k10_additions/metrics.csv" \
+  --output "/home/jovyan/work/2026 Causality/output/ei_existence_k10_combined/metrics.csv"
+
+python scripts/plot_ei_existence_figures.py \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --slice-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1" \
+  --result-root "/home/jovyan/work/2026 Causality/output/ei_existence_k10_combined" \
+  --output-dir "/home/jovyan/work/2026 Causality/output/paper_asset/ei_existence_NG_KLot_k10" \
+  --organ heart --network-method light_cci_grn --pij-method NG_KLot \
+  --time-points 11.5 12.5 13.5 14.5 \
+  --level-pairs spot:seurat_k150 seurat_k150:seurat_k40 seurat_k40:seurat_k10 \
+                spot:seurat_k40 seurat_k150:seurat_k10 spot:seurat_k10
+```
+
+Check `manifests/domain_manifest_seurat_k10.csv`,
+`manifests/grn_manifest_seurat_k10.csv`, and
+`manifests/cci_manifest_seurat_k10.csv` for four written heart samples.
+Each K10 H5AD must contain ten domains, and each CCI total must align with its
+ten-entry index. The assembler requires 18 old and 18 new finite metric rows,
+checks repeated layer EI values for agreement, and refuses to replace an
+existing combined `metrics.csv`. The heatmap shows all six layer pairs; the
+four-timepoint figure averages only the three adjacent gains. Domain links in
+the hierarchy figure indicate maximum spot overlap, not strict nesting.
+
 The spatial-domain family is the third domain family. It builds domain-level units from
 spot expression and `obsm["spatial"]` only, using expression connectivity plus a spatial
 coordinate graph and spatial-neighborhood smoothing. It does not read spot-level COMMOT,

@@ -152,6 +152,17 @@ DOMAIN_LAYER_SPECS: Dict[str, DomainLayerSpec] = {
         mode="exact_k",
         k=40,
     ),
+    "seurat_k10": DomainLayerSpec(
+        name="seurat_k10",
+        family="seurat",
+        output_name="seurat_k10",
+        sample_prefix="seurat10",
+        domain_manifest="domain_manifest_seurat_k10.csv",
+        grn_manifest="grn_manifest_seurat_k10.csv",
+        cci_manifest="cci_manifest_seurat_k10.csv",
+        mode="exact_k",
+        k=10,
+    ),
 }
 
 
