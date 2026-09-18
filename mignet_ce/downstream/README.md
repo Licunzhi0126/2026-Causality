@@ -6,6 +6,25 @@ The production flow is deliberately layered:
 coarse frontend -> training -> downstream analysis tables -> visualization
 ```
 
+Publication assets use one active package, `mignet_ce.downstream.paper_assets`.
+Its `prepare` phase reads persisted EI metrics, Seurat closure metrics, and
+optimal coarse-graining runs, then writes checked paper tables. Its `render`
+phase reads those saved tables and produces all paper table images and figures
+with the same typography, palette, borders, and PNG/PDF export style. The
+scientific closure formula remains in `analysis.dynamic_closure`; publication
+code only selects runs and arranges values.
+
+Use `python scripts/build_paper_assets.py --help` for the single active paper
+asset entry point. The old `analysis/visualization/asset/` package and
+`scripts/render_paper_assets.py` are retired and retained solely for manual
+cleanup; production code does not import them. Do not use the retired entry.
+
+The expanded paper suite keeps the established three-layer EI table and figure,
+adds K10 EI and natural-Seurat closure tables, and adds matched 3-by-3 DeltaEI
+and optimized ClosureQuality grids over Spot, Seurat K150, and Seurat K40 input
+scales. Low-signal closure values remain in the long audit table and are masked
+from paper-facing claim tables.
+
 `mignet_ce.downstream.analysis` contains the scientific calculations. Its
 `visualization` child package only reads persisted CSV outputs and preserves
 the former publication style (fonts, sizes, palette, markers, layout, DPI,
