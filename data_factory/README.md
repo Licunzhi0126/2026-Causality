@@ -174,6 +174,63 @@ existing combined `metrics.csv`. The heatmap shows all six layer pairs; the
 four-timepoint figure averages only the three adjacent gains. Domain links in
 the hierarchy figure indicate maximum spot overlap, not strict nesting.
 
+### Seurat dynamical-closure existence tables
+
+After the K10 H5AD, GRN, and CCI jobs above finish, export native-unit PIJs for
+the three `spot:Seurat` pairs. This is a separate PIJ archive so the closure
+analysis can audit all three pairs together. It uses the `spot:seurat_k150`
+lower PIJ as the common micro transition for K150, K40, and K10; the other two
+spot PIJs are compared against it and their maximum differences are reported.
+The direct macro PIJ for each Seurat layer comes from that layer's upper PIJ.
+
+```bash
+cd "/home/jovyan/work/2026 Causality"
+
+python scripts/run_mignet_vertical.py \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --output-root "/home/jovyan/work/2026 Causality/output/seurat_closure_pij_build" \
+  --organs heart --time-points 11.5 12.5 13.5 14.5 \
+  --level-pairs spot:seurat_k150 spot:seurat_k40 spot:seurat_k10 \
+  --network-method light_cci_grn --pij-method NG_KLot \
+  --nmf-components 5 --nmf-max-iter 300 --nmf-seed 42 \
+  --export-pij \
+  --pij-archive-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/pij_seurat_closure" \
+  --max-workers 2 --progress
+
+python scripts/run_seurat_closure_existence.py \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --pij-archive-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/pij_seurat_closure" \
+  --output-root "/home/jovyan/work/2026 Causality/output/seurat_closure_existence" \
+  --organ heart --time-points 11.5 12.5 13.5 14.5 \
+  --micro-reference-pair spot:seurat_k150 \
+  --null-repeats 999 --seed 20260809
+```
+
+The analysis requires a new or empty output directory and creates no figures.
+`tables/seurat_closure_metrics.csv` has 18 rows: three coarse-graining pairs
+(`spot:seurat_k150`, `spot:seurat_k40`, `spot:seurat_k10`) times six time pairs.
+Each row records the CG pair, micro and macro state counts, effective state
+counts, direct and induced EI, information available and retained, closure
+leakage, ClosureQuality, low-signal status, cross-fit error, direct-versus-induced
+macro dynamics gap, matched-null effect, empirical p-value, and BH-adjusted
+p-value. It includes both the EI gain from each original vertical pair and
+the EI gain against the common reference spot PIJ; the maximum spot-PIJ
+difference explains any discrepancy. The raw ClosureQuality remains visible for
+low-signal rows, but `closure_quality_for_claim` is blank and
+`claim_status=low_signal` there.
+
+`tables/seurat_closure_matched_null_distribution.csv` retains every null draw;
+`tables/seurat_closure_matched_null_summary.csv` contains its summary.
+`audit/seurat_closure_input_audit.csv` records the archived PIJ and domain-map
+paths plus spot PIJ differences, and `audit/seurat_closure_manifest.json`
+records input files and settings. The null shuffles only the source-time Seurat
+labels, keeping source domain sizes, target-time labels, and the common spot PIJ
+fixed. A positive ClosureQuality effect with BH-adjusted p < 0.05 is marked
+`supported_vs_matched_null` only when the available-information signal passes
+the existing threshold. This is evidence for information closure under the
+induced macro transition; the separate direct-Q gap reports how well an
+independently estimated macro transition agrees.
+
 The spatial-domain family is the third domain family. It builds domain-level units from
 spot expression and `obsm["spatial"]` only, using expression connectivity plus a spatial
 coordinate graph and spatial-neighborhood smoothing. It does not read spot-level COMMOT,

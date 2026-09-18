@@ -12,6 +12,7 @@ LAYER_PREFIXES: dict[str, tuple[str, ...]] = {
     "spot": ("spot",),
     "seurat_k150": ("seurat150",),
     "seurat_k40": ("seurat", "seurat40"),
+    "seurat_k10": ("seurat10",),
 }
 
 
@@ -143,8 +144,8 @@ def layer_h5ad(data_root: Path, layer: str, time: str, organ: str = "heart") -> 
 
 
 def domain_map_path(data_root: Path, layer: str, time: str, organ: str = "heart") -> Path:
-    if layer not in {"seurat_k150", "seurat_k40"}:
-        raise ValueError("domain maps are supported only for seurat_k150 and seurat_k40")
+    if layer not in {"seurat_k150", "seurat_k40", "seurat_k10"}:
+        raise ValueError("domain maps are supported only for seurat_k150, seurat_k40, and seurat_k10")
     return _first_existing(
         (
             Path(data_root) / layer / organ / f"{stem}_spot_domain_map.csv"
