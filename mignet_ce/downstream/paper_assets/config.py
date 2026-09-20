@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Mapping, Sequence
 
 
@@ -43,6 +44,15 @@ DEFAULT_COARSE_METHODS = (
 )
 
 
+def method_path_slug(method: str) -> str:
+    """Return a stable filesystem-safe slug without changing saved method identity."""
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(method).strip()).strip("._-")
+    if not slug:
+        raise ValueError(f"Method name {method!r} cannot produce a safe path slug.")
+    return slug
+
+
 @dataclass(frozen=True)
 class AssetConfig:
     """Configuration for publication asset generation.
@@ -76,6 +86,7 @@ class AssetConfig:
     seurat_cg_metrics_path: Path | None = None
     k10_ablation_root: Path | None = None
     multiscale_roots: Sequence[Path] = ()
+    optimal_coarse_methods: Sequence[str] = ()
     optimal_k_by_scale: Mapping[str, int] = field(default_factory=lambda: dict(OPTIMAL_K_BY_SCALE))
     optimal_time_pairs: Sequence[str] = OPTIMAL_TIME_PAIRS
 
@@ -106,6 +117,7 @@ class AssetConfig:
             seurat_cg_metrics_path=(Path(self.seurat_cg_metrics_path).expanduser().resolve() if self.seurat_cg_metrics_path else None),
             k10_ablation_root=(Path(self.k10_ablation_root).expanduser().resolve() if self.k10_ablation_root else None),
             multiscale_roots=tuple(Path(root).expanduser().resolve() for root in self.multiscale_roots),
+            optimal_coarse_methods=tuple(map(str, self.optimal_coarse_methods)),
             optimal_k_by_scale=dict(self.optimal_k_by_scale),
             optimal_time_pairs=tuple(map(str, self.optimal_time_pairs)),
         )
@@ -126,3 +138,15 @@ class AssetConfig:
             raise ValueError(f"optimal_k_by_scale must have exactly {INPUT_SCALES}")
         if len(set(self.optimal_time_pairs)) != len(self.optimal_time_pairs):
             raise ValueError("optimal_time_pairs contains duplicates")
+        methods = self.resolved_optimal_coarse_methods()
+        if any(not method.strip() for method in methods):
+            raise ValueError("optimal_coarse_methods cannot contain blank method names")
+        if len(set(methods)) != len(methods):
+            raise ValueError("optimal_coarse_methods contains duplicates")
+        slugs = tuple(method_path_slug(method) for method in methods)
+        if len(set(slugs)) != len(slugs):
+            raise ValueError("optimal_coarse_methods contains filesystem slug collisions")
+
+    def resolved_optimal_coarse_methods(self) -> tuple[str, ...]:
+        methods = tuple(str(method).strip() for method in self.optimal_coarse_methods)
+        return methods or (str(self.primary_coarse_method).strip(),)

@@ -19,6 +19,34 @@ asset entry point. The old `analysis/visualization/asset/` package and
 `scripts/render_paper_assets.py` are retired and retained solely for manual
 cleanup; production code does not import them. Do not use the retired entry.
 
+The multiscale maturity+CCI+GRN wrapper accepts either the legacy single-stage
+method or the registered dynamic-closure two-stage method through `--method`.
+Runs are separated first by method and then only by the scientific dimensions
+needed to avoid collisions (input scale, K, and time pair); the seed remains in
+the manifest rather than adding another path level. One seed is supported per
+wrapper invocation. The wrapper writes pre-run audit context outside the
+scientific run directory so the two-stage non-empty-directory protection stays
+intact.
+
+Paper assets accept repeatable `--optimal-method` arguments. Table 4, Table 5,
+and `figure2_optimal` are written under `tables/optimal/<method>/` and
+`figures/optimal/<method>/`. The historical Table 3 and Figure 2 workflow is
+unchanged; `--primary-coarse-method` controls it and the backward-compatible
+top-level Table 4/Table 5 aliases.
+
+Typical method selection is:
+
+```text
+python scripts/run_multiscale_maturity_cci_grn.py --method complete_combined_coarse_maturity_cci_grn ...
+python scripts/run_multiscale_maturity_cci_grn.py --method maturity_cci_grn_two_stage ...
+
+python scripts/build_paper_assets.py ... \
+  --optimal-method complete_combined_coarse_maturity_cci_grn \
+  --optimal-method maturity_cci_grn_two_stage \
+  --primary-coarse-method complete_combined_coarse_maturity_cci_grn \
+  --asset all
+```
+
 The expanded paper suite keeps the established three-layer EI table and figure,
 adds K10 EI and natural-Seurat closure tables, and adds matched 3-by-3 DeltaEI
 and optimized ClosureQuality grids over Spot, Seurat K150, and Seurat K40 input

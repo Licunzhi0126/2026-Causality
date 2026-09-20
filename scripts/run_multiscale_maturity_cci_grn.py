@@ -23,9 +23,16 @@ from mignet_ce.io.multiscale_coarse_inputs import (  # noqa: E402
     PreparedStageInputs,
     prepare_multiscale_inputs,
 )
+from mignet_ce.coarse_frontends.method_specs import (  # noqa: E402
+    get_coarse_method_spec,
+)
 
 
-METHOD = "complete_combined_coarse_maturity_cci_grn"
+DEFAULT_METHOD = "complete_combined_coarse_maturity_cci_grn"
+SUPPORTED_METHODS = (
+    DEFAULT_METHOD,
+    "maturity_cci_grn_two_stage",
+)
 DEFAULT_K_BY_SCALE = {"spot": [40], "seurat_k150": [40], "seurat_k40": [10]}
 SUMMARY_REQUIRED_KEYS = {
     "EI_micro_fixed",
@@ -41,6 +48,9 @@ SUMMARY_REQUIRED_KEYS = {
 
 @dataclass(frozen=True)
 class RunSpec:
+    method: str
+    training_mode: str
+    frontend: str
     scale: str
     source: PreparedStageInputs
     target: PreparedStageInputs
@@ -51,6 +61,12 @@ class RunSpec:
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run maturity+CCI+GRN coarse graining across input scales.")
+    parser.add_argument(
+        "--method",
+        choices=SUPPORTED_METHODS,
+        default=DEFAULT_METHOD,
+        help="Registered maturity+CCI+GRN method to run; defaults to the legacy single-stage method.",
+    )
     parser.add_argument("--spot-root", type=Path, required=True)
     parser.add_argument("--seurat-k40-root", type=Path, required=True)
     parser.add_argument("--seurat-k150-root", type=Path, required=True)
@@ -68,7 +84,13 @@ def build_argparser() -> argparse.ArgumentParser:
         default=["spot=40", "seurat_k150=40", "seurat_k40=10"],
         help="Assignments such as spot=40 seurat_k150=40 seurat_k40=5,10,20.",
     )
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42])
+    parser.add_argument(
+        "--seeds",
+        nargs=1,
+        type=int,
+        default=[42],
+        help="Exactly one seed per invocation; the seed is recorded in metadata, not the path.",
+    )
     parser.add_argument("--overwrite-prepared", action="store_true")
     resume_group = parser.add_mutually_exclusive_group()
     resume_group.add_argument("--resume", action="store_true")
@@ -124,12 +146,21 @@ def parse_pairs(time_points: Sequence[str], values: Sequence[str] | None) -> lis
 def build_run_specs(
     prepared: Sequence[PreparedStageInputs],
     *,
+    method: str,
     out_root: Path,
     scales: Sequence[str],
     pairs: Sequence[tuple[str, str]],
     k_by_scale: dict[str, list[int]],
     seeds: Sequence[int],
 ) -> list[RunSpec]:
+    if method not in SUPPORTED_METHODS:
+        raise ValueError(f"Unsupported multiscale method {method!r}; expected one of {SUPPORTED_METHODS}.")
+    if len(seeds) != 1:
+        raise ValueError(
+            "The simplified method-scoped output layout supports exactly one seed per invocation."
+        )
+    method_spec = get_coarse_method_spec(method)
+    frontend = method_spec.frontend or method_spec.name
     lookup = {(item.resolved.scale, item.resolved.stage): item for item in prepared}
     specs: list[RunSpec] = []
     for scale in scales:
@@ -146,24 +177,36 @@ def build_run_specs(
                 for seed in seeds:
                     run_dir = (
                         Path(out_root)
-                        / METHOD
+                        / method
                         / scale
                         / f"K{k}"
                         / f"{source_time}_to_{target_time}"
-                        / f"seed_{seed}"
                     )
-                    specs.append(RunSpec(scale, source, target, int(k), int(seed), run_dir))
+                    specs.append(
+                        RunSpec(
+                            method=method,
+                            training_mode=method_spec.training_mode,
+                            frontend=frontend,
+                            scale=scale,
+                            source=source,
+                            target=target,
+                            k=int(k),
+                            seed=int(seed),
+                            run_dir=run_dir,
+                        )
+                    )
     return specs
 
 
 def runner_command(spec: RunSpec, runner_extra_args: Sequence[str]) -> list[str]:
+    _validate_runner_extra_args(runner_extra_args)
     source = spec.source
     target = spec.target
     command = [
         sys.executable,
         str(REPO_ROOT / "scripts" / "run_wyt_deltaei_coarse_grain.py"),
         "--method",
-        METHOD,
+        spec.method,
         "--h5ad-t",
         str(source.resolved.h5ad),
         "--h5ad-tp",
@@ -211,18 +254,22 @@ def run_experiments(
     for spec in specs:
         summary_path = spec.run_dir / "summary.json"
         command = runner_command(spec, runner_extra_args)
-        if resume and _valid_summary(summary_path):
+        if resume and _valid_summary(summary_path, expected_method=spec.method):
             rows.append(aggregate_run(spec, status="resumed"))
             continue
         if spec.run_dir.exists():
             if force:
-                _remove_run_dir(spec.run_dir, out_root=out_root)
+                _remove_run_dir(spec.run_dir, out_root=out_root, method=spec.method)
+            elif not any(spec.run_dir.iterdir()):
+                pass
             else:
                 raise FileExistsError(
                     f"Run directory already exists: {spec.run_dir}. Use --resume for a valid completed run or --force to rerun."
                 )
-        spec.run_dir.mkdir(parents=True, exist_ok=False)
         context = {
+            "method": spec.method,
+            "training_mode": spec.training_mode,
+            "frontend": spec.frontend,
             "input_scale": spec.scale,
             "organ": spec.source.resolved.organ,
             "source_time": spec.source.resolved.stage,
@@ -239,23 +286,34 @@ def run_experiments(
                 "target": spec.target.index_source,
             },
             "command": command,
+            "status": "pending",
         }
-        _write_json(spec.run_dir / "experiment_context.json", context)
+        context_path = _context_path(spec, out_root=out_root)
+        _write_json(context_path, context)
         try:
             subprocess.run(command, check=True, cwd=REPO_ROOT)
-            if not _valid_summary(summary_path):
+            if not _valid_summary(summary_path, expected_method=spec.method):
                 raise RuntimeError(f"Runner completed without a valid summary: {summary_path}")
+            context["status"] = "success"
+            _write_json(context_path, context)
+            _write_json(spec.run_dir / "experiment_context.json", context)
             rows.append(aggregate_run(spec, status="success"))
         except Exception as exc:
+            context["status"] = "failure"
+            context["error"] = str(exc)
+            _write_json(context_path, context)
             rows.append(aggregate_run(spec, status="failure", error=str(exc)))
             if not continue_on_error:
-                write_aggregate_outputs(rows, out_root=out_root)
+                write_aggregate_outputs(rows, out_root=out_root, method=spec.method)
                 raise
     return rows
 
 
 def aggregate_run(spec: RunSpec, *, status: str, error: str = "") -> dict[str, object]:
     row: dict[str, object] = {
+        "method": spec.method,
+        "training_mode": spec.training_mode,
+        "frontend": spec.frontend,
         "input_scale": spec.scale,
         "time_pair": f"{spec.source.resolved.stage}_to_{spec.target.resolved.stage}",
         "source_time": spec.source.resolved.stage,
@@ -286,6 +344,14 @@ def aggregate_run(spec: RunSpec, *, status: str, error: str = "") -> dict[str, o
             "Keff_t",
             "Keff_tp",
             "L_dev_best_checkpoint",
+            "closure_quality",
+            "closure_leakage",
+            "I_available",
+            "I_retained",
+            "normalized_retained",
+            "L_closure",
+            "best_joint_fallback_used",
+            "best_joint_selection",
         ]
         for key in fixed_keys:
             row[key] = summary.get(key)
@@ -295,17 +361,26 @@ def aggregate_run(spec: RunSpec, *, status: str, error: str = "") -> dict[str, o
     return row
 
 
-def write_aggregate_outputs(rows: Sequence[dict[str, object]], *, out_root: Path) -> tuple[Path, Path]:
+def write_aggregate_outputs(
+    rows: Sequence[dict[str, object]],
+    *,
+    out_root: Path,
+    method: str,
+) -> tuple[Path, Path]:
     output_root = Path(out_root)
-    output_root.mkdir(parents=True, exist_ok=True)
-    csv_path = output_root / "multiscale_summary.csv"
-    manifest_path = output_root / "multiscale_manifest.json"
+    method_root = output_root / method
+    method_root.mkdir(parents=True, exist_ok=True)
+    csv_path = method_root / "multiscale_summary.csv"
+    manifest_path = method_root / "multiscale_manifest.json"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
+    method_spec = get_coarse_method_spec(method)
     _write_json(
         manifest_path,
         {
-            "schema_version": 1,
-            "method": METHOD,
+            "schema_version": 2,
+            "method": method,
+            "training_mode": method_spec.training_mode,
+            "frontend": method_spec.frontend or method_spec.name,
             "run_count": len(rows),
             "status_counts": pd.Series([row.get("status") for row in rows]).value_counts().to_dict(),
             "preparation_manifest": str(output_root / "_prepared_inputs" / "preparation_manifest.json"),
@@ -313,27 +388,64 @@ def write_aggregate_outputs(rows: Sequence[dict[str, object]], *, out_root: Path
             "runs": list(rows),
         },
     )
+    if method == DEFAULT_METHOD:
+        output_root.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(csv_path, output_root / "multiscale_summary.csv")
+        shutil.copy2(manifest_path, output_root / "multiscale_manifest.json")
     return csv_path, manifest_path
 
 
-def _valid_summary(path: Path) -> bool:
+def _valid_summary(path: Path, *, expected_method: str | None = None) -> bool:
     try:
         payload = _read_json(path)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False
-    return SUMMARY_REQUIRED_KEYS.issubset(payload)
+    if not SUMMARY_REQUIRED_KEYS.issubset(payload):
+        return False
+    return expected_method is None or payload.get("method") == expected_method
 
 
-def _remove_run_dir(run_dir: Path, *, out_root: Path) -> None:
+def _remove_run_dir(run_dir: Path, *, out_root: Path, method: str) -> None:
     resolved = run_dir.resolve()
-    allowed_root = (Path(out_root).resolve() / METHOD)
+    allowed_root = Path(out_root).resolve() / method
     try:
         relative = resolved.relative_to(allowed_root)
     except ValueError as exc:
         raise ValueError(f"Refusing to remove run directory outside {allowed_root}: {resolved}") from exc
-    if len(relative.parts) != 4 or resolved == allowed_root:
+    if len(relative.parts) != 3 or resolved == allowed_root:
         raise ValueError(f"Refusing to remove unexpected run-directory shape: {resolved}")
     shutil.rmtree(resolved)
+
+
+def _context_path(spec: RunSpec, *, out_root: Path) -> Path:
+    return (
+        Path(out_root)
+        / "_run_contexts"
+        / spec.method
+        / spec.scale
+        / f"K{spec.k}"
+        / f"{spec.source.resolved.stage}_to_{spec.target.resolved.stage}"
+        / "experiment_context.json"
+    )
+
+
+def _validate_runner_extra_args(values: Sequence[str]) -> None:
+    reserved = {
+        "--method", "--out-dir", "--k", "--seed",
+        "--h5ad-t", "--h5ad-tp", "--cci-t", "--cci-tp",
+        "--cci-index-t", "--cci-index-tp", "--grn-t", "--grn-tp",
+        "--maturity-t", "--maturity-tp",
+    }
+    blocked = sorted(
+        token
+        for token in map(str, values)
+        if token in reserved or any(token.startswith(f"{name}=") for name in reserved)
+    )
+    if blocked:
+        raise ValueError(
+            "--runner-extra-args cannot override run identity or resolved inputs: "
+            f"{blocked}."
+        )
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -371,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     specs = build_run_specs(
         prepared,
+        method=args.method,
         out_root=args.out_root,
         scales=args.scales,
         pairs=pairs,
@@ -385,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         force=args.force,
         continue_on_error=args.continue_on_error,
     )
-    csv_path, _ = write_aggregate_outputs(rows, out_root=args.out_root)
+    csv_path, _ = write_aggregate_outputs(rows, out_root=args.out_root, method=args.method)
     print(f"Completed {len(rows)} multiscale runs; aggregate summary: {csv_path}")
     return 0
 

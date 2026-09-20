@@ -26,6 +26,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seurat-cg-metrics", type=Path)
     parser.add_argument("--legacy-coarse-root", type=Path)
     parser.add_argument("--multiscale-root", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--optimal-method",
+        action="append",
+        default=[],
+        help="Repeat to generate independent multiscale optimal assets for multiple methods.",
+    )
+    parser.add_argument(
+        "--primary-coarse-method",
+        default="complete_combined_coarse_maturity_cci_grn",
+        help="Legacy Table 3/Figure 2 method and target of backward-compatible optimal aliases.",
+    )
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--slice-root", type=Path)
     parser.add_argument("--output-root", type=Path, required=True)
@@ -53,14 +64,20 @@ def main(argv: list[str] | None = None) -> int:
                 or (args.ei_metrics is None and bool(set(requested) & {"table2", "table2_k10", "figure1", "figure1_k10"}))
             ),
             "--legacy-coarse-root": preparing and bool(set(requested) & {"table3", "figure2"}),
-            "--data-root": rendering and bool(set(requested) & {"figure1", "figure1_k10", "figure2"}),
+            "--multiscale-root": preparing and bool(
+                set(requested) & {"table4", "table5", "figure2_optimal"}
+            ),
+            "--data-root": rendering and bool(
+                set(requested) & {"figure1", "figure1_k10", "figure2", "figure2_optimal"}
+            ),
         }
         values = {
             "--ablation-root": args.ablation_root,
             "--legacy-coarse-root": args.legacy_coarse_root,
+            "--multiscale-root": args.multiscale_root,
             "--data-root": args.data_root,
         }
-        missing = [name for name, needed in required.items() if needed and values[name] is None]
+        missing = [name for name, needed in required.items() if needed and not values[name]]
         if missing:
             raise SystemExit(f"Missing required paths: {', '.join(missing)}")
         cfg = AssetConfig(
@@ -70,11 +87,13 @@ def main(argv: list[str] | None = None) -> int:
             seurat_cg_metrics_path=args.seurat_cg_metrics,
             coarse_root=args.legacy_coarse_root or Path("."),
             multiscale_roots=tuple(args.multiscale_root),
+            optimal_coarse_methods=tuple(args.optimal_method),
             data_root=args.data_root or Path("."),
             slice_root=args.slice_root,
             output_root=args.output_root,
             organ=args.organ,
             figure_pair=args.figure_pair,
+            primary_coarse_method=args.primary_coarse_method,
             coarse_k=args.legacy_k,
             coarse_seed=args.seed,
             dpi=args.dpi,
@@ -84,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         prepared = result["prepare"]
         result["prepare"] = {
             "tables": prepared["tables"],
+            "optimal_methods": prepared.get("optimal_methods", {}),
             "manifest": str(args.output_root / "audit" / "paper_assets_prepare_manifest.json"),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

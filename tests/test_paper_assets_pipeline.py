@@ -14,6 +14,8 @@ from mignet_ce.downstream.paper_assets.tables import (
     select_optimal_input_runs,
 )
 from mignet_ce.downstream.paper_assets.workflow import prepare_paper_tables, render_paper_assets
+from mignet_ce.downstream.paper_assets import workflow as paper_workflow
+from scripts import build_paper_assets as paper_assets_cli
 
 
 def test_ablation_identity_uses_network_and_pij(tmp_path) -> None:
@@ -94,31 +96,44 @@ def test_optimal_selection_uses_input_specific_k_and_best_checkpoint() -> None:
 
 
 def test_paper_workflow_builds_matched_deltaei_and_cg_tables(tmp_path) -> None:
-    method = "complete_combined_coarse_maturity_cci_grn"
+    methods = (
+        "complete_combined_coarse_maturity_cci_grn",
+        "maturity_cci_grn_two_stage",
+    )
     k_by_scale = {"spot": 40, "seurat_k150": 40, "seurat_k40": 10}
-    for scale in INPUT_SCALES:
-        for pair in OPTIMAL_TIME_PAIRS:
-            directory = tmp_path / "runs" / method / scale / f"K{k_by_scale[scale]}" / pair.replace("->", "_to_") / "seed_42"
-            directory.mkdir(parents=True)
-            assignment = np.zeros((2, k_by_scale[scale]))
-            assignment[0, 0] = 1.0
-            assignment[1, 1] = 1.0
-            np.save(directory / "S_t.npy", assignment)
-            np.save(directory / "S_tp.npy", assignment)
-            np.save(directory / "PIJ_micro_train.npy", np.eye(2))
-            (directory / "summary.json").write_text(json.dumps({
-                "method": method, "K": k_by_scale[scale], "best_epoch": 5,
-                "EI_micro_fixed": 0.5, "EI_macro_best_checkpoint": 0.8,
-                "delta_EI_best_checkpoint": 0.3,
-            }), encoding="utf-8")
+    expected_delta = {
+        "complete_combined_coarse_maturity_cci_grn": 0.3,
+        "maturity_cci_grn_two_stage": 0.4,
+    }
+    for method in methods:
+        for scale in INPUT_SCALES:
+            for pair in OPTIMAL_TIME_PAIRS:
+                directory = tmp_path / "runs" / method / scale / f"K{k_by_scale[scale]}" / pair.replace("->", "_to_")
+                directory.mkdir(parents=True)
+                assignment = np.zeros((2, k_by_scale[scale]))
+                assignment[0, 0] = 1.0
+                assignment[1, 1] = 1.0
+                np.save(directory / "S_t.npy", assignment)
+                np.save(directory / "S_tp.npy", assignment)
+                np.save(directory / "PIJ_micro_train.npy", np.eye(2))
+                delta = expected_delta[method]
+                (directory / "summary.json").write_text(json.dumps({
+                    "method": method, "K": k_by_scale[scale], "best_epoch": 5,
+                    "EI_micro_fixed": 0.5, "EI_macro_best_checkpoint": 0.5 + delta,
+                    "delta_EI_best_checkpoint": delta,
+                }), encoding="utf-8")
+                (directory / "config.json").write_text(
+                    json.dumps({"seed": 42, "k": k_by_scale[scale]}), encoding="utf-8"
+                )
     cfg = AssetConfig(
         vertical_ablation_root=tmp_path / "unused_ablation",
         coarse_root=tmp_path / "unused_legacy",
         data_root=tmp_path / "unused_spatial",
         output_root=tmp_path / "paper",
-        multiscale_roots=(tmp_path / "runs",),
+        multiscale_roots=tuple(tmp_path / "runs" / method for method in methods),
+        optimal_coarse_methods=methods,
     )
-    prepare_paper_tables(cfg, ("table4", "table5"))
+    prepared = prepare_paper_tables(cfg, ("table4", "table5"))
     result = render_paper_assets(cfg, ("table4", "table5"))
     delta = pd.read_csv(tmp_path / "paper" / "tables" / "table4_deltaei_by_input_scale.csv")
     cg = pd.read_csv(tmp_path / "paper" / "tables" / "table5_cg_by_input_scale.csv")
@@ -128,3 +143,120 @@ def test_paper_workflow_builds_matched_deltaei_and_cg_tables(tmp_path) -> None:
     assert cg.iloc[:, 1:].to_numpy(float) == pytest.approx(1.0)
     assert len(long) == 9
     assert result["tables_unchanged"] is True
+    assert set(prepared["optimal_methods"]) == set(methods)
+    for method in methods:
+        method_root = tmp_path / "paper" / "tables" / "optimal" / method
+        method_delta = pd.read_csv(method_root / "table4_deltaei_by_input_scale.csv")
+        method_cg = pd.read_csv(method_root / "table5_cg_by_input_scale.csv")
+        method_long = pd.read_csv(method_root / "optimal_input_cg_long.csv")
+        assert method_delta.iloc[:, 1:].to_numpy(float) == pytest.approx(expected_delta[method])
+        assert method_cg.iloc[:, 1:].to_numpy(float) == pytest.approx(1.0)
+        assert set(method_long["method"]) == {method}
+        figure_root = tmp_path / "paper" / "figures" / "optimal" / method
+        assert (figure_root / "table4_deltaei_by_input_scale.png").exists()
+        assert (figure_root / "table5_cg_by_input_scale.png").exists()
+    assert set(result["outputs"]["optimal_methods"]) == set(methods)
+
+
+def test_optimal_method_config_defaults_and_rejects_duplicates(tmp_path) -> None:
+    common = dict(
+        vertical_ablation_root=tmp_path,
+        coarse_root=tmp_path,
+        data_root=tmp_path,
+        output_root=tmp_path / "paper",
+    )
+    cfg = AssetConfig(**common)
+    assert cfg.resolved_optimal_coarse_methods() == (cfg.primary_coarse_method,)
+    duplicate = AssetConfig(
+        **common,
+        optimal_coarse_methods=("maturity_cci_grn_two_stage", "maturity_cci_grn_two_stage"),
+    )
+    with pytest.raises(ValueError, match="duplicates"):
+        duplicate.validate()
+
+
+def test_paper_assets_cli_accepts_multiple_optimal_methods(tmp_path) -> None:
+    args = paper_assets_cli.build_parser().parse_args([
+        "--output-root", str(tmp_path / "paper"),
+        "--primary-coarse-method", "complete_combined_coarse_maturity_cci_grn",
+        "--optimal-method", "complete_combined_coarse_maturity_cci_grn",
+        "--optimal-method", "maturity_cci_grn_two_stage",
+    ])
+    assert args.primary_coarse_method == "complete_combined_coarse_maturity_cci_grn"
+    assert args.optimal_method == [
+        "complete_combined_coarse_maturity_cci_grn",
+        "maturity_cci_grn_two_stage",
+    ]
+
+
+def test_optimal_figure2_is_method_scoped_and_preserves_legacy_asset(tmp_path, monkeypatch) -> None:
+    methods = (
+        "complete_combined_coarse_maturity_cci_grn",
+        "maturity_cci_grn_two_stage",
+    )
+    for index, method in enumerate(methods):
+        directory = tmp_path / "runs" / method / "spot" / "K40" / "12.5_to_13.5"
+        directory.mkdir(parents=True)
+        (directory / "summary.json").write_text(
+            json.dumps({
+                "method": method,
+                "K": 40,
+                "best_epoch": 5,
+                "EI_micro_fixed": 0.5,
+                "EI_macro_best_checkpoint": 0.8 + index / 10,
+                "delta_EI_best_checkpoint": 0.3 + index / 10,
+            }),
+            encoding="utf-8",
+        )
+        (directory / "config.json").write_text(
+            json.dumps({"seed": 42, "k": 40}), encoding="utf-8"
+        )
+
+    rendered_methods: list[str] = []
+
+    def fake_render_figure2(**kwargs):
+        rendered_methods.append(str(kwargs["method_label"]))
+        output = kwargs["output_path"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"png")
+        output.with_suffix(".pdf").write_bytes(b"pdf")
+
+    monkeypatch.setattr(paper_workflow, "render_figure2", fake_render_figure2)
+    monkeypatch.setattr(
+        paper_workflow,
+        "load_spot_coordinates",
+        lambda *_args, **_kwargs: pd.DataFrame({"spot_id": ["a"], "x": [0.0], "y": [0.0]}),
+    )
+    monkeypatch.setattr(paper_workflow, "load_full_slice", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        paper_workflow,
+        "load_assignments",
+        lambda *_args, **_kwargs: pd.DataFrame({"spot_id": ["a"], "hard_cluster": ["0"]}),
+    )
+    cfg = AssetConfig(
+        vertical_ablation_root=tmp_path / "unused_ablation",
+        coarse_root=tmp_path / "unused_legacy",
+        data_root=tmp_path / "unused_spatial",
+        output_root=tmp_path / "paper",
+        multiscale_roots=(tmp_path / "runs",),
+        optimal_coarse_methods=methods,
+    )
+    prepared = prepare_paper_tables(cfg, ("figure2_optimal",))
+    rendered = render_paper_assets(cfg, ("figure2_optimal",))
+    assert set(prepared["optimal_methods"]) == set(methods)
+    assert set(rendered_methods) == set(methods)
+    assert set(rendered["outputs"]["optimal_methods"]) == set(methods)
+    for method in methods:
+        audit = json.loads(
+            (tmp_path / "paper" / "audit" / "optimal" / method / "figure2_run.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert audit["input_scale"] == "spot"
+        assert audit["K"] == 40
+        assert audit["time_pair"] == "12.5->13.5"
+        assert audit["seed"] == 42
+        figure = tmp_path / "paper" / "figures" / "optimal" / method / "figure2_optimal_coarse_12p5_to_13p5.png"
+        assert figure.exists()
+    assert not (tmp_path / "paper" / "audit" / "figure2_run.json").exists()
+    assert not (tmp_path / "paper" / "figures" / "figure2_optimal_coarse_12p5_to_13p5.png").exists()

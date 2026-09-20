@@ -356,9 +356,21 @@ def discover_coarse_runs(coarse_root: Path, methods: Iterable[str]) -> pd.DataFr
 
 
 def discover_coarse_roots(roots: Iterable[Path], methods: Iterable[str]) -> pd.DataFrame:
-    frames = [discover_coarse_runs(root, methods) for root in roots]
+    requested_methods = tuple(map(str, methods))
+    frames: list[pd.DataFrame] = []
+    searched: list[str] = []
+    for root in roots:
+        searched.append(str(root))
+        try:
+            frames.append(discover_coarse_runs(root, requested_methods))
+        except FileNotFoundError:
+            # Repeatable --multiscale-root may provide one method per root. A
+            # root without the currently selected method is therefore normal.
+            continue
     if not frames:
-        raise ValueError("At least one coarse-graining root is required")
+        raise FileNotFoundError(
+            f"No summaries for methods {list(requested_methods)} were found under {searched}."
+        )
     return pd.concat(frames, ignore_index=True).drop_duplicates("run_dir")
 
 

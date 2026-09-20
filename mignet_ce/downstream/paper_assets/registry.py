@@ -3,6 +3,7 @@ from __future__ import annotations
 ASSET_NAMES = (
     "table1", "table1_k10", "table2", "table2_k10", "table2_cg_k10",
     "figure1", "figure1_k10", "table3", "figure2", "table4", "table5",
+    "figure2_optimal",
 )
 
 TABLE_FILES = {
@@ -20,6 +21,7 @@ FIGURE_FILES = {
     "figure1": "figure1_ei_hierarchy_12p5_to_13p5.png",
     "figure1_k10": "figure1_ei_hierarchy_k10_12p5_to_13p5.png",
     "figure2": "figure2_optimal_coarse_12p5_to_13p5.png",
+    "figure2_optimal": "figure2_optimal_coarse_12p5_to_13p5.png",
 }
 
 
