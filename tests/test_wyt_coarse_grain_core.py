@@ -75,7 +75,7 @@ def test_deltaei_core_smoke_writes_contract(tmp_path) -> None:
         "assignments_t.csv",
         "assignments_tp.csv",
         "summary.json",
-        "strict_native_v7_evaluation.json",
+        "strict_canonical_ng_evaluation.json",
     ):
         assert (tmp_path / name).exists(), name
     assert np.load(tmp_path / "S_t.npy").shape == (count_t, 3)

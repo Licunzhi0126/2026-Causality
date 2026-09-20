@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-"""Temporary compatibility adapter for the new sensitivity module.
+"""Sensitivity adapter for the shared canonical production N/G transition.
 
-IMPORTANT FOR INTEGRATION:
-This file currently mirrors the targeted canonical N/G equation so the module can
-be reviewed against the 2026-09-20 tree before the production refactor. After
-`mignet_ce.pij.compare._shared.ng_kl_ot` is upgraded, this module must delegate
-to that shared implementation rather than retaining duplicate math.
+The DEPRECATION-CANDIDATE(user-removal) historical local mirror remains below
+only as user-owned deletion material;
+the active public names at the end of this module delegate to shared production
+code and do not execute the mirror.
 """
 
 import numpy as np
@@ -15,7 +14,6 @@ from mignet_ce.pij.compare._shared.cosine import row_normalized_kernel_from_cost
 from mignet_ce.pij.compare._shared.distances import robust_normalize_cost, summarize_dense_cost
 from mignet_ce.pij.compare._shared.kl import pairwise_feature_kl
 from mignet_ce.pij.compare._shared.log_balanced_ot import balance_cost_log_sinkhorn
-from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import balance_kernel_sinkhorn
 
 EPS = 1e-12
 
@@ -99,6 +97,10 @@ def mix_cost(
 
 
 def balanced_pij_from_cost(cost: np.ndarray, *, tau: float) -> tuple[np.ndarray, dict[str, object]]:
+    from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import (
+        balance_kernel_sinkhorn,
+    )
+
     kernel, prebalanced = row_normalized_kernel_from_cost(cost, tau=float(tau))
     try:
         joint, pij, sinkhorn = balance_kernel_sinkhorn(kernel)
@@ -116,3 +118,33 @@ def balanced_pij_from_cost(cost: np.ndarray, *, tau: float) -> tuple[np.ndarray,
         "prebalanced_row_sum_max": float(prebalanced.sum(axis=1).max()),
         "sinkhorn": sinkhorn,
     }
+
+
+# ---------------------------------------------------------------------------
+# Active adapter API
+# ---------------------------------------------------------------------------
+# DEPRECATION-CANDIDATE(user-removal): the implementations above are retained
+# only because repository policy leaves deletion to the user. They are
+# disconnected from runtime here; all public sensitivity calls below delegate
+# to the canonical production implementation.
+_legacy_build_component_costs = build_component_costs
+_legacy_mix_cost = mix_cost
+_legacy_balanced_pij_from_cost = balanced_pij_from_cost
+
+from mignet_ce.pij.compare._shared.ng_kl_ot import (  # noqa: E402
+    build_ng_component_costs_numpy as build_component_costs,
+    canonical_ng_pij_from_cost_numpy,
+    mix_ng_cost_numpy as mix_cost,
+)
+
+
+def balanced_pij_from_cost(
+    cost: np.ndarray,
+    *,
+    tau: float,
+) -> tuple[np.ndarray, dict[str, object]]:
+    _joint, pij, metadata = canonical_ng_pij_from_cost_numpy(
+        cost,
+        temperature=tau,
+    )
+    return pij, metadata

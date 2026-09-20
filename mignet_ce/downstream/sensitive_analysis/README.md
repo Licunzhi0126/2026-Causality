@@ -1,12 +1,13 @@
 # sensitive_analysis
 
-This directory is intended to live directly at:
+This directory intentionally lives at:
 
 ```text
-mignet_ce/downstream/analysis/sensitive_analysis/
+mignet_ce/downstream/sensitive_analysis/
 ```
 
-If this archive is extracted relative to `mignet_ce/`, copy/merge the included `downstream/` directory into the existing `mignet_ce/downstream/` directory.
+It consumes shared production helpers from `mignet_ce.downstream.analysis` but is
+kept as a separate downstream analysis package by design.
 
 ## Purpose
 
@@ -20,17 +21,17 @@ It is a **sensitivity / robustness analysis**, not a hyperparameter optimizer. I
 
 ## Current compatibility status
 
-This folder is intentionally self-contained enough to be inspected against the 2026-09-20 codebase before the canonical N/G transition refactor.
+This folder is integrated with the canonical production N/G transition contract.
 
-`kernel.py` currently mirrors the intended canonical equation locally so that the new module is understandable in isolation. During the Codex integration step, **do not keep a duplicate mathematical implementation**. Refactor `kernel.py` into a thin adapter that calls the single shared canonical implementation in:
+`kernel.py` exposes a thin adapter that calls the single shared canonical implementation in:
 
 ```text
 mignet_ce/pij/compare/_shared/ng_kl_ot.py
 ```
 
-The final project must have one authoritative N/G KL-OT equation used by production methods and by this sensitivity analysis.
+Production methods and this sensitivity analysis use that one authoritative N/G KL-OT equation.
 
-## Canonical equation targeted by the integration
+## Canonical equation
 
 1. Compute `D_G = KL(G_t, G_t+1)` and `D_N = KL(N_t, N_t+1)`.
 2. Apply the same independent Robust 5–95 normalization to both component costs.
@@ -94,7 +95,7 @@ From the repository root:
 ```bash
 cd "/home/jovyan/work/2026 Causality"
 
-python -m mignet_ce.downstream.analysis.sensitive_analysis \
+python -m mignet_ce.downstream.sensitive_analysis \
   --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
   --output-dir "/home/jovyan/work/2026 Causality/output/sensitive_analysis920" \
   --organ heart \

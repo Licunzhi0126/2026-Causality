@@ -7,7 +7,7 @@ import scipy.sparse as sp
 import torch
 
 from mignet_ce.coarse_frontends._common import CoarseFrontendRequest
-from mignet_ce.coarse_frontends._complete_combined_core import (
+from wyt_deltaei_coarse_grain.complete_combined import (
     sparse_shared_core_directed_nmf,
 )
 from mignet_ce.coarse_frontends.complete_combined_coarse import prepare

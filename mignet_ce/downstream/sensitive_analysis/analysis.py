@@ -6,7 +6,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from mignet_ce.downstream.analysis.preparation import _load_complete_stage
+from mignet_ce.downstream.analysis.config import FullDeltaEIBenchmarkProfile
+from mignet_ce.downstream.analysis.preparation import load_complete_stage
 from mignet_ce.metrics import effective_information
 from wyt_deltaei_coarse_grain.complete_combined import pairwise_zscore, sparse_shared_core_directed_nmf
 
@@ -23,8 +24,8 @@ class _LoaderConfig:
 def _layer_pair_ei_curve(cfg: SensitivityConfig, layer: str, pair: str) -> pd.DataFrame:
     source_time, target_time = pair.split("->")
     loader_cfg = _LoaderConfig(data_root=cfg.data_root, organ=cfg.organ)
-    stage_t = _load_complete_stage(loader_cfg, layer, source_time)
-    stage_tp = _load_complete_stage(loader_cfg, layer, target_time)
+    stage_t = load_complete_stage(loader_cfg, layer, source_time)
+    stage_tp = load_complete_stage(loader_cfg, layer, target_time)
 
     n_t, n_tp, n_metadata = sparse_shared_core_directed_nmf(
         stage_t.cci,
@@ -71,6 +72,15 @@ def _layer_pair_ei_curve(cfg: SensitivityConfig, layer: str, pair: str) -> pd.Da
                 "n_nmf_mode": str(n_metadata.get("mode", "shared_core_directed_nmf")),
                 "component_normalization": str(cost_metadata["component_normalization"]),
                 "combined_scale_control": str(mix_metadata["combined_scale_control"]),
+                "transition_protocol": str(pij_metadata["transition_protocol"]),
+                "log_domain_fallback_used": bool(
+                    pij_metadata["sinkhorn"].get("log_domain_fallback_used", False)
+                ),
+                "production_profile_aligned": bool(
+                    cfg.nmf_components == FullDeltaEIBenchmarkProfile().nmf_components
+                    and cfg.nmf_max_iter == FullDeltaEIBenchmarkProfile().nmf_max_iter
+                    and cfg.random_seed == FullDeltaEIBenchmarkProfile().random_seed
+                ),
             }
         )
     return pd.DataFrame(rows)

@@ -6,8 +6,9 @@ import scipy.sparse as sp
 from dataclasses import dataclass
 
 from mignet_ce.metrics import effective_information
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_ng_pij_numpy
 from wyt_deltaei_coarse_grain.complete_combined import (
-    native_v7_pij_numpy, pairwise_zscore, pool_features, prepare_complete_pair,
+    pairwise_zscore, pool_features, prepare_complete_pair,
     project_grn_state,
 )
 from ..dynamic_closure.analysis import information_closure_budget, js_rows
@@ -57,7 +58,7 @@ def _one(cfg, context: PairContext, frontend_method: str, operator_method: str, 
     g_source_star, _ = pairwise_zscore(g_source_star_raw, stage_tp.g_raw)
     delta_spot_t = g_source_star - g_source
     delta_spot_tp = horizontal(delta_spot_t, record.p)
-    p_star = native_v7_pij_numpy(pair_state.n_t, pair_state.n_tp, g_source_star, g_target + delta_spot_tp)[1]
+    p_star = canonical_ng_pij_numpy(pair_state.n_t, pair_state.n_tp, g_source_star, g_target + delta_spot_tp)[1]
     # Strict macro response: pool expression first, then recompute with the perturbed GRN.
     x_macro_t, x_macro_tp = pool_features(stage_t.expression_grn, record.source_assignment), pool_features(stage_tp.expression_grn, record.target_assignment)
     g_macro_t0_raw = project_grn_state(x_macro_t, stage_t.grn_adjacency, stage_t.projection_reg, stage_t.projection_tar)
@@ -67,8 +68,8 @@ def _one(cfg, context: PairContext, frontend_method: str, operator_method: str, 
     delta_macro_t = g_macro_t_star - g_macro_t0
     delta_macro_hv, delta_macro_vh = pool_features(delta_spot_tp, record.target_assignment), record.q_direct.T @ delta_macro_t
     n_macro_t, n_macro_tp = pairwise_zscore(pool_features(pair_state.n_t, record.source_assignment), pool_features(pair_state.n_tp, record.target_assignment))
-    q_hv = native_v7_pij_numpy(n_macro_t, n_macro_tp, g_macro_t_star, g_macro_tp0 + delta_macro_hv)[1]
-    q_vh = native_v7_pij_numpy(n_macro_t, n_macro_tp, g_macro_t_star, g_macro_tp0 + delta_macro_vh)[1]
+    q_hv = canonical_ng_pij_numpy(n_macro_t, n_macro_tp, g_macro_t_star, g_macro_tp0 + delta_macro_hv)[1]
+    q_vh = canonical_ng_pij_numpy(n_macro_t, n_macro_tp, g_macro_t_star, g_macro_tp0 + delta_macro_vh)[1]
     ei_spot0, ei_spot = effective_information(record.p.copy()), effective_information(p_star.copy())
     ei_macro0, ei_hv, ei_vh = effective_information(record.q_direct.copy()), effective_information(q_hv.copy()), effective_information(q_vh.copy())
     closure0, budget0 = _closure(record.p, record.source_assignment, record.target_assignment, record.q_direct)

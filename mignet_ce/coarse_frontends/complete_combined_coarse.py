@@ -90,7 +90,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         coords_tp=pair_data.coords_tp,
         provenance={
             **provenance_base(request, pair_data),
-            "feature_extractor": "Native_V7_N_plus_true_GRN_G",
+            "feature_extractor": "Canonical_NG_N_plus_true_GRN_G",
             "uses_true_commot_cci": True,
             "uses_original_grn_edges_csv": True,
             "uses_true_grn": True,
@@ -108,9 +108,10 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
                 "raw_and_rownorm_S_transpose_A_S_reextract_N_recompute_G"
             ),
             "N": pair.n_metadata,
-            "Native_V7": pair.v7_metadata,
+            "Canonical_NG": pair.canonical_ng_metadata,
             "stage_t": stage_t.metadata,
             "stage_tp": stage_tp.metadata,
+            "strict_posthoc_filename": "strict_canonical_ng_evaluation.json",
         },
         posthoc_evaluator=partial(
             strict_complete_combined_evaluation,

@@ -5,12 +5,19 @@ import json
 import numpy as np
 import pandas as pd
 
-from mignet_ce.downstream.analysis.config import MAPPING_COMPLETE, MAPPING_MATURITY, MAPPING_TWO_STAGE
+from mignet_ce.downstream.analysis.config import (
+    FORMAL_CACHE_PROTOCOL,
+    FORMAL_TRANSITION_PROTOCOL,
+    MAPPING_COMPLETE,
+    MAPPING_MATURITY,
+    MAPPING_TWO_STAGE,
+)
 from mignet_ce.downstream.analysis.deltaei_contract import audit_full_cache_root
 from mignet_ce.downstream.analysis.dynamic_closure.analysis import effective_information
 from mignet_ce.downstream.analysis.mappings import OPTIMIZED_METHOD_BY_MAPPING
 from mignet_ce.downstream.analysis.preparation import required_optimized_outputs
 from mignet_ce.coarse_frontends.method_specs import get_coarse_method_spec
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_transition_contract
 
 
 def _build_nine_cache_fixture(tmp_path):
@@ -52,7 +59,9 @@ def _build_nine_cache_fixture(tmp_path):
             (root / "downstream_full_manifest.json").write_text(
                 json.dumps(
                     {
-                        "cache_protocol": "full_model_space_v3",
+                        "cache_protocol": FORMAL_CACHE_PROTOCOL,
+                        "transition_protocol": FORMAL_TRANSITION_PROTOCOL,
+                        "transition_contract": canonical_transition_contract(),
                         "model_state_contract": "full_soft_k",
                         "method": method,
                         "frontend": spec.frontend or method,
@@ -98,7 +107,7 @@ def test_nine_cache_audit_passes_for_exact_full_model_contract(tmp_path) -> None
     assert (table["epochs"] == 1500).all()
     assert (table["K"] == 40).all()
     assert (table["nmf_max_iter_used"] == 300).all()
-    assert (table["cache_protocol"] == "full_model_space_v3").all()
+    assert (table["cache_protocol"] == FORMAL_CACHE_PROTOCOL).all()
 
 
 def test_nine_cache_audit_detects_downstream_deltaei_mismatch(tmp_path) -> None:

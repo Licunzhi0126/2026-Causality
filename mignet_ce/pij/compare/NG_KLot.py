@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Experimental mean-optimal N/G KL-OT variant selected by the V7 ablation."""
+"""Canonical production N/G KL-OT transition method."""
 
 from typing import Sequence
 
@@ -10,24 +10,23 @@ import scipy.sparse as sp
 from mignet_ce.config import TemporalRunConfig
 from mignet_ce.networks.base import NetworkContext
 from mignet_ce.pij.base import MethodResult, TimePair, TransitionKernels
-from mignet_ce.pij.compare._shared.cosine import (
-    matrix_summary,
-    row_normalized_kernel_from_cost,
-)
+from mignet_ce.pij.compare._shared.cosine import matrix_summary
 from mignet_ce.pij.compare._shared.features import (
     CompareFeatureSet,
     build_compare_feature_set,
 )
-from mignet_ce.pij.compare._shared.log_balanced_ot import (
-    balance_cost_log_sinkhorn,
+from mignet_ce.pij.compare._shared.ng_kl_ot import (
+    CANONICAL_ALPHA_CCI,
+    CANONICAL_FEATURE_BETA_G,
+    CANONICAL_FEATURE_BETA_N,
+    CANONICAL_SINKHORN_MAX_ITERATIONS,
+    CANONICAL_SINKHORN_TOLERANCE,
+    CANONICAL_TEMPERATURE,
+    CANONICAL_TRANSITION_PROTOCOL,
+    build_canonical_ng_cost_numpy,
+    canonical_ng_pij_from_cost_numpy,
 )
-from mignet_ce.pij.compare._shared.ng_kl_ot import build_ng_kl_cost_numpy
 from mignet_ce.pij.compare.common import export_compare_pair_artifacts
-from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import (
-    SINKHORN_MAX_ITERATIONS,
-    SINKHORN_TOLERANCE,
-    balance_kernel_sinkhorn,
-)
 
 
 FIXED_FEATURE_BETA_N = 0.05
@@ -40,6 +39,9 @@ ABLATION_MEDIAN_DELTA_EI = 0.7885116198512225
 ABLATION_MIN_DELTA_EI = -0.08776963499604395
 ABLATION_POSITIVE_COUNT = 8
 ABLATION_TOTAL_COUNT = 9
+# DEPRECATION-CANDIDATE(user-removal): the historical mean-optimal constants
+# and diagnostics above are retained only for auditability. NGKLotPijMethod no
+# longer consumes them.
 
 
 def _select_pair_features(
@@ -66,6 +68,8 @@ def _select_pair_features(
 
 
 def _experimental_metadata() -> dict[str, object]:
+    """DEPRECATION-CANDIDATE(user-removal): dead historical audit payload."""
+
     return {
         "status": "experimental",
         "replaces_frozen_v7": False,
@@ -89,7 +93,7 @@ def _experimental_metadata() -> dict[str, object]:
 
 
 class NGKLotPijMethod:
-    """Balanced N/G KL-OT with the report-selected mean-optimal fixed weights."""
+    """Balanced canonical N/G KL-OT with alpha=0.1 and tau=0.1."""
 
     name = "NG_KLot"
     feature_keys = ("N",)
@@ -108,30 +112,32 @@ class NGKLotPijMethod:
     ) -> tuple[np.ndarray, dict[str, object]]:
         if grn_source is None or grn_target is None:
             raise ValueError(f"{self.name} requires the light_cci_grn GRN feature block.")
-        if not np.isclose(float(beta), FIXED_FEATURE_BETA_N, rtol=0.0, atol=1.0e-12):
+        if not np.isclose(
+            float(beta), CANONICAL_FEATURE_BETA_N, rtol=0.0, atol=1.0e-12
+        ):
             raise ValueError(
-                f"{self.name} fixes pij_entropy_epsilon={FIXED_FEATURE_BETA_N}; "
+                f"{self.name} fixes pij_entropy_epsilon={CANONICAL_FEATURE_BETA_N}; "
                 f"got {float(beta)}."
             )
-        cost, metadata = build_ng_kl_cost_numpy(
+        cost, metadata = build_canonical_ng_cost_numpy(
             source,
             target,
             grn_source,
             grn_target,
-            beta_n=FIXED_FEATURE_BETA_N,
-            beta_g=FIXED_FEATURE_BETA_G,
-            g_scale=FIXED_G_SCALE,
-            n_weight=FIXED_N_WEIGHT,
+            beta_n=CANONICAL_FEATURE_BETA_N,
+            beta_g=CANONICAL_FEATURE_BETA_G,
+            alpha_cci=CANONICAL_ALPHA_CCI,
         )
         metadata.update(
             {
                 "entry_method": self.name,
-                "algorithm_version": "NG_KLot_heart_mean_optimal_v1",
+                "algorithm_version": CANONICAL_TRANSITION_PROTOCOL,
                 "uses_frozen_compare_N_kl_feature_path": True,
                 "legacy_kl_block_weight_n_received_but_not_used": float(weight_n),
                 "legacy_kl_block_weight_g_received_but_not_used": float(weight_g),
-                "fixed_kernel_temperature": FIXED_KERNEL_TEMPERATURE,
-                **_experimental_metadata(),
+                "fixed_kernel_temperature": CANONICAL_TEMPERATURE,
+                "status": "canonical_production_reference",
+                "parameter_selection_metric": "not_selected_by_EI_optimization",
             }
         )
         return cost, metadata
@@ -145,16 +151,6 @@ class NGKLotPijMethod:
         grn_source=None,
         grn_target=None,
     ):
-        if not np.isclose(
-            float(cfg.pij_temperature),
-            FIXED_KERNEL_TEMPERATURE,
-            rtol=0.0,
-            atol=1.0e-12,
-        ):
-            raise ValueError(
-                f"{self.name} fixes pij_temperature={FIXED_KERNEL_TEMPERATURE}; "
-                f"got {float(cfg.pij_temperature)}."
-            )
         cost, block_metadata = self.build_kl_cost(
             np.asarray(source, dtype=float),
             np.asarray(target, dtype=float),
@@ -164,29 +160,22 @@ class NGKLotPijMethod:
             grn_source=None if grn_source is None else np.asarray(grn_source, dtype=float),
             grn_target=None if grn_target is None else np.asarray(grn_target, dtype=float),
         )
-        kernel, prebalanced_pij = row_normalized_kernel_from_cost(
+        joint, balanced_pij, transition_metadata = canonical_ng_pij_from_cost_numpy(
             cost,
-            tau=FIXED_KERNEL_TEMPERATURE,
+            temperature=CANONICAL_TEMPERATURE,
         )
-        try:
-            joint, balanced_pij, sinkhorn_metadata = balance_kernel_sinkhorn(kernel)
-            sinkhorn_metadata["log_domain_fallback_used"] = False
-        except RuntimeError as error:
-            joint, balanced_pij, sinkhorn_metadata = balance_cost_log_sinkhorn(
-                cost / FIXED_KERNEL_TEMPERATURE
-            )
-            sinkhorn_metadata["log_domain_fallback_used"] = True
-            sinkhorn_metadata["standard_sinkhorn_error"] = str(error)
+        sinkhorn_metadata = transition_metadata["sinkhorn"]
         diagnostics = {
-            "kind": "experimental_scaled_ng_kl_balanced_sinkhorn",
-            "beta_n": FIXED_FEATURE_BETA_N,
-            "beta_g": FIXED_FEATURE_BETA_G,
-            "g_scale": FIXED_G_SCALE,
-            "n_weight": FIXED_N_WEIGHT,
-            "tau": FIXED_KERNEL_TEMPERATURE,
+            "kind": "canonical_ng_balanced_sinkhorn",
+            "transition_protocol": CANONICAL_TRANSITION_PROTOCOL,
+            "beta_n": CANONICAL_FEATURE_BETA_N,
+            "beta_g": CANONICAL_FEATURE_BETA_G,
+            "alpha_cci": CANONICAL_ALPHA_CCI,
+            "tau": CANONICAL_TEMPERATURE,
+            "legacy_cfg_pij_temperature_received_but_not_used": float(
+                cfg.pij_temperature
+            ),
             "cost": matrix_summary(cost),
-            "kernel": matrix_summary(kernel),
-            "prebalanced_pij": matrix_summary(prebalanced_pij),
             "balanced_joint": matrix_summary(joint),
             "balanced_pij": matrix_summary(balanced_pij),
             "sinkhorn": sinkhorn_metadata,
@@ -214,16 +203,18 @@ class NGKLotPijMethod:
             "pij_method": self.name,
             "compare_feature_keys": list(self.feature_keys),
             "compare_pij_method": self.pij_key,
-            "fusion_mode": "scaled_raw_grn_kl_plus_bounded_n_correction",
-            "transition_construction": "balanced_sinkhorn_scaled_ng_kl",
-            "cost_source": "1.55_raw_GRN_KL_plus_0.05_robust_normalized_N_KL",
-            "fixed_feature_beta_n": FIXED_FEATURE_BETA_N,
-            "fixed_feature_beta_g": FIXED_FEATURE_BETA_G,
-            "fixed_g_scale": FIXED_G_SCALE,
-            "fixed_n_weight": FIXED_N_WEIGHT,
-            "fixed_kernel_temperature": FIXED_KERNEL_TEMPERATURE,
-            "sinkhorn_max_iterations": SINKHORN_MAX_ITERATIONS,
-            "sinkhorn_tolerance": SINKHORN_TOLERANCE,
+            "fusion_mode": "canonical_independent_robust_ng_alpha_mix",
+            "transition_construction": "canonical_ng_balanced_sinkhorn",
+            "transition_protocol": CANONICAL_TRANSITION_PROTOCOL,
+            "cost_source": "independent_Robust5_95_G_and_N_then_alpha_mix_then_span_control",
+            "component_normalization": "independent_robust_5_95",
+            "combined_scale_control": "mixed_q95_minus_q05_no_clipping",
+            "alpha_cci": CANONICAL_ALPHA_CCI,
+            "fixed_feature_beta_n": CANONICAL_FEATURE_BETA_N,
+            "fixed_feature_beta_g": CANONICAL_FEATURE_BETA_G,
+            "fixed_kernel_temperature": CANONICAL_TEMPERATURE,
+            "sinkhorn_max_iterations": CANONICAL_SINKHORN_MAX_ITERATIONS,
+            "sinkhorn_tolerance": CANONICAL_SINKHORN_TOLERANCE,
             "source_marginal_policy": "uniform",
             "target_marginal_policy": "uniform",
             "uses_frozen_compare_N_kl_feature_path": True,
@@ -234,7 +225,8 @@ class NGKLotPijMethod:
             "uses_layer_identity": False,
             "uses_labels": False,
             "uses_third_timepoint": False,
-            **_experimental_metadata(),
+            "status": "canonical_production_reference",
+            "parameter_selection_metric": "not_selected_by_EI_optimization",
         }
         kernels = TransitionKernels(
             kernel_metadata={
@@ -300,7 +292,7 @@ class NGKLotPijMethod:
                     ),
                     "uses_only_current_pair_timepoints": True,
                     "uses_developmental_features": False,
-                    **_experimental_metadata(),
+                    "status": "canonical_production_reference",
                 }
                 kernels.kernel_metadata[pair_label][side] = pair_metadata
 
@@ -351,7 +343,7 @@ class NGKLotPijMethod:
             pairwise_upper_features=feature_set.pairwise_upper_features,
             method_metadata={
                 **common_metadata,
-                "representation": "NG_KLot_heart_mean_optimal_v1",
+                "representation": CANONICAL_TRANSITION_PROTOCOL,
                 "feature_names": feature_set.feature_names,
                 "feature_metadata": feature_set.metadata,
                 "uses_developmental_features": False,

@@ -3,25 +3,25 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from mignet_ce.coarse_frontends._complete_combined_core import (
-    native_v7_pij_numpy,
+from mignet_ce.pij.compare._shared.ng_kl_ot import (
+    canonical_ng_pij_numpy,
+    canonical_ng_pij_torch,
 )
-from mignet_ce.pij.compare.native_v7_torch import native_v7_pij_torch
 
 
-def test_native_v7_torch_matches_numpy_and_has_gradients() -> None:
+def test_canonical_ng_torch_matches_numpy_and_has_gradients() -> None:
     rng = np.random.default_rng(20260727)
     n_t_np = rng.normal(size=(5, 4))
     n_tp_np = rng.normal(size=(6, 4))
     g_t_np = rng.normal(size=(5, 7))
     g_tp_np = rng.normal(size=(6, 7))
-    _, expected, _ = native_v7_pij_numpy(n_t_np, n_tp_np, g_t_np, g_tp_np)
+    _, expected, _ = canonical_ng_pij_numpy(n_t_np, n_tp_np, g_t_np, g_tp_np)
 
     n_t = torch.tensor(n_t_np, dtype=torch.float64, requires_grad=True)
     n_tp = torch.tensor(n_tp_np, dtype=torch.float64, requires_grad=True)
     g_t = torch.tensor(g_t_np, dtype=torch.float64, requires_grad=True)
     g_tp = torch.tensor(g_tp_np, dtype=torch.float64, requires_grad=True)
-    actual = native_v7_pij_torch(
+    actual = canonical_ng_pij_torch(
         n_t,
         n_tp,
         g_t,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_transition_contract
+
+from .config import FORMAL_CACHE_PROTOCOL, FORMAL_TRANSITION_PROTOCOL
 from .mappings import MAPPINGS
 
 
@@ -32,8 +35,14 @@ def audit_unified_analysis_outputs(
         add("locked full profile id", payload.get("profile_id") == cfg.profile.profile_id, payload.get("profile_id"))
         add(
             "full model-space cache protocol",
-            payload.get("cache_protocol") == "full_model_space_v3",
+            payload.get("cache_protocol") == FORMAL_CACHE_PROTOCOL,
             payload.get("cache_protocol"),
+        )
+        add(
+            "canonical N/G transition protocol",
+            payload.get("transition_protocol") == FORMAL_TRANSITION_PROTOCOL
+            and payload.get("transition_contract") == canonical_transition_contract(),
+            payload.get("transition_protocol"),
         )
 
     metrics = tables["metrics"]
@@ -126,7 +135,9 @@ def unified_run_manifest(
 ) -> dict[str, object]:
     return {
         "workflow": "formal_full_unified_downstream_analysis",
-        "cache_protocol": "full_model_space_v3",
+        "cache_protocol": FORMAL_CACHE_PROTOCOL,
+        "transition_protocol": FORMAL_TRANSITION_PROTOCOL,
+        "transition_contract": canonical_transition_contract(),
         "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "full_profile": cfg.profile.__dict__,

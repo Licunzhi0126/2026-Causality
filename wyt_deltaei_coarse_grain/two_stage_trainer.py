@@ -973,7 +973,7 @@ def train_deltaei_two_stage(
             strict_filename = str(
                 prepared.provenance.get(
                     "strict_posthoc_filename",
-                    "strict_native_v7_evaluation.json",
+                    "strict_canonical_ng_evaluation.json",
                 )
             )
             write_json(out_dir / strict_filename, strict_evaluation)

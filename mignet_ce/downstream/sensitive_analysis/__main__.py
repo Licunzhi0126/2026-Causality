@@ -18,12 +18,12 @@ def _parser() -> argparse.ArgumentParser:
         default=["11.5->12.5", "12.5->13.5", "11.5->13.5"],
     )
     parser.add_argument("--alphas", nargs="+", type=float, default=list(default_alphas()))
-    parser.add_argument("--beta-n", type=float, default=0.05)
-    parser.add_argument("--beta-g", type=float, default=0.05)
-    parser.add_argument("--tau", type=float, default=0.1)
-    parser.add_argument("--canonical-alpha", type=float, default=0.1)
-    parser.add_argument("--nmf-components", type=int, default=5)
-    parser.add_argument("--nmf-max-iter", type=int, default=300)
+    parser.add_argument("--beta-n", type=float, default=SensitivityConfig.__dataclass_fields__["beta_n"].default)
+    parser.add_argument("--beta-g", type=float, default=SensitivityConfig.__dataclass_fields__["beta_g"].default)
+    parser.add_argument("--tau", type=float, default=SensitivityConfig.__dataclass_fields__["tau"].default)
+    parser.add_argument("--canonical-alpha", type=float, default=SensitivityConfig.__dataclass_fields__["canonical_alpha"].default)
+    parser.add_argument("--nmf-components", type=int, default=SensitivityConfig.__dataclass_fields__["nmf_components"].default)
+    parser.add_argument("--nmf-max-iter", type=int, default=SensitivityConfig.__dataclass_fields__["nmf_max_iter"].default)
     parser.add_argument("--random-seed", type=int, default=SensitivityConfig.__dataclass_fields__["random_seed"].default)
     return parser
 

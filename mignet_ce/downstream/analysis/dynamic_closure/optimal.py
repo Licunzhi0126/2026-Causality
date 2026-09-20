@@ -7,9 +7,7 @@ from typing import Any
 import numpy as np
 
 from mignet_ce.metrics import effective_information
-from mignet_ce.pij.compare._shared.cosine import row_normalized_kernel_from_cost
-from mignet_ce.pij.compare._shared.ng_kl_ot import build_ng_kl_cost_numpy
-from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import balance_kernel_sinkhorn
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_ng_pij_numpy
 from mignet_ce.representations.wyt_network80 import joint_fixed_pca
 from wyt_deltaei_coarse_grain.complete_combined import (
     CompleteCombinedPair,
@@ -26,6 +24,9 @@ NG_BETA_G = 0.05
 NG_G_SCALE = 1.55
 NG_N_WEIGHT = 0.05
 NG_TEMPERATURE = 1.0
+# DEPRECATION-CANDIDATE(user-removal): the constants above are historical
+# NG_KLot values. The active natural-cache path below delegates to the
+# canonical shared constructor.
 
 
 def ngklot_pij_numpy(
@@ -34,24 +35,16 @@ def ngklot_pij_numpy(
     g_t: np.ndarray,
     g_tp: np.ndarray,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    cost, metadata = build_ng_kl_cost_numpy(
+    _joint, pij, metadata = canonical_ng_pij_numpy(
         n_t,
         n_tp,
         g_t,
         g_tp,
-        beta_n=NG_BETA_N,
-        beta_g=NG_BETA_G,
-        g_scale=NG_G_SCALE,
-        n_weight=NG_N_WEIGHT,
     )
-    kernel, prebalanced = row_normalized_kernel_from_cost(cost, tau=NG_TEMPERATURE)
-    _joint, pij, sinkhorn = balance_kernel_sinkhorn(kernel)
     metadata = {
         **metadata,
         "pij_method": "NG_KLot",
         "network_method": "light_cci_grn",
-        "prebalanced_ei": float(effective_information(prebalanced.copy())),
-        "sinkhorn": sinkhorn,
     }
     return row_normalize(pij), metadata
 
@@ -93,6 +86,6 @@ def prepare_ngklot_pair(
         micro_pij=micro_pij.astype(np.float32),
         micro_ei=float(effective_information(micro_pij.copy())),
         n_metadata=n_metadata,
+        canonical_ng_metadata=ng_metadata,
         v7_metadata=ng_metadata,
     )
-

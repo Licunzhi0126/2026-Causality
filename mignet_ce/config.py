@@ -214,9 +214,12 @@ BASELINE_DERIVED_PIJ_METHODS = {
     "compare_NG_fgw_grnanchor_v9",
     "compare_NG_multiscale_fgw_annealed_v10",
 }
-EXPERIMENTAL_NG_PIJ_METHODS = {
+CANONICAL_NG_PIJ_METHODS = {
     "NG_KLot",
 }
+# DEPRECATION-CANDIDATE(user-removal): backward-compatible empty category name;
+# NG_KLot is canonical and no longer belongs to an experimental category.
+EXPERIMENTAL_NG_PIJ_METHODS = set()
 WYT_PIJ_METHODS = {
     "wyt_single_kl",
     "wyt_regsim_v7",
@@ -250,7 +253,7 @@ PIJ_METHODS = {
     *COST_FUSION_NEW_PIJ_METHODS,
     *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
-    *EXPERIMENTAL_NG_PIJ_METHODS,
+    *CANONICAL_NG_PIJ_METHODS,
     *WYT_PIJ_METHODS,
     MAIN_LIGHTCCI_PIJ_METHOD,
 }
@@ -319,6 +322,7 @@ PIJ_METHOD_PRESETS = {
         *COST_FUSION_NEW_PIJ_METHODS,
         *FEATURE_VERSION_PIJ_METHODS,
         *BASELINE_DERIVED_PIJ_METHODS,
+        *CANONICAL_NG_PIJ_METHODS,
         *EXPERIMENTAL_NG_PIJ_METHODS,
         *WYT_PIJ_METHODS,
         MAIN_LIGHTCCI_PIJ_METHOD,
@@ -337,6 +341,7 @@ LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
     "compare_N_kl",
     *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
+    *CANONICAL_NG_PIJ_METHODS,
     *EXPERIMENTAL_NG_PIJ_METHODS,
     "wyt_single_kl",
 }
@@ -496,7 +501,7 @@ class TemporalRunConfig:
         if self.network_method in {"light_cci_grn", "light_cci_grn_pgr"} and method not in LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS:
             raise ValueError(
                 "light_cci_grn/light_cci_grn_pgr requires pij_method='compare_N_kl' or one of "
-                f"{sorted(FEATURE_VERSION_PIJ_METHODS | BASELINE_DERIVED_PIJ_METHODS | EXPERIMENTAL_NG_PIJ_METHODS)}."
+                f"{sorted(FEATURE_VERSION_PIJ_METHODS | BASELINE_DERIVED_PIJ_METHODS | CANONICAL_NG_PIJ_METHODS | EXPERIMENTAL_NG_PIJ_METHODS)}."
             )
         if self.network_method == "joint_cci_grn" and method != "compare_N_kl":
             raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
@@ -518,6 +523,8 @@ class TemporalRunConfig:
         if method in BASELINE_DERIVED_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
             raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
         if method in EXPERIMENTAL_NG_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
+            raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
+        if method in CANONICAL_NG_PIJ_METHODS and self.network_method not in {"light_cci_grn", "light_cci_grn_pgr"}:
             raise ValueError(f"{method} requires network_method='light_cci_grn' or 'light_cci_grn_pgr'.")
         if self.max_workers < 1:
             raise ValueError("max_workers must be >= 1.")

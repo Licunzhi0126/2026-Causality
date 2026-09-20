@@ -12,11 +12,14 @@ import pandas as pd
 import scipy.sparse as sp
 
 from .config import (
+    FORMAL_CACHE_PROTOCOL,
+    FORMAL_TRANSITION_PROTOCOL,
     MAPPING_COMPLETE,
     MAPPING_MATURITY,
     MAPPING_TWO_STAGE,
     UnifiedDownstreamConfig,
 )
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_transition_contract
 from .dynamic_closure.optimal import prepare_ngklot_pair
 from .io import cci_index_path, cci_path, grn_path, layer_h5ad, read_index
 from .mappings import (
@@ -229,6 +232,12 @@ def _load_complete_stage(cfg: UnifiedDownstreamConfig, layer: str, time: str):
     )
 
 
+def load_complete_stage(cfg: UnifiedDownstreamConfig, layer: str, time: str):
+    """Public read-only stage loader shared with downstream sensitivity tools."""
+
+    return _load_complete_stage(cfg, layer, time)
+
+
 def _natural_expected_manifest(
     cfg: UnifiedDownstreamConfig,
     layer: str,
@@ -238,7 +247,9 @@ def _natural_expected_manifest(
     source, target = pair.split("->")
     return {
         "cache_kind": "formal_full_natural_ngklot",
-        "cache_protocol": "full_model_space_v3",
+        "cache_protocol": FORMAL_CACHE_PROTOCOL,
+        "transition_protocol": FORMAL_TRANSITION_PROTOCOL,
+        "transition_contract": canonical_transition_contract(),
         "profile_id": cfg.profile.profile_id,
         "layer": layer,
         "time_pair": pair,
@@ -312,7 +323,9 @@ def _optimized_expected_manifest(
         inputs["maturity_tp"] = _input_descriptor(maturity_tp)
     return {
         "cache_kind": "formal_full_deltaei",
-        "cache_protocol": "full_model_space_v3",
+        "cache_protocol": FORMAL_CACHE_PROTOCOL,
+        "transition_protocol": FORMAL_TRANSITION_PROTOCOL,
+        "transition_contract": canonical_transition_contract(),
         "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "mapping": mapping,
@@ -350,7 +363,7 @@ def _is_valid_optimized_cache(root: Path, expected: dict[str, object]) -> bool:
     required = expected["training_hyperparameters"]
     if not all(trainer.get(key) == value for key, value in required.items()):
         return False
-    if expected.get("cache_protocol") == "full_model_space_v3":
+    if expected.get("cache_protocol") == FORMAL_CACHE_PROTOCOL:
         if expected.get("nmf_max_iter_used") != 300:
             return False
         summary = _read_json(root / "summary.json")
@@ -496,7 +509,9 @@ def ensure_full_unified_inputs(cfg: UnifiedDownstreamConfig) -> dict[str, object
     natural = ensure_full_natural_caches(cfg)
     deltaei = ensure_full_deltaei_caches(cfg)
     payload = {
-        "cache_protocol": "full_model_space_v3",
+        "cache_protocol": FORMAL_CACHE_PROTOCOL,
+        "transition_protocol": FORMAL_TRANSITION_PROTOCOL,
+        "transition_contract": canonical_transition_contract(),
         "model_state_contract": "full_soft_k",
         "profile_id": cfg.profile.profile_id,
         "full_profile": cfg.profile.__dict__,

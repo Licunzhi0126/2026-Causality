@@ -44,7 +44,7 @@ Optimized assignments remain soft (`S_t`, `S_tp`) throughout downstream
 analysis; natural mappings enter through one-hot matrices under the same
 interface.
 
-The formal cache contract is `full_model_space_v3`: three optimized methods
+The formal cache contract is `full_model_space_v4_canonical_ng`: three optimized methods
 times three adjacent time pairs, K=40, 1500 epochs, and NMF 5/300. Legacy
 methods require `best_model.pt`; the two-stage method requires `best_ei.pt`
 and `best_joint.pt`. Every manifest records frontend, training mode,

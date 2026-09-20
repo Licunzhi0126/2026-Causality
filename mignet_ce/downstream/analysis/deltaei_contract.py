@@ -8,6 +8,9 @@ import json
 import numpy as np
 import pandas as pd
 
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_transition_contract
+
+from .config import FORMAL_CACHE_PROTOCOL, FORMAL_TRANSITION_PROTOCOL
 from .dynamic_closure.analysis import effective_information
 from .mappings import (
     MAPPING_COMPLETE,
@@ -25,7 +28,6 @@ FORMAL_TIME_PAIRS = ("11.5->12.5", "12.5->13.5", "13.5->14.5")
 FORMAL_K = 40
 FORMAL_EPOCHS = 1500
 FORMAL_NMF_MAX_ITER = 300
-FORMAL_CACHE_PROTOCOL = "full_model_space_v3"
 
 
 def _required_summary_float(summary: dict[str, object], key: str, context: str) -> float:
@@ -191,6 +193,8 @@ def audit_full_cache_root(
                 epochs == FORMAL_EPOCHS
                 and nmf_max_iter == FORMAL_NMF_MAX_ITER
                 and protocol == FORMAL_CACHE_PROTOCOL
+                and full_manifest.get("transition_protocol") == FORMAL_TRANSITION_PROTOCOL
+                and full_manifest.get("transition_contract") == canonical_transition_contract()
                 and full_manifest.get("model_state_contract") == "full_soft_k"
                 and full_manifest.get("method") == method
                 and full_manifest.get("frontend") == (spec.frontend or method)

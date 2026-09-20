@@ -414,7 +414,7 @@ def _prepare_cci_grn(
             "network_adjacency_policy": "exact_registered_network_output",
             "macro_feature_mode": "pool_expression_then_recompute_GRN_G",
             "N": pair.n_metadata,
-            "Native_V7": pair.v7_metadata,
+            "Canonical_NG": pair.canonical_ng_metadata,
             "stage_t": stage_t.metadata,
             "stage_tp": stage_tp.metadata,
             "strict_posthoc_filename": "strict_complete_combined_maturity_evaluation.json",

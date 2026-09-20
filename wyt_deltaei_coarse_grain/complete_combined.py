@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Complete-combined coarse-graining infrastructure.
 
-This module owns data loading, feature construction, Native-V7 PIJ evaluation,
+This module owns data loading, feature construction, canonical N/G PIJ evaluation,
 and strict post-hoc diagnostics.  ``mignet_ce.coarse_frontends`` only keeps the
 thin method entrypoint.
 """
@@ -27,14 +27,17 @@ from mignet_ce.networks.light_cci_grn import (
 from mignet_ce.networks.wyt_cci_regsim import row_normalize_sparse
 from mignet_ce.pij.compare._shared.cosine import row_normalized_kernel_from_cost
 from mignet_ce.pij.compare._shared.ng_kl_ot import (
+    CANONICAL_ALPHA_CCI,
+    CANONICAL_FEATURE_BETA_G,
+    CANONICAL_FEATURE_BETA_N,
+    CANONICAL_TEMPERATURE,
     NATIVE_V7_FEATURE_BETA,
     NATIVE_V7_G_SCALE,
     NATIVE_V7_N_WEIGHT,
     build_ng_kl_cost_numpy,
+    canonical_ng_pij_numpy,
+    canonical_ng_pij_torch,
     native_v7_pij_torch,
-)
-from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import (
-    balance_kernel_sinkhorn,
 )
 from mignet_ce.representations.coarse_input import MacroPijInputs
 
@@ -67,6 +70,9 @@ class CompleteCombinedPair:
     micro_pij: np.ndarray
     micro_ei: float
     n_metadata: dict[str, object]
+    canonical_ng_metadata: dict[str, object]
+    # DEPRECATION-CANDIDATE(user-removal): compatibility alias. Production
+    # readers use canonical_ng_metadata.
     v7_metadata: dict[str, object]
 
 
@@ -154,7 +160,16 @@ def build_macro_pij_builder(
             project(inputs.feature_blocks_t["X"], stage_t, "t"),
             project(inputs.feature_blocks_tp["X"], stage_tp, "tp"),
         )
-        return native_v7_pij_torch(n_t, n_tp, g_t, g_tp)
+        return canonical_ng_pij_torch(
+            n_t,
+            n_tp,
+            g_t,
+            g_tp,
+            beta_n=CANONICAL_FEATURE_BETA_N,
+            beta_g=CANONICAL_FEATURE_BETA_G,
+            alpha_cci=CANONICAL_ALPHA_CCI,
+            temperature=CANONICAL_TEMPERATURE,
+        )
 
     return build
 
@@ -486,6 +501,11 @@ def native_v7_pij_numpy(
     g_t: np.ndarray,
     g_tp: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """DEPRECATION-CANDIDATE(user-removal): disconnected Native-V7 constructor."""
+    from mignet_ce.pij.compare.compare_NG_kl_sinkhorn_grnanchor_v7 import (
+        balance_kernel_sinkhorn,
+    )
+
     cost, cost_metadata = build_ng_kl_cost_numpy(
         n_t,
         n_tp,
@@ -537,7 +557,12 @@ def prepare_complete_pair(
         seed=seed,
     )
     g_t, g_tp = pairwise_zscore(stage_t.g_raw, stage_tp.g_raw)
-    _, micro_pij, v7_metadata = native_v7_pij_numpy(n_t, n_tp, g_t, g_tp)
+    _, micro_pij, canonical_ng_metadata = canonical_ng_pij_numpy(
+        n_t,
+        n_tp,
+        g_t,
+        g_tp,
+    )
     encoder_t, encoder_tp = pairwise_zscore(
         np.hstack([n_t, g_t]),
         np.hstack([n_tp, g_tp]),
@@ -559,7 +584,8 @@ def prepare_complete_pair(
         micro_pij=micro_pij.astype(np.float32),
         micro_ei=float(effective_information(micro_pij.copy())),
         n_metadata=n_metadata,
-        v7_metadata=v7_metadata,
+        canonical_ng_metadata=canonical_ng_metadata,
+        v7_metadata=canonical_ng_metadata,
     )
 
 
@@ -642,7 +668,7 @@ def _evaluate_exact_macro(
         max_iter=nmf_max_iter,
         seed=seed,
     )
-    _, pij, v7_metadata = native_v7_pij_numpy(n_t, n_tp, g_t, g_tp)
+    _, pij, canonical_ng_metadata = canonical_ng_pij_numpy(n_t, n_tp, g_t, g_tp)
     return {
         "EI_macro": float(effective_information(pij.copy())),
         "macro_cci_normalization": (
@@ -655,7 +681,7 @@ def _evaluate_exact_macro(
         "macro_cci_nnz_t": int(cci_t.nnz),
         "macro_cci_nnz_tp": int(cci_tp.nnz),
         "N_metadata": n_metadata,
-        "V7_metadata": v7_metadata,
+        "Canonical_NG_metadata": canonical_ng_metadata,
     }
 
 
@@ -690,7 +716,7 @@ def strict_complete_combined_evaluation(
             stage_tp.projection_tar,
         ),
     )
-    _, training_pij, training_metadata = native_v7_pij_numpy(
+    _, training_pij, training_metadata = canonical_ng_pij_numpy(
         pooled_n_t,
         pooled_n_tp,
         recomputed_g_t,
@@ -721,8 +747,8 @@ def strict_complete_combined_evaluation(
     raw_ei = float(exact_raw["EI_macro"])
     rownorm_ei = float(exact_rownorm["EI_macro"])
     return {
-        "evaluation_protocol": "complete_combined_coarse_native_v7",
-        "EI_micro_native_v7": micro_ei,
+        "evaluation_protocol": "complete_combined_coarse_canonical_ng",
+        "EI_micro_canonical_ng": micro_ei,
         "EI_macro_training_interface_pool_N_recompute_G": training_ei,
         "deltaEI_training_interface_pool_N_recompute_G": training_ei - micro_ei,
         "EI_macro_strict_raw_projected_CCI_reextract_N_recompute_G": raw_ei,
