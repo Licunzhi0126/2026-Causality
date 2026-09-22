@@ -37,11 +37,26 @@ K10_LEVELS = {
     "Spot -> K10": ("spot", "seurat_k10"),
 }
 
+# Table 1 is intentionally split into an adjacent coarse-graining chain and
+# a cross-scale comparison panel.  Keep DEFAULT_LEVELS/K10_LEVELS for Figure 1
+# and Table 2, where the original hierarchy semantics are still useful.
+TABLE1_CHAIN_LEVELS = {
+    "Spot -> K150": ("spot", "seurat_k150"),
+    "K150 -> K40": ("seurat_k150", "seurat_k40"),
+    "K40 -> K10": ("seurat_k40", "seurat_k10"),
+}
+TABLE1_CROSS_LEVELS = {
+    "Spot -> K40": ("spot", "seurat_k40"),
+    "Spot -> K10": ("spot", "seurat_k10"),
+    "K150 -> K10": ("seurat_k150", "seurat_k10"),
+}
+
 DEFAULT_COARSE_METHODS = (
     "complete_combined_coarse",
     "complete_combined_coarse_maturity_cci",
     "complete_combined_coarse_maturity_cci_grn",
 )
+DEFAULT_TABLE3_METHODS = (*DEFAULT_COARSE_METHODS, "maturity_cci_grn_two_stage")
 
 
 def method_path_slug(method: str) -> str:
@@ -75,6 +90,7 @@ class AssetConfig:
     pij_ablations: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_PIJ_ABLATIONS))
     levels: Mapping[str, tuple[str, str]] = field(default_factory=lambda: dict(DEFAULT_LEVELS))
     coarse_methods: Sequence[str] = DEFAULT_COARSE_METHODS
+    table3_methods: Sequence[str] = DEFAULT_TABLE3_METHODS
     primary_coarse_method: str = "complete_combined_coarse_maturity_cci_grn"
     coarse_scale: str = "spot"
     coarse_k: int | None = 64
@@ -85,6 +101,7 @@ class AssetConfig:
     ei_metrics_path: Path | None = None
     seurat_cg_metrics_path: Path | None = None
     k10_ablation_root: Path | None = None
+    feature_ablation_root: Path | None = None
     multiscale_roots: Sequence[Path] = ()
     optimal_coarse_methods: Sequence[str] = ()
     optimal_k_by_scale: Mapping[str, int] = field(default_factory=lambda: dict(OPTIMAL_K_BY_SCALE))
@@ -106,6 +123,7 @@ class AssetConfig:
             pij_ablations=dict(self.pij_ablations),
             levels=dict(self.levels),
             coarse_methods=tuple(map(str, self.coarse_methods)),
+            table3_methods=tuple(map(str, self.table3_methods)),
             primary_coarse_method=str(self.primary_coarse_method),
             coarse_scale=str(self.coarse_scale),
             coarse_k=(int(self.coarse_k) if self.coarse_k is not None else None),
@@ -116,6 +134,7 @@ class AssetConfig:
             ei_metrics_path=(Path(self.ei_metrics_path).expanduser().resolve() if self.ei_metrics_path else None),
             seurat_cg_metrics_path=(Path(self.seurat_cg_metrics_path).expanduser().resolve() if self.seurat_cg_metrics_path else None),
             k10_ablation_root=(Path(self.k10_ablation_root).expanduser().resolve() if self.k10_ablation_root else None),
+            feature_ablation_root=(Path(self.feature_ablation_root).expanduser().resolve() if self.feature_ablation_root else None),
             multiscale_roots=tuple(Path(root).expanduser().resolve() for root in self.multiscale_roots),
             optimal_coarse_methods=tuple(map(str, self.optimal_coarse_methods)),
             optimal_k_by_scale=dict(self.optimal_k_by_scale),
@@ -132,6 +151,8 @@ class AssetConfig:
             raise ValueError("Only cluster_count_policy='adjacent_chain' is currently supported.")
         if self.primary_coarse_method not in set(self.coarse_methods):
             raise ValueError("primary_coarse_method must be listed in coarse_methods.")
+        if not tuple(self.table3_methods) or len(set(self.table3_methods)) != len(tuple(self.table3_methods)):
+            raise ValueError("table3_methods must be non-empty and unique.")
         if self.dpi < 72:
             raise ValueError("dpi must be >= 72")
         if set(self.optimal_k_by_scale) != set(INPUT_SCALES):

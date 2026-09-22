@@ -262,18 +262,15 @@ def render_figure1(
     dpi: int = 300,
 ) -> None:
     set_asset_style()
-    fig = plt.figure(figsize=(20.4, 7.0))
-    gs = fig.add_gridspec(1, 6, width_ratios=[1.20, 1.05, 2.35, 0.58, 2.35, 3.05], wspace=0.18)
+    fig = plt.figure(figsize=(18.6, 7.0))
+    gs = fig.add_gridspec(1, 5, width_ratios=[1.30, 2.35, 0.58, 2.35, 3.05], wspace=0.18)
     ax_context = fig.add_subplot(gs[0, 0])
-    ax_zoom = fig.add_subplot(gs[0, 1])
-    ax_source = fig.add_subplot(gs[0, 2])
-    ax_arrow = fig.add_subplot(gs[0, 3])
-    ax_target = fig.add_subplot(gs[0, 4])
-    ax_gain = fig.add_subplot(gs[0, 5])
+    ax_source = fig.add_subplot(gs[0, 1])
+    ax_arrow = fig.add_subplot(gs[0, 2])
+    ax_target = fig.add_subplot(gs[0, 3])
+    ax_gain = fig.add_subplot(gs[0, 4])
 
     draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample")
-    draw_heart_zoom(ax_zoom, source_spot, source_k40, "heart ROI enlarged")
-    _draw_zoom_arrow(fig, ax_context, ax_zoom)
     _stack_stage(ax_source, source_spot, source_k150, source_k40, stage=source_stage)
     _draw_pij_arrows(ax_arrow)
     _stack_stage(ax_target, target_spot, target_k150, target_k40, stage=target_stage)
@@ -317,7 +314,7 @@ def render_figure1(
         depth=0.24, text_offset=0.22, fontsize=7.5,
     )
 
-    fig.suptitle("Figure 1 · EI existence hierarchy with heart-region enlargement", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
+    fig.suptitle("Figure 1 · EI existence across the coarse-graining hierarchy", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
     fig.text(0.02, 0.50, "coarse-graining direction", rotation=90, va="center", ha="center", fontsize=8.5, color=MUTED)
     if demo:
         fig.text(0.99, 0.99, "STYLE PREVIEW · DEMO VALUES", ha="right", va="top", fontsize=8.5, color="#A66723")
@@ -363,14 +360,12 @@ def render_figure1_k10(
     full_slice_source: pd.DataFrame | None = None, demo: bool = False, dpi: int = 300,
 ) -> None:
     set_asset_style()
-    fig = plt.figure(figsize=(25.0, 9.2))
-    gs = fig.add_gridspec(1, 6, width_ratios=[1.20, 1.05, 2.35, 0.58, 2.35, 4.55], wspace=0.18)
-    ax_context, ax_zoom, ax_source, ax_arrow, ax_target, ax_gain = (
-        fig.add_subplot(gs[0, index]) for index in range(6)
+    fig = plt.figure(figsize=(22.8, 9.2))
+    gs = fig.add_gridspec(1, 5, width_ratios=[1.30, 2.35, 0.58, 2.35, 4.55], wspace=0.18)
+    ax_context, ax_source, ax_arrow, ax_target, ax_gain = (
+        fig.add_subplot(gs[0, index]) for index in range(5)
     )
     draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample")
-    draw_heart_zoom(ax_zoom, source_spot, source_k40, "heart ROI enlarged")
-    _draw_zoom_arrow(fig, ax_context, ax_zoom)
     _stack_stage_k10(ax_source, source_spot, source_k150, source_k40, source_k10, stage=source_stage)
     _stack_stage_k10(ax_target, target_spot, target_k150, target_k40, target_k10, stage=target_stage)
     _draw_pij_arrows(ax_arrow)
@@ -396,7 +391,7 @@ def render_figure1_k10(
             text=f"$\\Delta EI$ ({pretty_label})\n= {value:+.3f}",
             depth=0.18, text_offset=0.20, fontsize=7.3,
         )
-    fig.suptitle("Figure 1 · EI existence hierarchy with heart-region enlargement", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
+    fig.suptitle("Figure 1 · EI existence across the extended coarse-graining hierarchy", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
     fig.text(0.02, 0.50, "coarse-graining direction", rotation=90, va="center", ha="center", fontsize=8.5, color=MUTED)
     if demo:
         fig.text(0.99, 0.99, "STYLE PREVIEW · DEMO VALUES", ha="right", va="top", fontsize=8.5, color="#A66723")

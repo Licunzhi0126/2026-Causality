@@ -16,7 +16,9 @@ from mignet_ce.downstream.analysis.dynamic_closure.optimal_input_existence impor
     evaluate_optimal_runs,
 )
 
-from .config import AssetConfig, K10_LEVELS, method_path_slug
+from .config import (
+    AssetConfig, K10_LEVELS, TABLE1_CHAIN_LEVELS, TABLE1_CROSS_LEVELS, method_path_slug,
+)
 from .figure_plots import render_figure1, render_figure1_k10, render_figure2
 from .inputs import (
     discover_coarse_roots,
@@ -26,6 +28,7 @@ from .inputs import (
     load_domain_map,
     load_full_slice,
     load_spot_coordinates,
+    load_feature_ablation_metrics,
     load_vertical_metrics,
     normalize_time_pair,
     select_coarse_run,
@@ -34,12 +37,15 @@ from .registry import FIGURE_FILES, TABLE_FILES, normalize_asset_names
 from .table_plots import (
     render_metric_grid,
     render_table1_bundle,
+    render_feature_ablation_table,
     render_table2,
     render_table3,
 )
 from .tables import (
     build_ei_ablation,
+    build_feature_ablation_table,
     build_ei_hierarchy,
+    build_closure_quality_grid,
     build_legacy_optimal_table,
     build_optimal_grid,
     build_seurat_cg_hierarchy,
@@ -70,6 +76,19 @@ def _copy_rendered_asset(source: Path, destination: Path) -> None:
     source_pdf = source.with_suffix(".pdf")
     if source_pdf.is_file():
         _copy_file(source_pdf, destination.with_suffix(".pdf"))
+
+
+def _method_alias_path(directory: Path, filename: str, method: str) -> Path:
+    """Return a flat, method-explicit alias beside the legacy primary alias.
+
+    Method-specific optimal assets are still kept under ``optimal/<method>/``.
+    The flat alias makes secondary methods (notably two-stage) visible without
+    requiring callers to know that nested layout.
+    """
+
+    path = Path(filename)
+    slug = method_path_slug(method)
+    return directory / f"{path.stem}__{slug}{path.suffix}"
 
 
 def _read_cg_metrics(path: Path) -> pd.DataFrame:
@@ -112,7 +131,20 @@ def prepare_paper_tables(cfg: AssetConfig, assets: Iterable[str] | None = None) 
     source_paths: set[Path] = set()
 
     ablations = None
-    if any(name in requested for name in ("table1", "table1_k10")):
+    feature_ablation = None
+    if any(name in requested for name in ("table1", "table1_k10")) and cfg.feature_ablation_root is not None:
+        feature_ablation = load_feature_ablation_metrics(cfg.feature_ablation_root)
+        source_paths.update(Path(path) for path in feature_ablation["source_metrics"].unique())
+        if "table1" in requested:
+            frames["table1"] = build_feature_ablation_table(
+                feature_ablation, TABLE1_CHAIN_LEVELS, cfg.time_pairs,
+            )
+        if "table1_k10" in requested:
+            frames["table1_k10"] = build_feature_ablation_table(
+                feature_ablation, TABLE1_CROSS_LEVELS, cfg.time_pairs,
+            )
+    elif any(name in requested for name in ("table1", "table1_k10")):
+        # Backward-compatible fallback for already-computed legacy Table 1 assets.
         roots = [cfg.vertical_ablation_root]
         if cfg.k10_ablation_root is not None:
             roots.append(cfg.k10_ablation_root)
@@ -133,14 +165,14 @@ def prepare_paper_tables(cfg: AssetConfig, assets: Iterable[str] | None = None) 
                 if len(values) > 1 and not np.allclose(values, values[0], atol=1e-8, rtol=1e-8):
                     raise ValueError(f"Conflicting primary K10 ablation rows: {group[keys].iloc[0].to_dict()}")
             ablations = ablations.drop_duplicates(keys, keep="first")
-    if "table1" in requested:
-        frames["table1"] = build_ei_ablation(
-            ablations, cfg.levels, tuple(cfg.pij_ablations), cfg.time_pairs,
-        )
-    if "table1_k10" in requested:
-        frames["table1_k10"] = build_ei_ablation(
-            ablations, K10_LEVELS, tuple(cfg.pij_ablations), cfg.time_pairs,
-        )
+        if "table1" in requested:
+            frames["table1"] = build_ei_ablation(
+                ablations, TABLE1_CHAIN_LEVELS, tuple(cfg.pij_ablations), cfg.time_pairs,
+            )
+        if "table1_k10" in requested:
+            frames["table1_k10"] = build_ei_ablation(
+                ablations, TABLE1_CROSS_LEVELS, tuple(cfg.pij_ablations), cfg.time_pairs,
+            )
 
     if any(name in requested for name in ("table2", "table2_k10", "figure1", "figure1_k10")):
         primary = _primary_ei_metrics(cfg, ablations)
@@ -164,8 +196,18 @@ def prepare_paper_tables(cfg: AssetConfig, assets: Iterable[str] | None = None) 
     if "table3" in requested or "figure2" in requested:
         legacy_runs = discover_coarse_runs(cfg.coarse_root, cfg.coarse_methods)
         if "table3" in requested:
+            table3_runs = legacy_runs.copy()
+            extra_methods = tuple(method for method in cfg.table3_methods if method not in set(cfg.coarse_methods))
+            if extra_methods and cfg.multiscale_roots:
+                try:
+                    extra_runs = discover_coarse_roots(cfg.multiscale_roots, extra_methods)
+                except FileNotFoundError:
+                    extra_runs = pd.DataFrame()
+                if not extra_runs.empty:
+                    table3_runs = pd.concat([table3_runs, extra_runs], ignore_index=True).drop_duplicates("run_dir")
+                    source_paths.update(Path(path) for path in extra_runs["summary_path"])
             frames["table3"] = build_legacy_optimal_table(
-                legacy_runs, cfg.coarse_methods, cfg.time_pairs, cfg.time_points,
+                table3_runs, cfg.table3_methods, cfg.time_pairs, cfg.time_points,
                 k=int(cfg.coarse_k), seed=int(cfg.coarse_seed),
             )
         if "figure2" in requested:
@@ -217,7 +259,10 @@ def prepare_paper_tables(cfg: AssetConfig, assets: Iterable[str] | None = None) 
                 )
                 table4_path = method_tables_dir / TABLE_FILES["table4"]
                 table4.to_csv(table4_path, index=False)
+                table4_alias = _method_alias_path(tables_dir, TABLE_FILES["table4"], method)
+                _copy_file(table4_path, table4_alias)
                 method_manifest["table4"] = str(table4_path)
+                method_manifest["table4_flat_alias"] = str(table4_alias)
                 if method == cfg.primary_coarse_method:
                     frames["table4"] = table4
             if "table5" in requested:
@@ -228,13 +273,17 @@ def prepare_paper_tables(cfg: AssetConfig, assets: Iterable[str] | None = None) 
                 cg_long = evaluate_optimal_runs(selected)
                 cg_long_path = method_tables_dir / "optimal_input_cg_long.csv"
                 cg_long.to_csv(cg_long_path, index=False)
-                table5 = build_optimal_grid(
-                    cg_long, "closure_quality_for_claim", cfg.optimal_time_pairs,
-                )
+                table5 = build_closure_quality_grid(cg_long, cfg.optimal_time_pairs)
                 table5_path = method_tables_dir / TABLE_FILES["table5"]
                 table5.to_csv(table5_path, index=False)
+                table5_alias = _method_alias_path(tables_dir, TABLE_FILES["table5"], method)
+                _copy_file(table5_path, table5_alias)
+                cg_alias = _method_alias_path(tables_dir, "optimal_input_cg_long.csv", method)
+                _copy_file(cg_long_path, cg_alias)
                 method_manifest["table5"] = str(table5_path)
+                method_manifest["table5_flat_alias"] = str(table5_alias)
                 method_manifest["closure_long"] = str(cg_long_path)
+                method_manifest["closure_long_flat_alias"] = str(cg_alias)
                 for directory in selected["run_dir"]:
                     source_paths.update(
                         Path(directory) / name
@@ -331,10 +380,25 @@ def render_paper_assets(cfg: AssetConfig, assets: Iterable[str] | None = None) -
     frames = {name: pd.read_csv(path) for name, path in paths.items()}
     outputs: dict[str, object] = {}
 
+    feature_table = cfg.feature_ablation_root is not None
     table_renderers = {
-        "table1": lambda frame, path: render_table1_bundle(frame, path, dpi=cfg.dpi),
-        "table1_k10": lambda frame, path: render_table1_bundle(
-            frame, path, dpi=cfg.dpi, title="Table 1 · PIJ method ablation across K10 hierarchy",
+        "table1": (
+            (lambda frame, path: render_feature_ablation_table(
+                frame, path, dpi=cfg.dpi, title="Table 1A · Controlled PIJ ablation along the adjacent hierarchy chain",
+            ))
+            if feature_table else
+            (lambda frame, path: render_table1_bundle(
+                frame, path, dpi=cfg.dpi, title="Table 1A · PIJ ablation along the adjacent hierarchy chain",
+            ))
+        ),
+        "table1_k10": (
+            (lambda frame, path: render_feature_ablation_table(
+                frame, path, dpi=cfg.dpi, title="Table 1B · Controlled PIJ ablation across cross-scale hierarchy pairs",
+            ))
+            if feature_table else
+            (lambda frame, path: render_table1_bundle(
+                frame, path, dpi=cfg.dpi, title="Table 1B · PIJ ablation across cross-scale hierarchy pairs",
+            ))
         ),
         "table2": lambda frame, path: render_table2(frame, path, dpi=cfg.dpi),
         "table2_k10": lambda frame, path: render_table2(
@@ -343,7 +407,7 @@ def render_paper_assets(cfg: AssetConfig, assets: Iterable[str] | None = None) -
         ),
         "table2_cg_k10": lambda frame, path: render_table2(
             frame, path, dpi=cfg.dpi, title="Table 2 · Seurat ClosureQuality across hierarchy",
-            subtitle="Common Spot input; low-signal cells are shown as missing.",
+            subtitle="Common Spot input; † marks low available-information regimes (raw CQ shown descriptively).",
         ),
         "table3": lambda frame, path: render_table3(frame, path, dpi=cfg.dpi),
     }
@@ -372,6 +436,11 @@ def render_paper_assets(cfg: AssetConfig, assets: Iterable[str] | None = None) -
                 ),
             )
             method_outputs["table4"] = str(path)
+            flat_alias = _method_alias_path(
+                figures_dir, TABLE_FILES["table4"].replace(".csv", ".png"), method
+            )
+            _copy_rendered_asset(path, flat_alias)
+            method_outputs["table4_flat_alias"] = str(flat_alias)
             if method == cfg.primary_coarse_method:
                 alias = figures_dir / TABLE_FILES["table4"].replace(".csv", ".png")
                 _copy_rendered_asset(path, alias)
@@ -386,10 +455,15 @@ def render_paper_assets(cfg: AssetConfig, assets: Iterable[str] | None = None) -
                 title="Table 5 · Optimal coarse-graining ClosureQuality by input scale",
                 subtitle=(
                     f"Method: {method}. Matched runs and cells with Table 4; "
-                    "low-signal cells are shown as missing."
+                    "† marks low available-information regimes; raw CQ remains visible but is not used for strong closure claims."
                 ),
             )
             method_outputs["table5"] = str(path)
+            flat_alias = _method_alias_path(
+                figures_dir, TABLE_FILES["table5"].replace(".csv", ".png"), method
+            )
+            _copy_rendered_asset(path, flat_alias)
+            method_outputs["table5_flat_alias"] = str(flat_alias)
             if method == cfg.primary_coarse_method:
                 alias = figures_dir / TABLE_FILES["table5"].replace(".csv", ".png")
                 _copy_rendered_asset(path, alias)

@@ -58,8 +58,19 @@ def build_ei_hierarchy(
     ])
 
 
+def _closure_quality_cell(value: object, status: object) -> object:
+    """Keep raw CQ visible; mark low-signal ratios rather than blanking them."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    if not np.isfinite(numeric):
+        return np.nan
+    return f"{numeric:.4f}†" if str(status) != "informative" else numeric
+
+
 def build_seurat_cg_hierarchy(metrics: pd.DataFrame, time_pairs: Sequence[str]) -> pd.DataFrame:
-    required = {"macro_layer", "time_pair", "closure_quality_for_claim", "signal_status"}
+    required = {"macro_layer", "time_pair", "closure_quality", "signal_status"}
     if not required.issubset(metrics.columns):
         raise ValueError(f"Seurat CG metrics lack {sorted(required - set(metrics.columns))}")
     data = metrics.copy()
@@ -76,7 +87,27 @@ def build_seurat_cg_hierarchy(metrics: pd.DataFrame, time_pairs: Sequence[str]) 
             if len(selected) != 1:
                 raise ValueError(f"Expected one Seurat CG row for {layer} {pair}; got {len(selected)}")
             item = selected.iloc[0]
-            row[label] = float(item["closure_quality_for_claim"]) if pd.notna(item["closure_quality_for_claim"]) else np.nan
+            row[label] = _closure_quality_cell(item["closure_quality"], item["signal_status"])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_closure_quality_grid(
+    selected: pd.DataFrame,
+    time_pairs: Sequence[str] = OPTIMAL_TIME_PAIRS,
+) -> pd.DataFrame:
+    required = {"input_scale", "time_pair", "closure_quality", "signal_status"}
+    if not required.issubset(selected.columns):
+        raise ValueError(f"ClosureQuality grid lacks {sorted(required - set(selected.columns))}")
+    rows: list[dict[str, object]] = []
+    for scale in INPUT_SCALES:
+        row: dict[str, object] = {"Input scale": scale}
+        for pair in time_pairs:
+            hits = selected.loc[selected["input_scale"].eq(scale) & selected["time_pair"].eq(pair)]
+            if len(hits) != 1:
+                raise ValueError(f"Expected one closure run for {scale} {pair}; got {len(hits)}")
+            item = hits.iloc[0]
+            row[pair] = _closure_quality_cell(item["closure_quality"], item["signal_status"])
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -95,10 +126,20 @@ def build_legacy_optimal_table(
     t0, t1, t2 = time_points
     rows: list[dict[str, object]] = []
     for method in methods:
-        selected = {
-            pair: select_coarse_run(runs, method, "spot", pair, k=k, seed=seed)
-            for pair in time_pairs
-        }
+        try:
+            selected = {
+                pair: select_coarse_run(runs, method, "spot", pair, k=k, seed=seed)
+                for pair in time_pairs
+            }
+        except KeyError:
+            # Table 3 is allowed to render a draft placeholder while a newly
+            # registered method (e.g. two-stage) is waiting for its matched-K run.
+            rows.append({
+                "Method": method,
+                **{f"DeltaEI {pair}": np.nan for pair in time_pairs},
+                f"K@{t0}": np.nan, f"K@{t1}": np.nan, f"K@{t2}": np.nan,
+            })
+            continue
         first = selected[f"{t0}->{t1}"]
         second = selected[f"{t1}->{t2}"]
         rows.append({
@@ -169,4 +210,65 @@ def build_optimal_grid(
 __all__ = [
     "K10_LEVELS", "build_ei_ablation", "build_ei_hierarchy", "build_seurat_cg_hierarchy",
     "build_legacy_optimal_table", "select_optimal_input_runs", "build_optimal_grid",
+    "build_closure_quality_grid",
 ]
+
+
+FEATURE_ABLATION_ROW_ORDER = (
+    ("CCI", "NMF", "KL"),
+    ("CCI", "NMF", "KL + OT"),
+    ("CCI", "Laplacian", "KL"),
+    ("CCI", "Laplacian", "KL + OT"),
+    ("GRN", "Dual-end gating", "KL"),
+    ("GRN", "Dual-end gating", "KL + OT"),
+    ("CCI + GRN", "NMF + dual-end gating", "KL"),
+    ("CCI + GRN", "NMF + dual-end gating", "KL + OT"),
+    ("CCI + GRN", "Laplacian + dual-end gating", "KL"),
+    ("CCI + GRN", "Laplacian + dual-end gating", "KL + OT"),
+)
+
+
+def build_feature_ablation_table(
+    metrics: pd.DataFrame,
+    levels: Mapping[str, tuple[str, str]],
+    time_pairs: Sequence[str],
+) -> pd.DataFrame:
+    """Build one of the two paper-facing controlled PIJ-ablation tables."""
+
+    required = {
+        "input_group", "feature_method", "pij_construction",
+        "lower_layer", "upper_layer", "time_pair", "delta_EI",
+    }
+    if not required.issubset(metrics.columns):
+        raise ValueError(f"Feature ablation lacks {sorted(required - set(metrics.columns))}")
+    rows: list[dict[str, object]] = []
+    for hierarchy, (lower, upper) in levels.items():
+        block = metrics.loc[
+            metrics["lower_layer"].eq(lower) & metrics["upper_layer"].eq(upper)
+        ]
+        for input_group, feature_method, pij_construction in FEATURE_ABLATION_ROW_ORDER:
+            row: dict[str, object] = {
+                "Hierarchy": hierarchy,
+                "Input": input_group,
+                "Feature method": feature_method,
+                "PIJ construction": pij_construction,
+            }
+            for pair in time_pairs:
+                hit = block.loc[
+                    block["input_group"].eq(input_group)
+                    & block["feature_method"].eq(feature_method)
+                    & block["pij_construction"].eq(pij_construction)
+                    & block["time_pair"].eq(pair)
+                ]
+                if len(hit) != 1:
+                    raise ValueError(
+                        "Expected one controlled ablation row for "
+                        f"{hierarchy} / {input_group} / {feature_method} / "
+                        f"{pij_construction} / {pair}; got {len(hit)}"
+                    )
+                row[pair] = float(hit.iloc[0]["delta_EI"])
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+__all__.extend(["FEATURE_ABLATION_ROW_ORDER", "build_feature_ablation_table"])

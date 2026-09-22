@@ -7,8 +7,8 @@ ASSET_NAMES = (
 )
 
 TABLE_FILES = {
-    "table1": "table1_pij_ablation_merged.csv",
-    "table1_k10": "table1_pij_ablation_k10.csv",
+    "table1": "table1A_pij_feature_ablation_chain.csv",
+    "table1_k10": "table1B_pij_feature_ablation_cross.csv",
     "table2": "table2_ei_hierarchy.csv",
     "table2_k10": "table2_ei_hierarchy_k10.csv",
     "table2_cg_k10": "table2_cg_hierarchy_k10.csv",

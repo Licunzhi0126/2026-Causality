@@ -422,3 +422,61 @@ def load_assignments(run_dir: Path, side: str) -> pd.DataFrame:
     frame["spot_id"] = frame["spot_id"].astype(str)
     frame["hard_cluster"] = frame["hard_cluster"].astype(str)
     return frame
+
+
+def load_feature_ablation_metrics(root: Path) -> pd.DataFrame:
+    """Load the controlled PIJ feature-ablation long table.
+
+    The scientific ablation package writes ``feature_ablation_long.csv``.  This
+    loader is intentionally strict about identities so paper_assets cannot mix
+    rows from historical compare baselines with the new controlled experiment.
+    """
+
+    root = Path(root)
+    if root.is_dir():
+        candidates = (
+            root / "feature_ablation_long.csv",
+            root / "tables" / "feature_ablation_long.csv",
+        )
+        path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    else:
+        path = root if root.is_file() else None
+    if path is None:
+        raise FileNotFoundError(
+            f"No controlled feature-ablation table found under {root}; "
+            "expected feature_ablation_long.csv."
+        )
+    frame = pd.read_csv(path)
+    aliases = {
+        "Method": "method_id",
+        "Input": "input_group",
+        "Feature method": "feature_method",
+        "PIJ construction": "pij_construction",
+        "DeltaEI": "delta_EI",
+        "EI_gain": "delta_EI",
+    }
+    for old, new in aliases.items():
+        if old in frame.columns and new not in frame.columns:
+            frame = frame.rename(columns={old: new})
+    required = {
+        "method_id", "input_group", "feature_method", "pij_construction",
+        "lower_layer", "upper_layer", "time_pair", "delta_EI",
+    }
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"Feature-ablation metrics are missing columns: {sorted(missing)}")
+    for column in (
+        "method_id", "input_group", "feature_method", "pij_construction",
+        "lower_layer", "upper_layer",
+    ):
+        frame[column] = frame[column].astype(str)
+    frame["time_pair"] = frame["time_pair"].map(normalize_time_pair)
+    frame["delta_EI"] = pd.to_numeric(frame["delta_EI"], errors="coerce")
+    if frame["delta_EI"].isna().any():
+        raise ValueError("Feature-ablation metrics contain nonnumeric DeltaEI values.")
+    frame["source_metrics"] = str(path.resolve())
+    keys = ["method_id", "lower_layer", "upper_layer", "time_pair"]
+    if frame.duplicated(keys).any():
+        duplicate = frame.loc[frame.duplicated(keys, keep=False), keys].iloc[0].to_dict()
+        raise ValueError(f"Duplicate controlled feature-ablation row: {duplicate}")
+    return frame.reset_index(drop=True)

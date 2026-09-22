@@ -8,7 +8,13 @@ import pandas as pd
 
 from .figure_plots import render_figure1, render_figure1_k10, render_figure2
 from .inputs import load_assignments, load_domain_map, load_spot_coordinates
-from .table_plots import render_metric_grid, render_table1_bundle, render_table2, render_table3
+from .table_plots import (
+    render_feature_ablation_preview,
+    render_metric_grid,
+    render_table1_bundle,
+    render_table2,
+    render_table3,
+)
 
 
 def _heart(stage: str, n: int, seed: int) -> pd.DataFrame:
@@ -140,7 +146,7 @@ def build_demo_assets(
     centers = {
         "Spot -> K150": [0.66, 0.61, 0.28, -0.34, 0.10, 0.02, -0.86, 0.18],
         "K150 -> K40": [0.91, 0.03, 0.24, -0.39, 0.06, 0.01, -0.98, 0.22],
-        "Spot -> K40": [1.55, 0.58, 0.41, -0.62, 0.13, 0.05, -1.12, 0.31],
+        "K40 -> K10": [0.31, 0.18, 0.12, -0.21, 0.05, 0.01, -0.37, 0.14],
     }
     rows = []
     for level, base in centers.items():
@@ -149,9 +155,9 @@ def build_demo_assets(
             rows.append({"Method": method, "Hierarchy": level, **dict(zip(pairs, vals))})
     table1 = pd.DataFrame(rows)
     table1.to_csv(tables_dir / "demo_table1_pij_ablation_merged.csv", index=False)
-    render_table1_bundle(table1, figures_dir / "preview_table1_pij_ablation_merged.png", demo=True, dpi=dpi)
+    render_table1_bundle(table1, figures_dir / "preview_table1_pij_ablation_merged.png", demo=True, dpi=dpi, title="Table 1A · PIJ ablation along the adjacent hierarchy chain")
     k10_rows = []
-    for hierarchy, offset in (("K40 -> K10", 0.15), ("K150 -> K10", 0.34), ("Spot -> K10", 0.49)):
+    for hierarchy, offset in (("Spot -> K40", 0.49), ("Spot -> K10", 0.62), ("K150 -> K10", 0.34)):
         for method_index, method in enumerate(methods):
             values = [offset + 0.08 * method_index + shift for shift in (0.02, -0.01, 0.01)]
             k10_rows.append({"Method": method, "Hierarchy": hierarchy, **dict(zip(pairs, values))})
@@ -159,7 +165,10 @@ def build_demo_assets(
     table1_k10.to_csv(tables_dir / "demo_table1_pij_ablation_k10.csv", index=False)
     render_table1_bundle(
         table1_k10, figures_dir / "preview_table1_pij_ablation_k10.png",
-        demo=True, dpi=dpi, title="Table 1 · PIJ method ablation across K10 hierarchy",
+        demo=True, dpi=dpi, title="Table 1B · PIJ ablation across cross-scale hierarchy pairs",
+    )
+    render_feature_ablation_preview(
+        figures_dir / "preview_feature_ablation_layout.png", dpi=dpi,
     )
 
     table2 = pd.DataFrame(
@@ -188,15 +197,15 @@ def build_demo_assets(
     )
     cg_hierarchy = pd.DataFrame({
         "Time pair": pairs,
-        "Spot -> K150": [0.71, 0.74, 0.69],
-        "Spot -> K40": [0.80, 0.78, 0.75],
-        "Spot -> K10": [0.87, 0.85, 0.82],
+        "Spot -> K150": [0.71, 0.74, "0.69†"],
+        "Spot -> K40": [0.80, 0.78, "0.75†"],
+        "Spot -> K10": [0.87, 0.85, "0.82†"],
     })
     cg_hierarchy.to_csv(tables_dir / "demo_table2_cg_hierarchy_k10.csv", index=False)
     render_table2(
         cg_hierarchy, figures_dir / "preview_table2_cg_hierarchy_k10.png",
         demo=True, dpi=dpi, title="Table 2 · Seurat ClosureQuality across hierarchy",
-        subtitle="STYLE PREVIEW · common Spot input.",
+        subtitle="STYLE PREVIEW · † = low available-information regime; raw CQ is shown descriptively.",
     )
     delta_grid = pd.DataFrame({
         "Input scale": ["spot", "seurat_k150", "seurat_k40"],
@@ -206,9 +215,9 @@ def build_demo_assets(
     })
     cg_grid = pd.DataFrame({
         "Input scale": ["spot", "seurat_k150", "seurat_k40"],
-        "11.5->12.5": [0.88, 0.86, 0.82],
-        "11.5->13.5": [0.81, 0.79, 0.76],
-        "12.5->13.5": [0.85, 0.83, 0.80],
+        "11.5->12.5": ["0.1008†", 0.0285, 0.0329],
+        "11.5->13.5": ["0.0636†", "0.0609†", 0.3263],
+        "12.5->13.5": ["0.0684†", "0.1702†", 0.0405],
     })
     for frame, stem, title in (
         (delta_grid, "table4_deltaei_by_input_scale", "Table 4 · Optimal coarse-graining DeltaEI by input scale"),
@@ -226,13 +235,14 @@ def build_demo_assets(
                 "complete_combined_coarse",
                 "complete_combined_coarse_maturity_cci",
                 "complete_combined_coarse_maturity_cci_grn",
+                "maturity_cci_grn_two_stage",
             ],
-            "DeltaEI 11.5->12.5": [2.27, 0.60, 2.21],
-            "DeltaEI 12.5->13.5": [1.77, 0.62, 1.51],
-            "DeltaEI 11.5->13.5": [1.18, 0.61, 1.59],
-            "K@11.5": [9, 12, 10],
-            "K@12.5": [8, 11, 13],
-            "K@13.5": [11, 9, 8],
+            "DeltaEI 11.5->12.5": [2.27, 0.60, 2.21, np.nan],
+            "DeltaEI 12.5->13.5": [1.77, 0.62, 1.51, np.nan],
+            "DeltaEI 11.5->13.5": [1.18, 0.61, 1.59, np.nan],
+            "K@11.5": [9, 12, 10, np.nan],
+            "K@12.5": [8, 11, 13, np.nan],
+            "K@13.5": [11, 9, 8, np.nan],
         }
     )
     table3.to_csv(tables_dir / "demo_table3_optimal_coarse.csv", index=False)
@@ -312,6 +322,7 @@ def build_demo_assets(
         "coarse_preview_source": coarse_source,
         "table1": str(figures_dir / "preview_table1_pij_ablation_merged.png"),
         "table1_k10": str(figures_dir / "preview_table1_pij_ablation_k10.png"),
+        "feature_ablation_layout": str(figures_dir / "preview_feature_ablation_layout.png"),
         "table2": str(figures_dir / "preview_table2_ei_hierarchy.png"),
         "table2_k10": str(figures_dir / "preview_table2_ei_hierarchy_k10.png"),
         "table2_cg_k10": str(figures_dir / "preview_table2_cg_hierarchy_k10.png"),
