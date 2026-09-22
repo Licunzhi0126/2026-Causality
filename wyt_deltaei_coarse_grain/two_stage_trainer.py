@@ -260,12 +260,20 @@ def joint_checkpoint_eligible(
     signal_threshold_bits: float,
     checkpoint_keff_min: float,
 ) -> bool:
-    """Return whether a Stage 2 state satisfies every checkpoint floor."""
+    """Return whether a Stage 2 state satisfies the structural checkpoint floors.
 
+    ``signal_threshold_bits`` is intentionally diagnostic-only here.  A pair may be
+    genuinely low-signal while still producing a valid, non-collapsed positive-DeltaEI
+    coarse graining.  Final ``signal_status`` remains recorded for downstream caution,
+    but low absolute I_available no longer invalidates the checkpoint by itself.
+    """
+
+    _ = signal_threshold_bits  # Kept in the signature for call-site/API compatibility.
     tolerance = 1e-8
     return bool(
         delta_ei >= ei_reference * ei_retain_ratio - tolerance
-        and available_information >= signal_threshold_bits - tolerance
+        and np.isfinite(available_information)
+        and available_information > tolerance
         and retained_information >= retained_reference * retained_ratio - tolerance
         and keff_t >= checkpoint_keff_min - tolerance
         and keff_tp >= checkpoint_keff_min - tolerance
@@ -281,11 +289,14 @@ def relaxed_stage2_checkpoint_eligible(
     signal_threshold_bits: float,
     checkpoint_keff_min: float,
 ) -> bool:
-    """Fallback candidates may relax Stage-1 retention floors, never signal/diversity."""
+    """Allow low-signal fallback candidates, but never zero-signal or collapsed ones."""
+
+    _ = signal_threshold_bits  # Diagnostic threshold only; not an eligibility floor.
     tolerance = 1e-8
     return bool(
         delta_ei > tolerance
-        and available_information >= signal_threshold_bits - tolerance
+        and np.isfinite(available_information)
+        and available_information > tolerance
         and keff_t >= checkpoint_keff_min - tolerance
         and keff_tp >= checkpoint_keff_min - tolerance
     )
@@ -560,7 +571,11 @@ def train_deltaei_two_stage(
             f"keff_min={resolved_keff_min:.6f}, "
             f"checkpoint_keff_min={resolved_checkpoint_keff_min:.6f}",
         )
-        _log(log_handle, f"closure signal threshold: {signal_threshold_bits:.6f} bits")
+        _log(
+            log_handle,
+            f"closure signal threshold: {signal_threshold_bits:.6f} bits "
+            "(diagnostic label only; not a Stage 2 checkpoint hard gate)",
+        )
         _log(log_handle, "Stage 2: normalized retained information and closure refinement under EI floor")
         _log(log_handle, "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
         _log(log_handle, "================================================")
@@ -793,6 +808,7 @@ def train_deltaei_two_stage(
                     else "low-signal"
                 ),
                 "signal_threshold_bits": float(signal_threshold_bits),
+                "signal_threshold_policy": "diagnostic_only_not_checkpoint_gate",
                 "resolved_keff_min": float(resolved_keff_min),
                 "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
                 "pair_weight": dynamic_pair_weight,
@@ -942,7 +958,7 @@ def train_deltaei_two_stage(
                          "resolved_keff_min": resolved_keff_min,
                          "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                          "method": prepared.method,
-                         "selection": "strict_informative_retained_first", "joint_score": score,
+                         "selection": "strict_retained_first", "joint_score": score,
                          "ei_reference": ei_reference, "retained_reference": retained_reference},
                         out_dir / "best_joint.pt",
                     )
@@ -963,7 +979,7 @@ def train_deltaei_two_stage(
                          "resolved_keff_min": resolved_keff_min,
                          "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                          "method": prepared.method,
-                         "selection": "relaxed_informative_stage2_fallback",
+                         "selection": "relaxed_noncollapsed_stage2_fallback",
                          "joint_score": relaxed_score,
                          "ei_reference": ei_reference, "retained_reference": retained_reference},
                         out_dir / "best_relaxed_joint.pt",
@@ -991,18 +1007,19 @@ def train_deltaei_two_stage(
                 used_joint_fallback = True
                 best_epoch = best_relaxed_epoch
                 fallback = torch.load(out_dir / "best_relaxed_joint.pt", map_location=device)
-                fallback["selection"] = "relaxed_informative_stage2_fallback"
+                fallback["selection"] = "relaxed_noncollapsed_stage2_fallback"
                 torch.save(fallback, out_dir / "best_joint.pt")
                 _log(
                     log_handle,
                     "No Stage 2 epoch met all strict Stage-1 retention floors; "
-                    "best_joint.pt uses the best informative, non-collapsed positive-DeltaEI fallback.",
+                    "best_joint.pt uses the best non-collapsed positive-DeltaEI fallback; "
+                    "signal status is retained as a diagnostic label.",
                 )
             else:
                 write_csv(out_dir / "metrics.csv", metrics)
                 raise RuntimeError(
-                    "Stage 2 produced no valid informative, non-collapsed positive-DeltaEI "
-                    "checkpoint. The highest-DeltaEI state is retained only as a diagnostic "
+                    "Stage 2 produced no valid non-collapsed positive-DeltaEI checkpoint. "
+                    "The highest-DeltaEI state is retained only as a diagnostic "
                     "checkpoint and will not be promoted to best_joint.pt."
                 )
         write_csv(out_dir / "metrics.csv", metrics)
@@ -1114,7 +1131,7 @@ def train_deltaei_two_stage(
             "best_joint_fallback_used": used_joint_fallback,
             "strict_checkpoint_found": bool(best_joint_score is not None),
             "fallback_type": (
-                "relaxed_informative" if used_joint_fallback else None
+                "relaxed_noncollapsed" if used_joint_fallback else None
             ),
             "best_joint_selection": str(checkpoint.get("selection", "unknown")),
             "best_delta_ei_epoch": best_delta_epoch,
@@ -1145,6 +1162,7 @@ def train_deltaei_two_stage(
             "stage1_reference_Keff_t": stage1_reference_keff_t,
             "stage1_reference_Keff_tp": stage1_reference_keff_tp,
             "signal_threshold_bits": float(signal_threshold_bits),
+            "signal_threshold_policy": "diagnostic_only_not_checkpoint_gate",
             "resolved_keff_min": float(resolved_keff_min),
             "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
             "final_signal_status": (
