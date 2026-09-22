@@ -233,17 +233,18 @@ def stage1_checkpoint_eligible(
     available_information: float,
     keff_t: float,
     keff_tp: float,
-    signal_threshold_bits: float,
     checkpoint_keff_min: float,
 ) -> bool:
-    """Require an informative, non-collapsed state before it can seed Stage 2."""
     tolerance = 1e-8
+
     return bool(
-        available_information >= signal_threshold_bits - tolerance
+        np.isfinite(available_information)
+        and available_information > tolerance
+        and np.isfinite(keff_t)
+        and np.isfinite(keff_tp)
         and keff_t >= checkpoint_keff_min - tolerance
         and keff_tp >= checkpoint_keff_min - tolerance
     )
-
 
 def joint_checkpoint_eligible(
     *,
@@ -581,7 +582,7 @@ def train_deltaei_two_stage(
                         )
                     write_csv(out_dir / "metrics.csv", metrics)
                     raise RuntimeError(
-                        "Stage 1 produced no informative, non-collapsed checkpoint; "
+                        "Stage 1 produced no valid non-collapsed checkpoint; "
                         "Stage 2 will not start with a degenerate reference."
                         + details
                     )
@@ -852,7 +853,6 @@ def train_deltaei_two_stage(
                 available_information=float(row["I_available"]),
                 keff_t=float(row["Keff_t"]),
                 keff_tp=float(row["Keff_tp"]),
-                signal_threshold_bits=signal_threshold_bits,
                 checkpoint_keff_min=resolved_checkpoint_keff_min,
             )
             stage2_strict_eligible = False
@@ -909,7 +909,7 @@ def train_deltaei_two_stage(
                             "resolved_keff_min": resolved_keff_min,
                             "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                             "method": prepared.method,
-                            "selection": "stage1_best_delta_ei_informative_noncollapsed",
+                            "selection": "stage1_best_delta_ei_noncollapsed",
                         },
                         out_dir / "best_ei.pt",
                     )
