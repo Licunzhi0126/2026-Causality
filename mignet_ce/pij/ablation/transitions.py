@@ -7,6 +7,7 @@ import numpy as np
 from mignet_ce.pij.compare._shared.cosine import row_normalized_kernel_from_cost
 from mignet_ce.pij.compare._shared.distances import summarize_dense_cost
 from mignet_ce.pij.compare._shared.log_balanced_ot import balance_cost_log_sinkhorn
+from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_ng_pij_from_cost_numpy
 from mignet_ce.utils.matrix import safe_row_normalize
 
 from .config import AblationConfig
@@ -26,6 +27,7 @@ def _balance_uniform_sinkhorn(
     tolerance: float,
     check_every: int,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """DEPRECATION-CANDIDATE(user-removal): superseded by production Sinkhorn."""
     values = np.asarray(kernel, dtype=float)
     if values.ndim != 2 or values.size == 0:
         raise ValueError(f"Sinkhorn kernel must be non-empty 2D; got {values.shape}.")
@@ -81,21 +83,10 @@ def transition_from_cost(cost: np.ndarray, *, use_ot: bool, cfg: AblationConfig)
                 "kernel": summarize_dense_cost(kernel),
             },
         )
-    try:
-        joint, pij, sinkhorn = _balance_uniform_sinkhorn(
-            kernel,
-            max_iter=cfg.sinkhorn_max_iter,
-            tolerance=cfg.sinkhorn_tolerance,
-            check_every=cfg.sinkhorn_check_every,
-        )
-        sinkhorn = {**sinkhorn, "log_domain_fallback_used": False}
-    except RuntimeError as error:
-        joint, pij, sinkhorn = balance_cost_log_sinkhorn(cost / float(cfg.temperature))
-        sinkhorn = {
-            **sinkhorn,
-            "log_domain_fallback_used": True,
-            "standard_sinkhorn_error": str(error),
-        }
+    joint, pij, production_metadata = canonical_ng_pij_from_cost_numpy(
+        cost,
+        temperature=float(cfg.temperature),
+    )
     return AblationTransitionResult(
         raw_matrix=joint,
         pij=pij,
@@ -104,6 +95,7 @@ def transition_from_cost(cost: np.ndarray, *, use_ot: bool, cfg: AblationConfig)
             "ot_enabled": True,
             "temperature": float(cfg.temperature),
             "kernel_before_ot": summarize_dense_cost(kernel),
-            "sinkhorn": sinkhorn,
+            "production_transition": production_metadata,
+            "sinkhorn": production_metadata["sinkhorn"],
         },
     )

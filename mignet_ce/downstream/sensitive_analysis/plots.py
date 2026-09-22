@@ -19,7 +19,7 @@ def plot_alpha_sensitivity(
     path: Path,
     *,
     time_pair: str = "12.5->13.5",
-    canonical_alpha: float = 0.1,
+    canonical_alpha: float = 0.01,
 ) -> None:
     subset = frame[frame["time_pair"].astype(str) == str(time_pair)].copy()
     if subset.empty:

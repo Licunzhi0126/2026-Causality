@@ -6,6 +6,7 @@ import numpy as np
 
 from mignet_ce.pij.compare._shared.distances import summarize_dense_cost
 from mignet_ce.pij.compare._shared.kl import pairwise_feature_kl
+from mignet_ce.pij.compare._shared.ng_kl_ot import mix_ng_cost_numpy
 
 from .config import AblationConfig
 from .features import PairFeatureBlocks
@@ -49,17 +50,26 @@ def build_controlled_cost(blocks: PairFeatureBlocks, cfg: AblationConfig) -> Abl
         fusion = "G_only_raw_KL"
         nominal_cci_weight = 0.0
         nominal_grn_weight = 1.0
+        actual_grn_mean_cost_share = 1.0
     elif grn_cost is None:
         cost = cci_cost.copy()
         fusion = f"{blocks.cci_representation}_only_raw_KL"
         nominal_cci_weight = 1.0
         nominal_grn_weight = 0.0
+        actual_grn_mean_cost_share = 0.0
     else:
         alpha = float(cfg.alpha_cci)
-        cost = (1.0 - alpha) * grn_cost + alpha * cci_cost
+        cost, mix_metadata = mix_ng_cost_numpy(
+            cci_cost,
+            grn_cost,
+            alpha_cci=alpha,
+        )
         fusion = f"{blocks.cci_representation}G_raw_KL_convex_fusion"
         nominal_cci_weight = alpha
         nominal_grn_weight = 1.0 - alpha
+        actual_grn_mean_cost_share = float(
+            mix_metadata["actual_grn_mean_cost_share"]
+        )
 
     if not np.isfinite(cost).all() or np.any(cost < 0.0):
         raise ValueError("Controlled ablation cost must be finite and nonnegative.")
@@ -68,12 +78,15 @@ def build_controlled_cost(blocks: PairFeatureBlocks, cfg: AblationConfig) -> Abl
         "fusion_mode": fusion,
         "component_normalization": "none",
         "combined_cost_clipping": False,
+        "combined_cost_clipped": False,
+        "combined_scale_control": "none",
         "cci_representation": blocks.cci_representation,
         "beta_cci": cci_beta,
         "beta_g": float(cfg.beta_g) if grn_cost is not None else None,
         "alpha_cci": float(cfg.alpha_cci) if cci_cost is not None and grn_cost is not None else None,
         "nominal_cci_weight": nominal_cci_weight,
         "nominal_grn_weight": nominal_grn_weight,
+        "actual_grn_mean_cost_share": actual_grn_mean_cost_share,
         "CCI_raw_KL": summarize_dense_cost(cci_cost) if cci_cost is not None else None,
         "GRN_raw_KL": summarize_dense_cost(grn_cost) if grn_cost is not None else None,
         "combined_cost": summarize_dense_cost(cost),

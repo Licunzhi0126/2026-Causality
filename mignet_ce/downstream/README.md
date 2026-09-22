@@ -51,7 +51,13 @@ The expanded paper suite keeps the established three-layer EI table and figure,
 adds K10 EI and natural-Seurat closure tables, and adds matched 3-by-3 DeltaEI
 and optimized ClosureQuality grids over Spot, Seurat K150, and Seurat K40 input
 scales. Low-signal closure values remain in the long audit table and are masked
-from paper-facing claim tables.
+with a dagger for claim interpretation while their raw CQ values remain visible.
+
+The controlled PIJ feature ablation is isolated under `mignet_ce.pij.ablation`
+and is not registered as a production PIJ method. Run it with
+`scripts/run_pij_feature_ablation.py`; its 180-row
+`feature_ablation_long.csv` feeds separate Table 1A and Table 1B assets through
+`scripts/build_paper_assets.py --feature-ablation-root ...`.
 
 `mignet_ce.downstream.analysis` contains the scientific calculations. Its
 `visualization` child package only reads persisted CSV outputs and preserves
@@ -72,8 +78,10 @@ Optimized assignments remain soft (`S_t`, `S_tp`) throughout downstream
 analysis; natural mappings enter through one-hot matrices under the same
 interface.
 
-The formal cache contract is `full_model_space_v4_canonical_ng`: three optimized methods
-times three adjacent time pairs, K=40, 1500 epochs, and NMF 5/300. Legacy
+The formal cache contract is `full_model_space_v5_rawkl_ng`: three optimized
+methods times three adjacent time pairs, K=40, 1500 epochs, and NMF 5/300. The
+canonical transition is raw-KL convex fusion with alpha_CCI=0.01, tau=0.8, and
+no component normalization, clipping, or mixed-cost rescaling. Legacy
 methods require `best_model.pt`; the two-stage method requires `best_ei.pt`
 and `best_joint.pt`. Every manifest records frontend, training mode,
 objective version, hyperparameters, maturity inputs, and NMF provenance.

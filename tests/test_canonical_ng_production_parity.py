@@ -33,8 +33,8 @@ def test_all_production_adapters_share_the_canonical_transition() -> None:
         beta_n=0.05,
         beta_g=0.05,
     )
-    sensitivity_cost, _ = mix_cost(d_n, d_g, alpha_cci=0.1)
-    sensitivity, sensitivity_metadata = balanced_pij_from_cost(sensitivity_cost, tau=0.1)
+    sensitivity_cost, _ = mix_cost(d_n, d_g, alpha_cci=0.01)
+    sensitivity, sensitivity_metadata = balanced_pij_from_cost(sensitivity_cost, tau=0.8)
 
     method = NGKLotPijMethod()
     _, _, ngklot, diagnostics = method._build_pair_kernel(
@@ -47,6 +47,6 @@ def test_all_production_adapters_share_the_canonical_transition() -> None:
 
     for actual in (complete, dynamic, sensitivity, ngklot):
         np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
-    assert sensitivity_metadata["transition_protocol"] == "canonical_ng_v1"
-    assert diagnostics["transition_protocol"] == "canonical_ng_v1"
+    assert sensitivity_metadata["transition_protocol"] == "canonical_ng_rawkl_v2"
+    assert diagnostics["transition_protocol"] == "canonical_ng_rawkl_v2"
     assert diagnostics["legacy_cfg_pij_temperature_received_but_not_used"] == 1.0

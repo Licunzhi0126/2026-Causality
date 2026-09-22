@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-FORMAL_CACHE_PROTOCOL = "full_model_space_v4_canonical_ng"
-FORMAL_TRANSITION_PROTOCOL = "canonical_ng_v1"
+FORMAL_CACHE_PROTOCOL = "full_model_space_v5_rawkl_ng"
+FORMAL_TRANSITION_PROTOCOL = "canonical_ng_rawkl_v2"
 
 
 MAPPING_K150 = "Seurat K150"
@@ -51,7 +51,7 @@ class FullDeltaEIBenchmarkProfile:
     @property
     def profile_id(self) -> str:
         return (
-            f"fullv4_ngcanon_k{self.optimized_k}_e{self.optimized_epochs}_"
+            f"fullv5_rawkl_ng_k{self.optimized_k}_e{self.optimized_epochs}_"
             f"nmf{self.nmf_components}_i{self.nmf_max_iter}_"
             f"seed{self.random_seed}"
         )

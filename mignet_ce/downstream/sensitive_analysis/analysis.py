@@ -59,7 +59,7 @@ def _layer_pair_ei_curve(cfg: SensitivityConfig, layer: str, pair: str) -> pd.Da
                 "tau": float(cfg.tau),
                 "EI_bits": float(effective_information(pij.copy())),
                 "actual_grn_cost_share": float(mix_metadata["actual_grn_mean_cost_share"]),
-                "mixed_robust_span": float(mix_metadata["mixed_robust_span"]),
+                "combined_cost_mean": float(mix_metadata["combined_cost"]["mean"]),
                 "sinkhorn_residual": float(
                     pij_metadata["sinkhorn"].get(
                         "max_absolute_marginal_residual",
@@ -71,6 +71,7 @@ def _layer_pair_ei_curve(cfg: SensitivityConfig, layer: str, pair: str) -> pd.Da
                 "random_seed": int(cfg.random_seed),
                 "n_nmf_mode": str(n_metadata.get("mode", "shared_core_directed_nmf")),
                 "component_normalization": str(cost_metadata["component_normalization"]),
+                "component_cost": str(cost_metadata["component_cost"]),
                 "combined_scale_control": str(mix_metadata["combined_scale_control"]),
                 "transition_protocol": str(pij_metadata["transition_protocol"]),
                 "log_domain_fallback_used": bool(

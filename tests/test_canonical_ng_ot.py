@@ -6,6 +6,7 @@ import torch
 from mignet_ce.pij.compare._shared.ng_kl_ot import (
     CANONICAL_ALPHA_CCI,
     CANONICAL_TEMPERATURE,
+    CANONICAL_TRANSITION_PROTOCOL,
     build_canonical_ng_cost_numpy,
     build_canonical_ng_cost_torch,
     build_ng_component_costs_numpy,
@@ -39,25 +40,35 @@ def test_canonical_numpy_torch_cost_and_pij_parity() -> None:
     np.testing.assert_allclose(numpy_pij.mean(axis=0), 1.0 / numpy_pij.shape[1], atol=1e-8)
     assert metadata["alpha_cci"] == CANONICAL_ALPHA_CCI
     assert pij_metadata["tau"] == CANONICAL_TEMPERATURE
+    assert CANONICAL_ALPHA_CCI == 0.01
+    assert CANONICAL_TEMPERATURE == 0.8
+    assert CANONICAL_TRANSITION_PROTOCOL == "canonical_ng_rawkl_v2"
+    assert metadata["component_cost"] == "raw_pairwise_feature_KL"
+    assert metadata["component_normalization"] == "none"
+    assert metadata["combined_scale_control"] == "none"
 
 
-def test_alpha_endpoints_use_only_the_requested_normalized_component() -> None:
+def test_alpha_endpoints_use_only_the_requested_raw_component() -> None:
     n_t, n_tp, g_t, g_tp = _features()
     d_n, d_g, _ = build_ng_component_costs_numpy(n_t, n_tp, g_t, g_tp)
     pure_g, g_metadata = mix_ng_cost_numpy(d_n, d_g, alpha_cci=0.0)
     pure_n, n_metadata = mix_ng_cost_numpy(d_n, d_g, alpha_cci=1.0)
-    np.testing.assert_allclose(pure_g, d_g / g_metadata["mixed_robust_span"])
-    np.testing.assert_allclose(pure_n, d_n / n_metadata["mixed_robust_span"])
+    np.testing.assert_allclose(pure_g, d_g)
+    np.testing.assert_allclose(pure_n, d_n)
     assert g_metadata["nominal_cci_weight"] == 0.0
     assert n_metadata["nominal_grn_weight"] == 0.0
+    assert g_metadata["combined_scale_control"] == "none"
+    assert n_metadata["combined_scale_control"] == "none"
 
 
-def test_combined_cost_is_not_clipped_and_degenerate_span_uses_unit_fallback() -> None:
-    d_g = np.linspace(0.0, 1.0, 100).reshape(10, 10)
+def test_combined_cost_is_raw_convex_fusion_without_clipping_or_rescaling() -> None:
+    d_g = np.linspace(0.0, 5.0, 100).reshape(10, 10)
     d_n = np.square(d_g)
     controlled, metadata = mix_ng_cost_numpy(d_n, d_g, alpha_cci=0.1)
+    np.testing.assert_allclose(controlled, 0.9 * d_g + 0.1 * d_n)
     assert controlled.max() > 1.0
     assert metadata["combined_cost_clipped"] is False
+    assert metadata["combined_scale_control"] == "none"
 
     degenerate, degenerate_metadata = mix_ng_cost_numpy(
         np.zeros((3, 4)),
@@ -65,8 +76,7 @@ def test_combined_cost_is_not_clipped_and_degenerate_span_uses_unit_fallback() -
         alpha_cci=0.4,
     )
     np.testing.assert_array_equal(degenerate, np.zeros((3, 4)))
-    assert degenerate_metadata["mixed_robust_span"] == 1.0
-    assert degenerate_metadata["mixed_span_mode"] == "unit_fallback"
+    assert degenerate_metadata["combined_scale_control"] == "none"
 
 
 def test_canonical_torch_path_remains_differentiable() -> None:

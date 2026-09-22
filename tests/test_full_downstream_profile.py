@@ -23,7 +23,14 @@ def test_formal_profile_is_locked_to_full_deltaei() -> None:
     assert profile.nmf_max_iter == 300
     assert not hasattr(profile, "large_target_nmf_max_iter")
     assert not hasattr(profile, "large_target_threshold")
-    assert profile.profile_id == "fullv4_ngcanon_k40_e1500_nmf5_i300_seed20260809"
+    assert profile.profile_id == "fullv5_rawkl_ng_k40_e1500_nmf5_i300_seed20260809"
+    assert FORMAL_CACHE_PROTOCOL == "full_model_space_v5_rawkl_ng"
+    assert FORMAL_TRANSITION_PROTOCOL == "canonical_ng_rawkl_v2"
+    contract = canonical_transition_contract()
+    assert contract["alpha_cci"] == 0.01
+    assert contract["tau"] == 0.8
+    assert contract["component_normalization"] == "none"
+    assert contract["combined_scale_control"] == "none"
     assert profile.matched_null_repeats == 200
     assert profile.perturb_random_repeats == 200
 

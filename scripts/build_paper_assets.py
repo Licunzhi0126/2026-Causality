@@ -21,6 +21,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare and render publication assets from saved scientific results.")
     parser.add_argument("--stage", choices=("prepare", "render", "all"), default="all")
     parser.add_argument("--ablation-root", type=Path)
+    parser.add_argument(
+        "--feature-ablation-root",
+        type=Path,
+        help=(
+            "Controlled feature-ablation output containing feature_ablation_long.csv; "
+            "when omitted, Table 1 uses the legacy ablation fallback."
+        ),
+    )
     parser.add_argument("--k10-ablation-root", type=Path)
     parser.add_argument("--ei-metrics", type=Path)
     parser.add_argument("--seurat-cg-metrics", type=Path)
@@ -60,7 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         rendering = args.stage in {"render", "all"}
         required = {
             "--ablation-root": preparing and (
-                bool(set(requested) & {"table1", "table1_k10"})
+                (
+                    args.feature_ablation_root is None
+                    and bool(set(requested) & {"table1", "table1_k10"})
+                )
                 or (args.ei_metrics is None and bool(set(requested) & {"table2", "table2_k10", "figure1", "figure1_k10"}))
             ),
             "--legacy-coarse-root": preparing and bool(set(requested) & {"table3", "figure2"}),
@@ -82,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"Missing required paths: {', '.join(missing)}")
         cfg = AssetConfig(
             vertical_ablation_root=args.ablation_root or Path("."),
+            feature_ablation_root=args.feature_ablation_root,
             k10_ablation_root=args.k10_ablation_root,
             ei_metrics_path=args.ei_metrics,
             seurat_cg_metrics_path=args.seurat_cg_metrics,

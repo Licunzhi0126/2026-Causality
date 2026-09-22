@@ -23,14 +23,14 @@ NATIVE_V7_FEATURE_BETA = 0.05
 NATIVE_V7_G_SCALE = 1.0
 NATIVE_V7_N_WEIGHT = 0.25
 
-# Canonical production N/G transition contract. Quantiles are fractions here;
-# NumPy percentile APIs receive these values multiplied by 100, while Torch
-# quantile APIs consume the fractions directly.
-CANONICAL_TRANSITION_PROTOCOL = "canonical_ng_v1"
+# Canonical production N/G transition contract.
+CANONICAL_TRANSITION_PROTOCOL = "canonical_ng_rawkl_v2"
 CANONICAL_FEATURE_BETA_N = 0.05
 CANONICAL_FEATURE_BETA_G = 0.05
-CANONICAL_ALPHA_CCI = 0.10
-CANONICAL_TEMPERATURE = 0.10
+CANONICAL_ALPHA_CCI = 0.01
+CANONICAL_TEMPERATURE = 0.8
+# DEPRECATION-CANDIDATE(user-removal): retained only for historical Robust5-95
+# helpers below. Canonical raw-KL production code does not consume them.
 CANONICAL_ROBUST_LOWER_QUANTILE = 0.05
 CANONICAL_ROBUST_UPPER_QUANTILE = 0.95
 CANONICAL_SINKHORN_MAX_ITERATIONS = 2_000
@@ -48,8 +48,10 @@ def canonical_transition_contract() -> dict[str, object]:
         "tau": CANONICAL_TEMPERATURE,
         "beta_n": CANONICAL_FEATURE_BETA_N,
         "beta_g": CANONICAL_FEATURE_BETA_G,
-        "component_normalization": "independent_robust_5_95",
-        "combined_scale_control": "mixed_q95_minus_q05_no_clipping",
+        "component_cost": "raw_pairwise_feature_KL",
+        "component_normalization": "none",
+        "combined_scale_control": "none",
+        "combined_cost_clipped": False,
     }
 
 
@@ -59,6 +61,8 @@ def _canonical_robust_span_numpy(
     lower_quantile: float = CANONICAL_ROBUST_LOWER_QUANTILE,
     upper_quantile: float = CANONICAL_ROBUST_UPPER_QUANTILE,
 ) -> tuple[float, float, float, str]:
+    """DEPRECATION-CANDIDATE(user-removal): unused historical mixed-span helper."""
+
     arr = np.asarray(values, dtype=float)
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
@@ -85,7 +89,7 @@ def build_ng_component_costs_numpy(
     beta_n: float = CANONICAL_FEATURE_BETA_N,
     beta_g: float = CANONICAL_FEATURE_BETA_G,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
-    """Build independently Robust5-95-normalized CCI/N and GRN/G costs."""
+    """Build the raw pairwise feature-KL CCI/N and GRN/G costs."""
 
     beta_n = float(beta_n)
     beta_g = float(beta_g)
@@ -97,32 +101,15 @@ def build_ng_component_costs_numpy(
         raise ValueError(
             f"N and G KL cost shapes differ: {d_n_raw.shape} vs {d_g_raw.shape}."
         )
-    percentile_low = 100.0 * CANONICAL_ROBUST_LOWER_QUANTILE
-    percentile_high = 100.0 * CANONICAL_ROBUST_UPPER_QUANTILE
-    d_n, n_normalization = robust_normalize_cost(
-        d_n_raw,
-        lower_percentile=percentile_low,
-        upper_percentile=percentile_high,
-        copy=True,
-    )
-    d_g, g_normalization = robust_normalize_cost(
-        d_g_raw,
-        lower_percentile=percentile_low,
-        upper_percentile=percentile_high,
-        copy=True,
-    )
-    return d_n, d_g, {
+    return d_n_raw, d_g_raw, {
         "transition_protocol": CANONICAL_TRANSITION_PROTOCOL,
         "beta_n": beta_n,
         "beta_g": beta_g,
-        "component_normalization": "independent_robust_5_95",
+        "component_cost": "raw_pairwise_feature_KL",
+        "component_normalization": "none",
         "D_N_raw": summarize_dense_cost(d_n_raw),
         "D_G_raw": summarize_dense_cost(d_g_raw),
-        "D_N_normalization": n_normalization,
-        "D_G_normalization": g_normalization,
-        "D_N_normalized": summarize_dense_cost(d_n),
-        "D_G_normalized": summarize_dense_cost(d_g),
-        "component_costs_clipped_to_unit_interval": True,
+        "component_costs_clipped_to_unit_interval": False,
     }
 
 
@@ -132,7 +119,7 @@ def mix_ng_cost_numpy(
     *,
     alpha_cci: float = CANONICAL_ALPHA_CCI,
 ) -> tuple[np.ndarray, dict[str, object]]:
-    """Mix normalized components and control global scale without clipping."""
+    """Convexly mix raw GRN and CCI KL costs without rescaling or clipping."""
 
     alpha = float(alpha_cci)
     if not 0.0 <= alpha <= 1.0:
@@ -140,32 +127,26 @@ def mix_ng_cost_numpy(
     n_values = np.asarray(d_n, dtype=float)
     g_values = np.asarray(d_g, dtype=float)
     if n_values.shape != g_values.shape:
-        raise ValueError(f"N/G normalized cost shapes differ: {n_values.shape} vs {g_values.shape}.")
+        raise ValueError(f"N/G raw cost shapes differ: {n_values.shape} vs {g_values.shape}.")
     if n_values.ndim != 2 or n_values.size == 0:
-        raise ValueError(f"N/G normalized costs must be non-empty 2D matrices; got {n_values.shape}.")
+        raise ValueError(f"N/G raw costs must be non-empty 2D matrices; got {n_values.shape}.")
     if not np.isfinite(n_values).all() or not np.isfinite(g_values).all():
-        raise ValueError("N/G normalized costs must be finite.")
+        raise ValueError("N/G raw costs must be finite.")
     g_term = (1.0 - alpha) * g_values
     n_term = alpha * n_values
     mixed = g_term + n_term
-    q05, q95, span, span_mode = _canonical_robust_span_numpy(mixed)
-    controlled = mixed / span
     denominator = float(np.mean(mixed))
     actual_grn_share = (
         float(np.mean(g_term) / denominator) if denominator > EPS else 1.0 - alpha
     )
-    return controlled, {
+    return mixed, {
         "alpha_cci": alpha,
         "nominal_grn_weight": 1.0 - alpha,
         "nominal_cci_weight": alpha,
         "actual_grn_mean_cost_share": actual_grn_share,
-        "mixed_q05": q05,
-        "mixed_q95": q95,
-        "mixed_robust_span": span,
-        "mixed_span_mode": span_mode,
-        "combined_scale_control": "mixed_q95_minus_q05_no_clipping",
+        "combined_scale_control": "none",
         "combined_cost_clipped": False,
-        "combined_cost": summarize_dense_cost(controlled),
+        "combined_cost": summarize_dense_cost(mixed),
     }
 
 
@@ -191,10 +172,7 @@ def build_canonical_ng_cost_numpy(
     return cost, {
         **component_metadata,
         **mix_metadata,
-        "formula": (
-            "C=((1-alpha_cci)*Robust5_95(KL(G))+alpha_cci*Robust5_95(KL(N)))"
-            "/RobustSpan5_95(C_pre)"
-        ),
+        "formula": "C=(1-alpha_cci)*KL(G,beta_g)+alpha_cci*KL(N,beta_n)",
     }
 
 
@@ -502,7 +480,7 @@ def native_v7_pij_torch(
 
 
 def canonical_robust_normalize_torch(cost: torch.Tensor) -> torch.Tensor:
-    """Torch equivalent of the project's Robust5-95 normalization semantics."""
+    """DEPRECATION-CANDIDATE(user-removal): historical Robust5-95 helper."""
 
     if cost.ndim != 2 or cost.numel() == 0:
         raise ValueError(f"Torch cost must be a non-empty 2D tensor; got {tuple(cost.shape)}.")
@@ -526,6 +504,7 @@ def canonical_robust_normalize_torch(cost: torch.Tensor) -> torch.Tensor:
 
 
 def _canonical_robust_span_torch(values: torch.Tensor) -> torch.Tensor:
+    """DEPRECATION-CANDIDATE(user-removal): historical mixed-span helper."""
     if values.ndim != 2 or values.numel() == 0:
         raise ValueError(
             f"Torch mixed cost must be a non-empty 2D tensor; got {tuple(values.shape)}."
@@ -565,10 +544,7 @@ def build_canonical_ng_cost_torch(
         raise ValueError(
             f"N and G KL cost shapes differ: {tuple(d_n_raw.shape)} vs {tuple(d_g_raw.shape)}."
         )
-    d_n = canonical_robust_normalize_torch(d_n_raw)
-    d_g = canonical_robust_normalize_torch(d_g_raw)
-    mixed = (1.0 - alpha) * d_g + alpha * d_n
-    return mixed / _canonical_robust_span_torch(mixed)
+    return (1.0 - alpha) * d_g_raw + alpha * d_n_raw
 
 
 def canonical_ng_pij_torch(

@@ -17,6 +17,14 @@ from .methods import METHOD_SPECS
 from .registry import create_ablation_method
 
 
+FEATURE_ABLATION_COLUMNS = (
+    "method_id", "input_group", "feature_method", "pij_construction",
+    "organ", "lower_layer", "upper_layer", "hierarchy", "time_pair",
+    "EI_lower", "EI_upper", "delta_EI", "alpha_cci", "beta_n", "beta_l",
+    "beta_g", "temperature", "ot_enabled",
+)
+
+
 def hierarchy_label(lower: str, upper: str) -> str:
     labels = {
         ("spot", "seurat_k150"): "Spot -> K150",
@@ -82,7 +90,24 @@ def append_and_write(
 ) -> tuple[Path, Path]:
     cfg = config or AblationConfig()
     cfg.validate()
-    table = pd.concat(list(frames), ignore_index=True)
+    materialized = list(frames)
+    if not materialized:
+        raise ValueError("At least one feature-ablation frame is required.")
+    table = pd.concat(materialized, ignore_index=True)
+    missing = set(FEATURE_ABLATION_COLUMNS) - set(table.columns)
+    if missing:
+        raise ValueError(f"Feature-ablation output is missing columns: {sorted(missing)}")
+    identity = ["method_id", "organ", "lower_layer", "upper_layer", "time_pair"]
+    if table.duplicated(identity).any():
+        duplicate = table.loc[table.duplicated(identity, keep=False), identity].iloc[0]
+        raise ValueError(f"Duplicate feature-ablation result: {duplicate.to_dict()}")
+    known_method_order = [spec.method_id for spec in METHOD_SPECS]
+    present_methods = set(table["method_id"].astype(str))
+    unknown_methods = present_methods - set(known_method_order)
+    if unknown_methods:
+        raise ValueError(f"Unknown controlled ablation methods: {sorted(unknown_methods)}")
+    manifest_methods = [method_id for method_id in known_method_order if method_id in present_methods]
+    table = table.loc[:, FEATURE_ABLATION_COLUMNS]
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     long_path = output_root / "feature_ablation_long.csv"
@@ -92,7 +117,7 @@ def append_and_write(
         json.dumps(
             {
                 "protocol": "controlled_pij_feature_ablation_v1",
-                "methods": [spec.method_id for spec in METHOD_SPECS],
+                "methods": manifest_methods,
                 "contract": cfg.contract(),
                 "rows": int(len(table)),
                 "output": str(long_path),

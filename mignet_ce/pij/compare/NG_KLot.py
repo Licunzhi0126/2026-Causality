@@ -93,7 +93,7 @@ def _experimental_metadata() -> dict[str, object]:
 
 
 class NGKLotPijMethod:
-    """Balanced canonical N/G KL-OT with alpha=0.1 and tau=0.1."""
+    """Balanced canonical raw-KL N/G transition with alpha=0.01 and tau=0.8."""
 
     name = "NG_KLot"
     feature_keys = ("N",)
@@ -203,12 +203,14 @@ class NGKLotPijMethod:
             "pij_method": self.name,
             "compare_feature_keys": list(self.feature_keys),
             "compare_pij_method": self.pij_key,
-            "fusion_mode": "canonical_independent_robust_ng_alpha_mix",
+            "fusion_mode": "canonical_raw_kl_ng_convex_fusion",
             "transition_construction": "canonical_ng_balanced_sinkhorn",
             "transition_protocol": CANONICAL_TRANSITION_PROTOCOL,
-            "cost_source": "independent_Robust5_95_G_and_N_then_alpha_mix_then_span_control",
-            "component_normalization": "independent_robust_5_95",
-            "combined_scale_control": "mixed_q95_minus_q05_no_clipping",
+            "cost_source": "raw_N_KL_plus_raw_GRN_KL_convex_fusion",
+            "component_cost": "raw_pairwise_feature_KL",
+            "component_normalization": "none",
+            "combined_scale_control": "none",
+            "combined_cost_clipped": False,
             "alpha_cci": CANONICAL_ALPHA_CCI,
             "fixed_feature_beta_n": CANONICAL_FEATURE_BETA_N,
             "fixed_feature_beta_g": CANONICAL_FEATURE_BETA_G,

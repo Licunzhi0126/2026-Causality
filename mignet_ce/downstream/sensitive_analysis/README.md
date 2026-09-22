@@ -33,23 +33,22 @@ Production methods and this sensitivity analysis use that one authoritative N/G 
 
 ## Canonical equation
 
-1. Compute `D_G = KL(G_t, G_t+1)` and `D_N = KL(N_t, N_t+1)`.
-2. Apply the same independent Robust 5–95 normalization to both component costs.
-3. Mix them with `C_pre = (1-alpha) * D_G_norm + alpha * D_N_norm`.
-4. Divide `C_pre` by its own 5–95 robust span, without clipping the combined matrix.
-5. Build `P = balanced Sinkhorn(exp(-C/tau))`.
+1. Compute raw `D_G = KL(G_t, G_t+1)` and `D_N = KL(N_t, N_t+1)`.
+2. Mix them directly with `C = (1-alpha) * D_G + alpha * D_N`.
+3. Do not normalize or clip either component and do not rescale the mixed cost.
+4. Build `P = balanced Sinkhorn(exp(-C/tau))`.
 
 Thus:
 
 - `alpha` controls the relative GRN/CCI role;
 - `tau` controls transition sharpness;
-- component normalization removes the old scale asymmetry.
+- the reported GRN mean-cost share is descriptive and is not a biological information percentage.
 
 The production reference configuration is:
 
 ```text
-alpha = 0.1
-tau   = 0.1
+alpha = 0.01
+tau   = 0.8
 ```
 
 The sensitivity analysis sweeps alpha while keeping the same transition constructor and a fixed tau.
@@ -86,7 +85,7 @@ For `12.5->13.5`, draw three alpha-sensitivity curves:
 - `spot:seuratK40`
 - `seuratK150:seuratK40`
 
-The plot marks the production reference `alpha=0.1` with a vertical dashed line.
+The plot marks the production reference `alpha=0.01` with a vertical dashed line.
 
 ## Run
 
@@ -100,14 +99,17 @@ python -m mignet_ce.downstream.sensitive_analysis \
   --output-dir "/home/jovyan/work/2026 Causality/output/sensitive_analysis920" \
   --organ heart \
   --time-pairs "11.5->12.5" "12.5->13.5" "11.5->13.5" \
-  --tau 0.1 \
-  --canonical-alpha 0.1 \
+  --tau 0.8 \
+  --canonical-alpha 0.01 \
   --nmf-components 5 \
   --nmf-max-iter 300 \
   --random-seed 20260809
 ```
 
-By default alpha is swept from 0.00 to 1.00 in steps of 0.05. NMF components/max-iter/seed inherit the locked downstream production profile (currently 5 / 300 / 20260809) unless explicitly overridden.
+By default alpha is sampled densely over `[0, 0.02]` and more sparsely through
+`1.0`, including the production reference `0.01`. NMF
+components/max-iter/seed inherit the locked downstream production profile
+(currently 5 / 300 / 20260809) unless explicitly overridden.
 
 ## Output files
 

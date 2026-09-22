@@ -23,7 +23,10 @@ DEFAULT_COMPARISONS = (
 
 
 def default_alphas() -> tuple[float, ...]:
-    return tuple(round(i * 0.05, 10) for i in range(21))
+    return (
+        0.0, 0.0025, 0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 0.075,
+        0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.75, 1.00,
+    )
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,22 @@ class SensitivityConfig:
             raise ValueError("The alpha sweep must include canonical_alpha for parity auditing.")
         if self.beta_n <= 0.0 or self.beta_g <= 0.0 or self.tau <= 0.0:
             raise ValueError("beta_n, beta_g, and tau must be positive.")
+        fixed = {
+            "beta_n": (self.beta_n, CANONICAL_FEATURE_BETA_N),
+            "beta_g": (self.beta_g, CANONICAL_FEATURE_BETA_G),
+            "tau": (self.tau, CANONICAL_TEMPERATURE),
+            "canonical_alpha": (self.canonical_alpha, CANONICAL_ALPHA_CCI),
+        }
+        mismatched = {
+            name: {"received": received, "expected": expected}
+            for name, (received, expected) in fixed.items()
+            if abs(float(received) - float(expected)) > 1e-12
+        }
+        if mismatched:
+            raise ValueError(
+                "Sensitivity varies alpha only; production beta/tau/reference alpha "
+                f"are fixed: {mismatched}"
+            )
         if self.nmf_components < 1 or self.nmf_max_iter < 1:
             raise ValueError("NMF settings must be positive.")
         for pair in self.time_pairs:

@@ -39,7 +39,7 @@ def run_sensitivity_analysis(cfg: SensitivityConfig) -> dict[str, Path]:
     numeric_columns = [
         "EI_bits",
         "actual_grn_cost_share",
-        "mixed_robust_span",
+        "combined_cost_mean",
         "sinkhorn_residual",
     ]
     if not np.isfinite(layer_ei[numeric_columns].to_numpy(dtype=float)).all():
@@ -71,7 +71,7 @@ def run_sensitivity_analysis(cfg: SensitivityConfig) -> dict[str, Path]:
     )
 
     metadata = {
-        "protocol": "GRN_CCI_alpha_sensitivity_v2_canonical_ng",
+        "protocol": "GRN_CCI_alpha_sensitivity_v3_rawkl_ng",
         "transition_protocol": CANONICAL_TRANSITION_PROTOCOL,
         "transition_contract": canonical_transition_contract(),
         "analysis_role": "sensitivity_sweep_not_parameter_optimization",
@@ -80,8 +80,11 @@ def run_sensitivity_analysis(cfg: SensitivityConfig) -> dict[str, Path]:
         "shared_constructor": (
             "mignet_ce.pij.compare._shared.ng_kl_ot.canonical_ng_pij_from_cost_numpy"
         ),
-        "formula": "C=((1-alpha)*Robust5_95(D_G)+alpha*Robust5_95(D_N))/RobustSpan5_95(C_pre_scale)",
-        "component_clipping": "Robust5_95 clips each component to [0,1]",
+        "formula": "C=(1-alpha)*KL(G,beta_g)+alpha*KL(N,beta_n)",
+        "component_cost": "raw_pairwise_feature_KL",
+        "component_normalization": "none",
+        "component_clipping": False,
+        "combined_scale_control": "none",
         "combined_cost_clipping": False,
         "alpha_role": "relative GRN/CCI role only",
         "tau_role": "transition sharpness only",
