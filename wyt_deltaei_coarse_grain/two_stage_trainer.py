@@ -16,6 +16,7 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
+from mignet_ce.information_thresholds import closure_signal_threshold_bits
 from mignet_ce.representations.coarse_input import MacroPijInputs, PreparedCoarseInput
 from wyt_deltaei_coarse_grain.assignment import usage_stats
 from wyt_deltaei_coarse_grain.development import (
@@ -89,13 +90,13 @@ class WYTTwoStageDeltaEIConfig:
     lambda_retain_floor: float = 2.00
     inter_margin: float = 0.05
     active_usage_threshold: float = 0.005
-    keff_min: float = 12.0
-    checkpoint_keff_min: float = 10.0
+    keff_min: float | None = None
+    checkpoint_keff_min: float | None = None
     lambda_keff: float = 1.00
     lambda_dead_usage: float = 0.02
     min_usage: float = 0.002
     low_signal_pair_weight: float = 0.10
-    low_signal_threshold_bits: float = 0.005
+    low_signal_threshold_bits: float | None = None
     checkpoint_retain_ratio: float = 0.50
     lambda_dev: float = 0.0
     development_min_state_mass: float = 1e-8
@@ -104,6 +105,23 @@ class WYTTwoStageDeltaEIConfig:
     seed: int = 42
     device: str = "cpu"
     log_every: int = 50
+
+    def resolved_keff_min(self) -> float:
+        return float(self.keff_min) if self.keff_min is not None else 0.30 * float(self.k)
+
+    def resolved_checkpoint_keff_min(self) -> float:
+        return (
+            float(self.checkpoint_keff_min)
+            if self.checkpoint_keff_min is not None
+            else 0.25 * float(self.k)
+        )
+
+    def resolved_low_signal_threshold_bits(self) -> float:
+        return (
+            float(self.low_signal_threshold_bits)
+            if self.low_signal_threshold_bits is not None
+            else closure_signal_threshold_bits(self.k)
+        )
 
     def validate(self, prepared: PreparedCoarseInput) -> None:
         if self.k < 2:
@@ -160,9 +178,26 @@ class WYTTwoStageDeltaEIConfig:
             raise ValueError("checkpoint_retain_ratio must be in (0, 1].")
         if self.inter_margin < 0.0 or self.active_usage_threshold < 0.0 or self.min_usage < 0.0:
             raise ValueError("inter_margin and usage thresholds must be non-negative.")
-        if self.keff_min <= 0.0 or self.checkpoint_keff_min <= 0.0:
+        resolved_keff_min = self.resolved_keff_min()
+        resolved_checkpoint_keff_min = self.resolved_checkpoint_keff_min()
+        if resolved_keff_min <= 0.0 or resolved_checkpoint_keff_min <= 0.0:
             raise ValueError("Keff floors must be positive.")
-        if not 0.0 <= self.low_signal_pair_weight <= 1.0 or self.low_signal_threshold_bits < 0.0:
+        if resolved_keff_min > self.k:
+            raise ValueError(
+                f"keff_min={resolved_keff_min:g} exceeds K={self.k}; "
+                "use a feasible explicit value or the K-relative default."
+            )
+        if resolved_checkpoint_keff_min > self.k:
+            raise ValueError(
+                f"checkpoint_keff_min={resolved_checkpoint_keff_min:g} exceeds K={self.k}; "
+                "use a feasible explicit value or the K-relative default."
+            )
+        if resolved_checkpoint_keff_min > resolved_keff_min:
+            raise ValueError(
+                "checkpoint_keff_min cannot exceed keff_min; checkpoint eligibility "
+                "must not be stricter than the anti-collapse training floor."
+            )
+        if not 0.0 <= self.low_signal_pair_weight <= 1.0 or self.resolved_low_signal_threshold_bits() < 0.0:
             raise ValueError("low-signal settings are invalid.")
         if self.development_min_state_mass <= 0.0:
             raise ValueError("development_min_state_mass must be positive.")
@@ -193,9 +228,27 @@ class WYTTwoStageDeltaEIResult:
     metrics: list[dict[str, object]]
 
 
+def stage1_checkpoint_eligible(
+    *,
+    available_information: float,
+    keff_t: float,
+    keff_tp: float,
+    signal_threshold_bits: float,
+    checkpoint_keff_min: float,
+) -> bool:
+    """Require an informative, non-collapsed state before it can seed Stage 2."""
+    tolerance = 1e-8
+    return bool(
+        available_information >= signal_threshold_bits - tolerance
+        and keff_t >= checkpoint_keff_min - tolerance
+        and keff_tp >= checkpoint_keff_min - tolerance
+    )
+
+
 def joint_checkpoint_eligible(
     *,
     delta_ei: float,
+    available_information: float,
     retained_information: float,
     keff_t: float,
     keff_tp: float,
@@ -203,6 +256,7 @@ def joint_checkpoint_eligible(
     retained_reference: float,
     ei_retain_ratio: float,
     retained_ratio: float,
+    signal_threshold_bits: float,
     checkpoint_keff_min: float,
 ) -> bool:
     """Return whether a Stage 2 state satisfies every checkpoint floor."""
@@ -210,9 +264,51 @@ def joint_checkpoint_eligible(
     tolerance = 1e-8
     return bool(
         delta_ei >= ei_reference * ei_retain_ratio - tolerance
+        and available_information >= signal_threshold_bits - tolerance
         and retained_information >= retained_reference * retained_ratio - tolerance
         and keff_t >= checkpoint_keff_min - tolerance
         and keff_tp >= checkpoint_keff_min - tolerance
+    )
+
+
+def relaxed_stage2_checkpoint_eligible(
+    *,
+    delta_ei: float,
+    available_information: float,
+    keff_t: float,
+    keff_tp: float,
+    signal_threshold_bits: float,
+    checkpoint_keff_min: float,
+) -> bool:
+    """Fallback candidates may relax Stage-1 retention floors, never signal/diversity."""
+    tolerance = 1e-8
+    return bool(
+        delta_ei > tolerance
+        and available_information >= signal_threshold_bits - tolerance
+        and keff_t >= checkpoint_keff_min - tolerance
+        and keff_tp >= checkpoint_keff_min - tolerance
+    )
+
+
+def strict_joint_score(row: dict[str, object]) -> tuple[float, float, float, float, float]:
+    """Prefer retained information before the dimensionless closure ratio."""
+    return (
+        float(row["normalized_retained"]),
+        float(row["closure_quality"]),
+        -float(row["L_within_dynamics"]),
+        float(row["mean_pairwise_inter_js"]),
+        float(row["delta_EI"]),
+    )
+
+
+def relaxed_joint_score(row: dict[str, object]) -> tuple[float, float, float, float, float]:
+    """Choose the most informative non-collapsed positive-DeltaEI fallback."""
+    return (
+        float(row["I_retained"]),
+        float(row["closure_quality"]),
+        float(row["delta_EI"]),
+        -float(row["L_within_dynamics"]),
+        float(row["mean_pairwise_inter_js"]),
     )
 
 
@@ -311,6 +407,9 @@ def train_deltaei_two_stage(
     started = perf_counter()
     prepared.validate()
     config.validate(prepared)
+    resolved_keff_min = config.resolved_keff_min()
+    resolved_checkpoint_keff_min = config.resolved_checkpoint_keff_min()
+    signal_threshold_bits = config.resolved_low_signal_threshold_bits()
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     if torch.cuda.is_available():
@@ -426,11 +525,18 @@ def train_deltaei_two_stage(
     available_reference: float | None = None
     retained_reference: float | None = None
     signal_status_reference: str | None = None
+    stage1_reference_keff_t: float | None = None
+    stage1_reference_keff_tp: float | None = None
     best_joint_score: tuple[float, float, float, float, float] | None = None
+    best_relaxed_score: tuple[float, float, float, float, float] | None = None
+    best_relaxed_epoch = 0
     best_epoch = 0
     best_stage2_delta = -float("inf")
     best_stage2_epoch = 0
     used_joint_fallback = False
+    best_stage1_unconstrained_delta = -float("inf")
+    best_stage1_unconstrained_epoch = 0
+    best_stage1_unconstrained_row: dict[str, object] | None = None
 
     with (out_dir / "train.log").open("w", encoding="utf-8") as log_handle:
         _log(log_handle, "========== WYT FeatureAlign-DeltaEI ==========")
@@ -447,6 +553,13 @@ def train_deltaei_two_stage(
             f"lambda_dev={config.lambda_dev}",
         )
         _log(log_handle, f"two-stage training: stage1_epochs={stage1_epochs}, stage2_epochs={config.epochs - stage1_epochs}")
+        _log(
+            log_handle,
+            "resolved anti-collapse floors: "
+            f"keff_min={resolved_keff_min:.6f}, "
+            f"checkpoint_keff_min={resolved_checkpoint_keff_min:.6f}",
+        )
+        _log(log_handle, f"closure signal threshold: {signal_threshold_bits:.6f} bits")
         _log(log_handle, "Stage 2: normalized retained information and closure refinement under EI floor")
         _log(log_handle, "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
         _log(log_handle, "================================================")
@@ -454,6 +567,24 @@ def train_deltaei_two_stage(
         for epoch in range(1, config.epochs + 1):
             stage = "stage1" if epoch <= stage1_epochs else "stage2"
             if epoch == stage1_epochs + 1:
+                if not (out_dir / "best_ei.pt").exists():
+                    details = ""
+                    if best_stage1_unconstrained_row is not None:
+                        details = (
+                            " Best unconstrained Stage-1 state: "
+                            f"epoch={best_stage1_unconstrained_epoch}, "
+                            f"delta_EI={best_stage1_unconstrained_delta:.6f}, "
+                            f"I_available={float(best_stage1_unconstrained_row['I_available']):.6f}, "
+                            f"I_retained={float(best_stage1_unconstrained_row['I_retained']):.6f}, "
+                            f"Keff=[{float(best_stage1_unconstrained_row['Keff_t']):.3f},"
+                            f"{float(best_stage1_unconstrained_row['Keff_tp']):.3f}]."
+                        )
+                    write_csv(out_dir / "metrics.csv", metrics)
+                    raise RuntimeError(
+                        "Stage 1 produced no informative, non-collapsed checkpoint; "
+                        "Stage 2 will not start with a degenerate reference."
+                        + details
+                    )
                 checkpoint = torch.load(out_dir / "best_ei.pt", map_location=device)
                 encoder.load_state_dict(checkpoint["encoder"])
                 macro_net.load_state_dict(checkpoint["macro_net"])
@@ -462,6 +593,8 @@ def train_deltaei_two_stage(
                 available_reference = float(checkpoint["I_available"])
                 retained_reference = float(checkpoint["I_retained"])
                 signal_status_reference = str(checkpoint["signal_status"])
+                stage1_reference_keff_t = float(checkpoint["Keff_t"])
+                stage1_reference_keff_tp = float(checkpoint["Keff_tp"])
                 _log(log_handle, f"Stage 2 reloaded best_ei.pt from epoch {checkpoint['epoch']}; EI reference={ei_reference:.6f}")
             encoder.train()
             macro_net.train()
@@ -564,7 +697,7 @@ def train_deltaei_two_stage(
                 micro_pij, assignment_t, assignment_tp, future=future
             )
             keff, keff_t, keff_tp = keff_floor_loss(
-                assignment_t, assignment_tp, config.keff_min
+                assignment_t, assignment_tp, resolved_keff_min
             )
             dynamic_pair_weight = 1.0
             if stage == "stage1":
@@ -581,6 +714,7 @@ def train_deltaei_two_stage(
                     + config.lambda_dev * dev
                     + config.lambda_proto * proto
                     + config.lambda_dead_usage * usage
+                    + config.lambda_keff * keff
                 )
             else:
                 if ei_reference is None or available_reference is None or retained_reference is None:
@@ -619,10 +753,6 @@ def train_deltaei_two_stage(
                 information["I_retained"], ei_constraint, loss,
             )):
                 raise RuntimeError(f"Non-finite loss at epoch {epoch}.")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(parameters, 5.0)
-            optimizer.step()
-
             usage_t, _ = usage_stats(assignment_t)
             usage_tp, _ = usage_stats(assignment_tp)
             hard_k_t = int(torch.unique(torch.argmax(assignment_t, dim=1)).numel())
@@ -658,9 +788,12 @@ def train_deltaei_two_stage(
                 "I_retained": float(information["I_retained"].detach().cpu()),
                 "signal_status": (
                     "informative"
-                    if float(information["I_available"].detach().cpu()) >= config.low_signal_threshold_bits
+                    if float(information["I_available"].detach().cpu()) >= signal_threshold_bits
                     else "low-signal"
                 ),
+                "signal_threshold_bits": float(signal_threshold_bits),
+                "resolved_keff_min": float(resolved_keff_min),
+                "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
                 "pair_weight": dynamic_pair_weight,
                 "closure_quality": float(information["closure_quality"].detach().cpu()),
                 "closure_leakage": float(information["closure_leakage"].detach().cpu()),
@@ -715,37 +848,19 @@ def train_deltaei_two_stage(
                 "hard_load_cv_t": float((hard_load_t.std(unbiased=False) / hard_load_t.mean().clamp_min(1e-12)).detach().cpu()),
                 "hard_load_cv_tp": float((hard_load_tp.std(unbiased=False) / hard_load_tp.mean().clamp_min(1e-12)).detach().cpu()),
             }
-            metrics.append(row)
-            if stage == "stage1" and row["delta_EI"] > best_delta:
-                best_delta = float(row["delta_EI"])
-                best_delta_epoch = epoch
-                torch.save(
-                    {
-                        "encoder": encoder.state_dict(),
-                        "macro_net": macro_net.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "epoch": epoch,
-                        "best_delta_ei": best_delta,
-                        "I_available": row["I_available"],
-                        "I_retained": row["I_retained"],
-                        "signal_status": row["signal_status"],
-                        "method": prepared.method,
-                    },
-                    out_dir / "best_ei.pt",
-                )
+            stage1_eligible = stage1_checkpoint_eligible(
+                available_information=float(row["I_available"]),
+                keff_t=float(row["Keff_t"]),
+                keff_tp=float(row["Keff_tp"]),
+                signal_threshold_bits=signal_threshold_bits,
+                checkpoint_keff_min=resolved_checkpoint_keff_min,
+            )
+            stage2_strict_eligible = False
+            stage2_relaxed_eligible = False
             if stage == "stage2":
-                if row["delta_EI"] > best_stage2_delta:
-                    best_stage2_delta = float(row["delta_EI"])
-                    best_stage2_epoch = epoch
-                    torch.save(
-                        {"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
-                         "optimizer": optimizer.state_dict(), "epoch": epoch,
-                         "delta_EI": row["delta_EI"], "method": prepared.method,
-                         "selection": "stage2_highest_delta_ei_fallback"},
-                        out_dir / "best_stage2_fallback.pt",
-                    )
-                eligible = joint_checkpoint_eligible(
+                stage2_strict_eligible = joint_checkpoint_eligible(
                     delta_ei=float(row["delta_EI"]),
+                    available_information=float(row["I_available"]),
                     retained_information=float(row["I_retained"]),
                     keff_t=float(row["Keff_t"]),
                     keff_tp=float(row["Keff_tp"]),
@@ -753,22 +868,105 @@ def train_deltaei_two_stage(
                     retained_reference=float(retained_reference),
                     ei_retain_ratio=config.ei_retain_ratio,
                     retained_ratio=config.checkpoint_retain_ratio,
-                    checkpoint_keff_min=config.checkpoint_keff_min,
+                    signal_threshold_bits=signal_threshold_bits,
+                    checkpoint_keff_min=resolved_checkpoint_keff_min,
                 )
-                score = (
-                    row["closure_quality"], row["normalized_retained"], -row["L_within_dynamics"],
-                    row["mean_pairwise_inter_js"], row["delta_EI"],
+                stage2_relaxed_eligible = relaxed_stage2_checkpoint_eligible(
+                    delta_ei=float(row["delta_EI"]),
+                    available_information=float(row["I_available"]),
+                    keff_t=float(row["Keff_t"]),
+                    keff_tp=float(row["Keff_tp"]),
+                    signal_threshold_bits=signal_threshold_bits,
+                    checkpoint_keff_min=resolved_checkpoint_keff_min,
                 )
-                if eligible and (best_joint_score is None or score > best_joint_score):
+            row["stage1_eligible"] = bool(stage1_eligible) if stage == "stage1" else False
+            row["stage2_strict_eligible"] = bool(stage2_strict_eligible)
+            row["stage2_relaxed_eligible"] = bool(stage2_relaxed_eligible)
+            metrics.append(row)
+            if stage == "stage1":
+                if row["delta_EI"] > best_stage1_unconstrained_delta:
+                    best_stage1_unconstrained_delta = float(row["delta_EI"])
+                    best_stage1_unconstrained_epoch = epoch
+                    best_stage1_unconstrained_row = dict(row)
+                if stage1_eligible and row["delta_EI"] > best_delta:
+                    best_delta = float(row["delta_EI"])
+                    best_delta_epoch = epoch
+                    torch.save(
+                        {
+                            "encoder": encoder.state_dict(),
+                            "macro_net": macro_net.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                            "epoch": epoch,
+                            "best_delta_ei": best_delta,
+                            "delta_EI": row["delta_EI"],
+                            "I_available": row["I_available"],
+                            "I_retained": row["I_retained"],
+                            "closure_quality": row["closure_quality"],
+                            "Keff_t": row["Keff_t"],
+                            "Keff_tp": row["Keff_tp"],
+                            "signal_status": row["signal_status"],
+                            "signal_threshold_bits": signal_threshold_bits,
+                            "resolved_keff_min": resolved_keff_min,
+                            "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
+                            "method": prepared.method,
+                            "selection": "stage1_best_delta_ei_informative_noncollapsed",
+                        },
+                        out_dir / "best_ei.pt",
+                    )
+            if stage == "stage2":
+                if row["delta_EI"] > best_stage2_delta:
+                    best_stage2_delta = float(row["delta_EI"])
+                    best_stage2_epoch = epoch
+                    torch.save(
+                        {"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
+                         "optimizer": optimizer.state_dict(), "epoch": epoch,
+                         "delta_EI": row["delta_EI"], "I_available": row["I_available"],
+                         "I_retained": row["I_retained"], "closure_quality": row["closure_quality"],
+                         "Keff_t": row["Keff_t"], "Keff_tp": row["Keff_tp"],
+                         "method": prepared.method,
+                         "selection": "stage2_highest_delta_ei_diagnostic"},
+                        out_dir / "best_stage2_deltaei_diagnostic.pt",
+                    )
+                score = strict_joint_score(row)
+                if stage2_strict_eligible and (best_joint_score is None or score > best_joint_score):
                     best_joint_score = score
                     best_epoch = epoch
                     torch.save(
                         {"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
                          "optimizer": optimizer.state_dict(), "epoch": epoch,
-                         "delta_EI": row["delta_EI"], "method": prepared.method,
-                         "selection": "eligible_closure_retain_keff", "joint_score": score,
+                         "delta_EI": row["delta_EI"], "I_available": row["I_available"],
+                         "I_retained": row["I_retained"], "closure_quality": row["closure_quality"],
+                         "Keff_t": row["Keff_t"], "Keff_tp": row["Keff_tp"],
+                         "signal_status": row["signal_status"],
+                         "signal_threshold_bits": signal_threshold_bits,
+                         "resolved_keff_min": resolved_keff_min,
+                         "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
+                         "method": prepared.method,
+                         "selection": "strict_informative_retained_first", "joint_score": score,
                          "ei_reference": ei_reference, "retained_reference": retained_reference},
                         out_dir / "best_joint.pt",
+                    )
+                relaxed_score = relaxed_joint_score(row)
+                if stage2_relaxed_eligible and (
+                    best_relaxed_score is None or relaxed_score > best_relaxed_score
+                ):
+                    best_relaxed_score = relaxed_score
+                    best_relaxed_epoch = epoch
+                    torch.save(
+                        {"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
+                         "optimizer": optimizer.state_dict(), "epoch": epoch,
+                         "delta_EI": row["delta_EI"], "I_available": row["I_available"],
+                         "I_retained": row["I_retained"], "closure_quality": row["closure_quality"],
+                         "Keff_t": row["Keff_t"], "Keff_tp": row["Keff_tp"],
+                         "signal_status": row["signal_status"],
+                         "signal_threshold_bits": signal_threshold_bits,
+                         "resolved_keff_min": resolved_keff_min,
+                         "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
+                         "method": prepared.method,
+                         "selection": "relaxed_informative_stage2_fallback",
+                         "joint_score": relaxed_score,
+                         "ei_reference": ei_reference, "retained_reference": retained_reference},
+                        out_dir / "best_relaxed_joint.pt",
                     )
             if epoch == 1 or epoch % config.log_every == 0 or epoch == config.epochs:
                 _log(
@@ -783,17 +981,30 @@ def train_deltaei_two_stage(
                     f"hardK=[{row['hardK_t']},{row['hardK_tp']}]",
                 )
 
+            # Checkpoint metrics and state above refer to exactly this pre-step model.
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(parameters, 5.0)
+            optimizer.step()
+
         if best_joint_score is None:
-            used_joint_fallback = True
-            best_epoch = best_stage2_epoch
-            fallback = torch.load(out_dir / "best_stage2_fallback.pt", map_location=device)
-            fallback["selection"] = "stage2_highest_delta_ei_fallback_no_eligible_joint"
-            torch.save(fallback, out_dir / "best_joint.pt")
-            _log(
-                log_handle,
-                "No Stage 2 epoch met all EI, retained-information, and Keff floors; "
-                "best_joint.pt uses the independent highest-DeltaEI fallback.",
-            )
+            if best_relaxed_score is not None:
+                used_joint_fallback = True
+                best_epoch = best_relaxed_epoch
+                fallback = torch.load(out_dir / "best_relaxed_joint.pt", map_location=device)
+                fallback["selection"] = "relaxed_informative_stage2_fallback"
+                torch.save(fallback, out_dir / "best_joint.pt")
+                _log(
+                    log_handle,
+                    "No Stage 2 epoch met all strict Stage-1 retention floors; "
+                    "best_joint.pt uses the best informative, non-collapsed positive-DeltaEI fallback.",
+                )
+            else:
+                write_csv(out_dir / "metrics.csv", metrics)
+                raise RuntimeError(
+                    "Stage 2 produced no valid informative, non-collapsed positive-DeltaEI "
+                    "checkpoint. The highest-DeltaEI state is retained only as a diagnostic "
+                    "checkpoint and will not be promoted to best_joint.pt."
+                )
         write_csv(out_dir / "metrics.csv", metrics)
         checkpoint = torch.load(out_dir / "best_joint.pt", map_location=device)
         encoder.load_state_dict(checkpoint["encoder"])
@@ -847,7 +1058,7 @@ def train_deltaei_two_stage(
                 micro_pij, assignment_t, assignment_tp, future=final_future
             )
             final_keff, final_keff_t, final_keff_tp = keff_floor_loss(
-                assignment_t, assignment_tp, config.keff_min
+                assignment_t, assignment_tp, resolved_keff_min
             )
             final_closure_rows = row_js_divergence(
                 final_future,
@@ -871,16 +1082,45 @@ def train_deltaei_two_stage(
                 final_dev_t = torch.zeros((), dtype=torch.float32, device=device)
                 final_dev_tp = torch.zeros((), dtype=torch.float32, device=device)
                 final_dev = torch.zeros((), dtype=torch.float32, device=device)
+        final_delta_value = float(final_delta.cpu())
+        final_available_value = float(final_information["I_available"].cpu())
+        final_retained_value = float(final_information["I_retained"].cpu())
+        final_closure_quality_value = float(final_information["closure_quality"].cpu())
+        final_keff_t_value = float(final_keff_t.cpu())
+        final_keff_tp_value = float(final_keff_tp.cpu())
+        consistency_errors = {
+            "delta_EI": abs(final_delta_value - float(checkpoint["delta_EI"])),
+            "I_available": abs(final_available_value - float(checkpoint["I_available"])),
+            "I_retained": abs(final_retained_value - float(checkpoint["I_retained"])),
+            "Keff_t": abs(final_keff_t_value - float(checkpoint["Keff_t"])),
+            "Keff_tp": abs(final_keff_tp_value - float(checkpoint["Keff_tp"])),
+        }
+        checkpoint_consistency_tolerance = 1e-5
+        checkpoint_metric_state_consistent = bool(
+            max(consistency_errors.values(), default=0.0) <= checkpoint_consistency_tolerance
+        )
+        if not checkpoint_metric_state_consistent:
+            raise AssertionError(
+                "Reloaded checkpoint metrics do not match the metrics recorded when the "
+                f"checkpoint was selected: {consistency_errors}"
+            )
         summary = {
             "method": prepared.method,
             "method_version": "wyt_dynamic_closure_two_stage_v2",
             "best_epoch": best_epoch,
             "best_joint_epoch": best_epoch,
             "best_joint_score_recorded": list(best_joint_score) if best_joint_score is not None else None,
+            "best_relaxed_score_recorded": list(best_relaxed_score) if best_relaxed_score is not None else None,
             "best_joint_fallback_used": used_joint_fallback,
+            "strict_checkpoint_found": bool(best_joint_score is not None),
+            "fallback_type": (
+                "relaxed_informative" if used_joint_fallback else None
+            ),
             "best_joint_selection": str(checkpoint.get("selection", "unknown")),
             "best_delta_ei_epoch": best_delta_epoch,
             "best_delta_EI_recorded": best_delta,
+            "stage1_best_epoch": best_delta_epoch,
+            "stage1_best_delta_EI": best_delta,
             "EI_reference": ei_reference,
             "EI_floor": (ei_reference * config.ei_retain_ratio) if ei_reference is not None else None,
             "EI_micro_fixed": float(fixed_micro_ei.cpu()),
@@ -894,21 +1134,35 @@ def train_deltaei_two_stage(
             "L_dev_best_checkpoint": float(final_dev.cpu()),
             "L_dev_t_best_checkpoint": float(final_dev_t.cpu()),
             "L_dev_tp_best_checkpoint": float(final_dev_tp.cpu()),
-            "I_available": float(final_information["I_available"].cpu()),
-            "I_retained": float(final_information["I_retained"].cpu()),
+            "I_available": final_available_value,
+            "I_retained": final_retained_value,
             "I_available_reference": available_reference,
             "I_retained_reference": retained_reference,
+            "stage1_reference_I_available": available_reference,
+            "stage1_reference_I_retained": retained_reference,
             "signal_status_reference": signal_status_reference,
+            "stage1_reference_signal_status": signal_status_reference,
+            "stage1_reference_Keff_t": stage1_reference_keff_t,
+            "stage1_reference_Keff_tp": stage1_reference_keff_tp,
+            "signal_threshold_bits": float(signal_threshold_bits),
+            "resolved_keff_min": float(resolved_keff_min),
+            "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
+            "final_signal_status": (
+                "informative" if final_available_value >= signal_threshold_bits else "low-signal"
+            ),
             "normalized_retained": (
-                float(final_information["I_retained"].cpu()) / max(float(available_reference), 1e-8)
+                final_retained_value / max(float(available_reference), 1e-8)
                 if available_reference is not None else None
             ),
-            "closure_quality": float(final_information["closure_quality"].cpu()),
+            "closure_quality": final_closure_quality_value,
             "closure_leakage": float(final_information["closure_leakage"].cpu()),
             "L_usage": float(final_usage.cpu()),
             "L_keff": float(final_keff.cpu()),
-            "Keff_source": float(final_keff_t.cpu()),
-            "Keff_target": float(final_keff_tp.cpu()),
+            "Keff_source": final_keff_t_value,
+            "Keff_target": final_keff_tp_value,
+            "checkpoint_metric_state_consistent": checkpoint_metric_state_consistent,
+            "checkpoint_consistency_tolerance": checkpoint_consistency_tolerance,
+            "checkpoint_consistency_errors": consistency_errors,
             "L_closure": float(final_closure.cpu()),
             "L_within_dynamics": float(final_within.cpu()),
             "L_inter": float(final_inter.cpu()),

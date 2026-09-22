@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from mignet_ce.information_thresholds import closure_signal_threshold_bits
 from ..metrics import entropy, row_normalize
 
 EPS = 1e-12
@@ -126,7 +127,7 @@ def information_closure_budget(
             f"available={available}, retained={retained}, leakage={leakage}, error={identity_error}"
         )
     if low_signal_threshold_bits is None:
-        low_signal_threshold_bits = max(0.01, 0.01 * np.log2(max(target.shape[1], 2)))
+        low_signal_threshold_bits = closure_signal_threshold_bits(target.shape[1])
     status = "informative" if available >= low_signal_threshold_bits else "low-signal"
     quality = retained / available if available > EPS else np.nan
     return {
@@ -179,7 +180,7 @@ def information_closure_budget_from_observed(
     if identity_error > 1e-8:
         raise AssertionError(f"Information closure identity error {identity_error}")
     if low_signal_threshold_bits is None:
-        low_signal_threshold_bits = max(0.01, 0.01 * np.log2(max(observed.shape[1], 2)))
+        low_signal_threshold_bits = closure_signal_threshold_bits(observed.shape[1])
     status = "informative" if available >= low_signal_threshold_bits else "low-signal"
     quality = retained / available if available > EPS else np.nan
     return {
