@@ -1,0 +1,15 @@
+{
+  "k": 40,
+  "source_sample": "GSM8281389_V10A20-072-D1",
+  "target_sample": "GSM8281401_V10A20-071-D1",
+  "EI_micro_fixed": 0.5342419743537903,
+  "EI_macro_best_checkpoint": 3.124544143676758,
+  "delta_EI_best_checkpoint": 2.5903022289276123,
+  "best_epoch": 1498,
+  "Keff_source": 10.687580108642578,
+  "Keff_target": 11.847832679748535,
+  "I_available": 0.40121906995773315,
+  "I_retained": 0.33968386054039,
+  "closure_leakage": 0.06153520941734314,
+  "closure_quality": 0.8466293811798096
+}

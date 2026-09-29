@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import scipy.sparse as sp
+
+if not hasattr(np, "unicode_"):
+    np.unicode_ = np.str_
+
+import anndata as ad
+
+from mignet_ce.coarse_frontends._common import CoarseFrontendRequest
+from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci import (
+    prepare as prepare_cci,
+)
+from mignet_ce.coarse_frontends.complete_combined_coarse_maturity_cci_grn import (
+    prepare as prepare_cci_grn,
+)
+from mignet_ce.coarse_frontends.maturity_cci_grn_two_stage import (
+    prepare as prepare_two_stage,
+)
+from mignet_ce.graph.builder import LayerGraph
+from mignet_ce.config import TemporalRunConfig
+from mignet_ce.networks.base import (
+    CoarseTemporalNetworkPair,
+    CoarseTemporalNetworkRequest,
+    CoarseTemporalNetworkStage,
+    CoarseTemporalStageRequest,
+    build_registered_coarse_temporal_pair,
+)
+from mignet_ce.networks.registry import get_network_builder
+
+
+def _touch_inputs(tmp_path: Path) -> dict[str, Path]:
+    paths = {}
+    for name in (
+        "t.h5ad",
+        "tp.h5ad",
+        "t_cci.npz",
+        "tp_cci.npz",
+        "t_index.tsv",
+        "tp_index.tsv",
+        "t_grn.csv",
+        "tp_grn.csv",
+    ):
+        path = tmp_path / name
+        path.touch()
+        paths[name] = path
+    return paths
+
+
+def _write_maturity(path: Path, units: list[str]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["spot_id", "maturity"])
+        writer.writeheader()
+        for index, unit in enumerate(units):
+            writer.writerow({"spot_id": unit, "maturity": index / max(1, len(units) - 1)})
+
+
+def _stage(time_point: str, *, grn: bool) -> CoarseTemporalNetworkStage:
+    units = ["a", "b", "c"]
+    adjacency = sp.csr_matrix(
+        np.asarray(
+            [[0.0, 2.0, 0.5], [0.2, 0.0, 1.0], [1.5, 0.3, 0.0]],
+            dtype=np.float32,
+        )
+    )
+    metadata: dict[str, object] = {
+        "network_method": "light_cci_grn" if grn else "light_cci",
+        "adjacency_csr": adjacency,
+        "uses_cci": True,
+        "uses_grn": grn,
+    }
+    if grn:
+        expression = np.asarray(
+            [[1.0, 0.5, 0.1], [0.2, 1.2, 0.4], [0.8, 0.3, 1.1]],
+            dtype=np.float32,
+        )
+        grn_adjacency = sp.csr_matrix(
+            np.asarray(
+                [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+                dtype=np.float32,
+            )
+        )
+        metadata.update(
+            {
+                "grn_genes": ["g1", "g2", "g3"],
+                "grn_adjacency_csr": grn_adjacency,
+                "grn_expression_csr": sp.csr_matrix(expression),
+                "grn_state_csr": sp.csr_matrix(
+                    np.asarray(
+                        [[0.2, 0.5, 0.8, 0.1], [0.7, 0.1, 0.3, 0.9], [0.4, 0.6, 0.2, 0.5]],
+                        dtype=np.float32,
+                    )
+                ),
+            }
+        )
+    graph = LayerGraph(
+        layer="spot",
+        time_point=time_point,
+        units=units,
+        genes=["g1", "g2", "g3"],
+        intra_edges=pd.DataFrame(),
+        inter_edges=pd.DataFrame(),
+        shared_genes=["g1", "g2", "g3"],
+        metadata=metadata,
+    )
+    return CoarseTemporalNetworkStage(
+        time_point=time_point,
+        graph=graph,
+        coords=np.zeros((3, 2), dtype=np.float32),
+    )
+
+
+class _FakeBuilder:
+    def __init__(self, method: str):
+        self.network_method = method
+
+    def build_coarse_temporal_pair(self, request):
+        grn = self.network_method == "light_cci_grn"
+        return CoarseTemporalNetworkPair(
+            network_method=self.network_method,
+            source=_stage("t", grn=grn),
+            target=_stage("tp", grn=grn),
+            metadata={
+                "source_network_method": self.network_method,
+                "network_builder_class": (
+                    "LightCCIGRNNetworkBuilder" if grn else "LightCCINetworkBuilder"
+                ),
+            },
+        )
+
+
+def _request(tmp_path: Path) -> CoarseFrontendRequest:
+    paths = _touch_inputs(tmp_path)
+    maturity_t = tmp_path / "maturity_t.csv"
+    maturity_tp = tmp_path / "maturity_tp.csv"
+    _write_maturity(maturity_t, ["a", "b", "c"])
+    _write_maturity(maturity_tp, ["a", "b", "c"])
+    return CoarseFrontendRequest(
+        h5ad_t=paths["t.h5ad"],
+        h5ad_tp=paths["tp.h5ad"],
+        cci_t=paths["t_cci.npz"],
+        cci_tp=paths["tp_cci.npz"],
+        cci_index_t=paths["t_index.tsv"],
+        cci_index_tp=paths["tp_index.tsv"],
+        grn_t=paths["t_grn.csv"],
+        grn_tp=paths["tp_grn.csv"],
+        maturity_t=maturity_t,
+        maturity_tp=maturity_tp,
+        nmf_components=2,
+        nmf_max_iter=2,
+        mid_dim=2,
+        grn_state_dim=4,
+    )
+
+
+def test_cci_method_calls_registered_light_cci(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+
+    def fake_get(method: str):
+        calls.append(method)
+        return _FakeBuilder(method)
+
+    monkeypatch.setattr(
+        "wyt_deltaei_coarse_grain.complete_combined_maturity.get_network_builder",
+        fake_get,
+    )
+    prepared = prepare_cci(_request(tmp_path))
+    assert calls == ["light_cci"]
+    assert prepared.method == "complete_combined_coarse_maturity_cci"
+    assert prepared.provenance["source_network_method"] == "light_cci"
+    assert prepared.provenance["uses_grn"] is False
+    assert prepared.maturity_t is not None
+
+
+def test_cci_grn_method_uses_sparse_complete_stage(tmp_path) -> None:
+    source = _write_real_network_stage(tmp_path, "sparse_t")
+    target = _write_real_network_stage(tmp_path, "sparse_tp")
+    maturity_t = tmp_path / "sparse_maturity_t.csv"
+    maturity_tp = tmp_path / "sparse_maturity_tp.csv"
+    _write_maturity(maturity_t, ["a", "b", "c"])
+    _write_maturity(maturity_tp, ["a", "b", "c"])
+    request = CoarseFrontendRequest(
+        h5ad_t=source.h5ad,
+        h5ad_tp=target.h5ad,
+        cci_t=source.cci_total,
+        cci_tp=target.cci_total,
+        cci_index_t=source.cci_index,
+        cci_index_tp=target.cci_index,
+        grn_t=source.grn_edges,
+        grn_tp=target.grn_edges,
+        maturity_t=maturity_t,
+        maturity_tp=maturity_tp,
+        nmf_components=2,
+        nmf_max_iter=2,
+        mid_dim=2,
+        grn_topk_targets=3,
+        grn_state_dim=4,
+    )
+    prepared = prepare_cci_grn(request)
+    assert prepared.method == "complete_combined_coarse_maturity_cci_grn"
+    assert prepared.provenance["source_network_method"] == "light_cci_grn"
+    assert prepared.provenance["loader_optimization"].startswith("sparse_complete_stage")
+    assert prepared.provenance["network_adjacency_policy"] == "row_normalized_true_CCI"
+    assert prepared.provenance["uses_grn"] is True
+    assert prepared.provenance["nmf_components"] == 2
+    assert prepared.provenance["nmf_max_iter_used"] == 2
+    assert set(prepared.feature_blocks_t) == {"N", "X"}
+    assert prepared.maturity_t is not None
+    assert prepared.maturity_tp is not None
+
+
+def test_two_stage_frontend_is_value_identical_to_maturity_cci_grn(tmp_path) -> None:
+    source = _write_real_network_stage(tmp_path, "identity_t")
+    target = _write_real_network_stage(tmp_path, "identity_tp")
+    maturity_t = tmp_path / "identity_maturity_t.csv"
+    maturity_tp = tmp_path / "identity_maturity_tp.csv"
+    _write_maturity(maturity_t, ["a", "b", "c"])
+    _write_maturity(maturity_tp, ["a", "b", "c"])
+    request = CoarseFrontendRequest(
+        h5ad_t=source.h5ad,
+        h5ad_tp=target.h5ad,
+        cci_t=source.cci_total,
+        cci_tp=target.cci_total,
+        cci_index_t=source.cci_index,
+        cci_index_tp=target.cci_index,
+        grn_t=source.grn_edges,
+        grn_tp=target.grn_edges,
+        maturity_t=maturity_t,
+        maturity_tp=maturity_tp,
+        nmf_components=2,
+        nmf_max_iter=2,
+        mid_dim=2,
+        grn_topk_targets=3,
+        grn_state_dim=4,
+    )
+    legacy = prepare_cci_grn(request)
+    two_stage = prepare_two_stage(request)
+    assert legacy.unit_ids_t == two_stage.unit_ids_t
+    assert legacy.unit_ids_tp == two_stage.unit_ids_tp
+    for name in (
+        "encoder_features_t",
+        "encoder_features_tp",
+        "micro_features_t",
+        "micro_features_tp",
+        "micro_pij",
+        "coords_t",
+        "coords_tp",
+        "maturity_t",
+        "maturity_tp",
+        "maturity_confidence_t",
+        "maturity_confidence_tp",
+    ):
+        np.testing.assert_array_equal(getattr(legacy, name), getattr(two_stage, name))
+    assert (legacy.network_t != two_stage.network_t).nnz == 0
+    assert (legacy.network_tp != two_stage.network_tp).nnz == 0
+    assert legacy.feature_blocks_t.keys() == two_stage.feature_blocks_t.keys()
+    for key in legacy.feature_blocks_t:
+        np.testing.assert_array_equal(legacy.feature_blocks_t[key], two_stage.feature_blocks_t[key])
+        np.testing.assert_array_equal(legacy.feature_blocks_tp[key], two_stage.feature_blocks_tp[key])
+    assert legacy.micro_ei == two_stage.micro_ei
+    assert two_stage.method == "maturity_cci_grn_two_stage"
+    assert two_stage.provenance["frontend_delegate"] == legacy.method
+
+
+def _write_real_network_stage(tmp_path: Path, label: str) -> CoarseTemporalStageRequest:
+    units = ["a", "b", "c"]
+    genes = ["g1", "g2", "g3"]
+    h5ad = tmp_path / f"{label}.h5ad"
+    adata = ad.AnnData(
+        X=np.asarray(
+            [[1.0, 0.2, 0.4], [0.5, 1.1, 0.3], [0.2, 0.4, 1.3]],
+            dtype=np.float32,
+        ),
+        obs=pd.DataFrame(index=pd.Index(units, name="spot_id")),
+        var=pd.DataFrame(index=pd.Index(genes, name="gene")),
+    )
+    adata.obsm["spatial"] = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    adata.write_h5ad(h5ad)
+
+    cci = tmp_path / f"{label}_cci.npz"
+    cci_values = np.asarray(
+        [[0.0, 1.0, 0.2], [0.3, 0.0, 0.8], [1.2, 0.4, 0.0]],
+        dtype=np.float32,
+    )
+    sp.save_npz(cci, sp.csr_matrix(cci_values))
+    cci_index = tmp_path / f"{label}_index.tsv"
+    pd.DataFrame({"domain_id": units}).to_csv(cci_index, sep="\t", index=False)
+    grn = tmp_path / f"{label}_grn.csv"
+    pd.DataFrame(
+        {
+            "regulator": ["g1", "g2", "g3"],
+            "target": ["g2", "g3", "g1"],
+            "weight": [1.0, 0.8, 0.6],
+        }
+    ).to_csv(grn, index=False)
+    return CoarseTemporalStageRequest(
+        time_point=label,
+        h5ad=h5ad,
+        cci_total=cci,
+        cci_index=cci_index,
+        grn_edges=grn,
+    )
+
+
+def test_base_adapter_executes_registered_light_cci_grn_and_retains_joint_payload(
+    tmp_path: Path,
+) -> None:
+    builder = get_network_builder("light_cci_grn")
+    assert builder.retain_joint_inputs is False
+    request = CoarseTemporalNetworkRequest(
+        stages=(
+            _write_real_network_stage(tmp_path, "t"),
+            _write_real_network_stage(tmp_path, "tp"),
+        ),
+        config=TemporalRunConfig(
+            time_points=("t", "tp"),
+            network_method="light_cci_grn",
+            pij_method="compare_N_kl",
+            grn_topk_targets=3,
+            grn_state_dim=4,
+        ),
+    )
+
+    pair = build_registered_coarse_temporal_pair(
+        builder,
+        request,
+        retain_joint_inputs=True,
+    )
+
+    assert pair.network_method == "light_cci_grn"
+    assert pair.metadata["network_builder_class"] == "LightCCIGRNNetworkBuilder"
+    assert builder.retain_joint_inputs is False
+    for stage in (pair.source, pair.target):
+        assert stage.graph.metadata["network_method"] == "light_cci_grn"
+        assert stage.graph.metadata["uses_grn"] is True
+        assert set(
+            [
+                "adjacency_csr",
+                "grn_state_csr",
+                "grn_genes",
+                "grn_adjacency_csr",
+                "grn_expression_csr",
+            ]
+        ).issubset(stage.graph.metadata)

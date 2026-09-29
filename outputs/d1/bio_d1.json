@@ -1,0 +1,15 @@
+{
+  "source_sample": "GSM8281389_V10A20-072-D1",
+  "target_sample": "GSM8281401_V10A20-071-D1",
+  "EI_spot": 0.5342419575994907,
+  "EI_cluster": 0.12325830686010383,
+  "delta_EI": -0.4109836507393868,
+  "I_available_bits": 0.18991578212610677,
+  "I_macro_retained_bits": 0.09166283117915328,
+  "closure_leakage_bits": 0.0982529509469471,
+  "closure_quality": 0.48264988908761597,
+  "information_identity_error": 6.3976601794024646e-15,
+  "signal_status": "informative",
+  "signal_threshold_bits": 0.03321928094887362,
+  "weighting": "uniform_spot"
+}

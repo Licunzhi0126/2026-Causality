@@ -1,0 +1,29 @@
+recipe_id: nshape_gcos_v3
+entry_method: compare_Nshape_Gcos_v3
+algorithm_version: lightcci_feature_versions_v3
+cci_mode: directed_shared_core_all_non_gene
+grn_mode: split_reg_tar_recomputed
+block_distances:
+  n_out_shape: js
+  n_in_shape: js
+  n_out_strength: scalar_robust
+  n_in_strength: scalar_robust
+  g_reg: cosine
+  g_tar: cosine
+distance_parameters: {}
+fusion_weights:
+  n_out_shape: 0.22
+  n_in_shape: 0.22
+  n_out_strength: 0.08
+  n_in_strength: 0.08
+  g_reg: 0.20
+  g_tar: 0.20
+nmf_rank: 5
+nmf_max_iter: 300
+nmf_seeds: [42]
+grn_topk_targets: 50
+projection_dim: 64
+projection_seed: 20260713
+kernel_temperature: 1.0
+pseudocount: 1.0e-8
+normalization_quantiles: [5.0, 95.0]

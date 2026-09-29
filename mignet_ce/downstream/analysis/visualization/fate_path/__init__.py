@@ -1,0 +1,1 @@
+"""Fate-path figures."""

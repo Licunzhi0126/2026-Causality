@@ -1,0 +1,11 @@
+reference/
+data/
+paper/
+output/
+__pycache__/
+*.py[cod]
+plan1.md
+plan2.md
+plan3.md
+plan4.md
+mignet_ce/downstream/application/input_data
