@@ -979,6 +979,7 @@ def _build_pairwise_grn_state_side(
     context: NetworkContext,
     side: str,
     pairs: Sequence[tuple[int, int]],
+    cfg: TemporalRunConfig | None = None,
 ) -> tuple[PairFeatures | None, dict[str, object]]:
     layer = _layer_for_side(context, side)
     if layer == "gene":
@@ -1001,6 +1002,29 @@ def _build_pairwise_grn_state_side(
             raise ValueError(f"light_cci_grn {side} graph metadata is missing grn_state_csr.")
         source_raw = sp.csr_matrix(source_stored).toarray()
         target_raw = sp.csr_matrix(target_stored).toarray()
+        if cfg is not None and cfg.grn_feature_method != "legacy":
+            from types import SimpleNamespace
+            from mignet_ce.grn_representation import GRNFeatureConfig, GRNPairEnhancer
+            from mignet_ce.networks.light_cci_grn import deterministic_projection_matrix
+            def stage_from_graph(graph, raw):
+                m = graph.metadata
+                missing = [key for key in ("grn_genes", "grn_adjacency_csr", "grn_expression_csr") if key not in m]
+                if missing:
+                    raise ValueError(f"GRN enhancement requires unprojected graph data: missing {missing}.")
+                genes = list(m["grn_genes"])
+                return SimpleNamespace(
+                    grn_genes=genes,
+                    grn_adjacency=sp.csr_matrix(m["grn_adjacency_csr"]),
+                    expression_grn=sp.csr_matrix(m["grn_expression_csr"]).toarray().astype(np.float32),
+                    projection_reg=deterministic_projection_matrix(genes, role="reg", output_dim=cfg.grn_state_dim, seed=cfg.grn_projection_seed).astype(np.float32),
+                    projection_tar=deterministic_projection_matrix(genes, role="tar", output_dim=cfg.grn_state_dim, seed=cfg.grn_projection_seed).astype(np.float32),
+                    g_raw=np.asarray(raw,dtype=np.float32),
+                )
+            st = stage_from_graph(graph_list[source_index],source_raw)
+            tp = stage_from_graph(graph_list[target_index],target_raw)
+            enhancer = GRNPairEnhancer.fit(st,tp,GRNFeatureConfig(cfg.grn_feature_method,cfg.grn_residual_lambda))
+            source_raw = enhancer.feature_numpy(st.expression_grn,st,'t')
+            target_raw = enhancer.feature_numpy(tp.expression_grn,tp,'tp')
         source, source_alignment = _align_side_feature_for_time(source_raw, context, side, source_index)
         target, target_alignment = _align_side_feature_for_time(target_raw, context, side, target_index)
         raw_pairwise[pair] = (source, target)
@@ -1018,7 +1042,7 @@ def _build_pairwise_grn_state_side(
         "enabled": True,
         "side": side,
         "layer": layer,
-        "feature_source": "double_end_expression_gated_grn_state",
+        "feature_source": ("double_end_expression_gated_grn_state" if cfg is None or cfg.grn_feature_method == "legacy" else cfg.grn_feature_method),
         "pair_summaries": pair_summaries,
         **standardization,
     }
@@ -1500,11 +1524,13 @@ def build_compare_feature_set(
             context,
             "lower",
             pairs,
+            cfg,
         )
         pairwise_upper_grn_features, upper_grn_metadata = _build_pairwise_grn_state_side(
             context,
             "upper",
             pairs,
+            cfg,
         )
         metadata["grn_block"] = {
             "enabled": True,

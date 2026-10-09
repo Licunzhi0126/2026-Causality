@@ -402,6 +402,8 @@ class TemporalRunConfig:
     grn_state_dim: int = 64
     grn_projection_seed: int = 20260713
     grn_gate_mode: str = "double_end"
+    grn_feature_method: str = "legacy"
+    grn_residual_lambda: float = 0.15
     regsim_knn_k: int = 50
     regsim_weight: float = 0.2
     wyt_network_svd_dim: int = 32
@@ -554,6 +556,10 @@ class TemporalRunConfig:
             raise ValueError("grn_topk_targets must be positive.")
         if self.grn_state_dim <= 0:
             raise ValueError("grn_state_dim must be positive.")
+        from mignet_ce.grn_representation import GRNFeatureConfig
+        GRNFeatureConfig(self.grn_feature_method, self.grn_residual_lambda).validate()
+        if self.grn_feature_method != "legacy" and self.network_method != "light_cci_grn":
+            raise ValueError("Structural GRN features currently require network_method=light_cci_grn; PGR is not yet adapted.")
         if self.grn_gate_mode != "double_end":
             raise ValueError("grn_gate_mode must be 'double_end'.")
         if self.regsim_knn_k <= 0:

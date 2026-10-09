@@ -41,6 +41,14 @@ def prepare_coarse_input(
     method: str,
     request: CoarseFrontendRequest,
 ) -> PreparedCoarseInput:
+    if request.grn_feature_method != "legacy" and method not in {
+        "complete_combined_coarse_maturity_cci_grn",
+        "maturity_cci_grn_two_stage",
+    }:
+        raise ValueError(
+            f"GRN structural method {request.grn_feature_method} is not integrated into coarse frontend {method}; "
+            "choose legacy or a supported GRN+maturity frontend."
+        )
     try:
         frontend = COARSE_FRONTEND_REGISTRY[method]
     except KeyError as exc:

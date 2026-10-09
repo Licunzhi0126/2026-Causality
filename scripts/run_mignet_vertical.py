@@ -55,6 +55,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-state-dim", type=int, default=64)
     parser.add_argument("--grn-projection-seed", type=int, default=20260713)
     parser.add_argument("--grn-gate-mode", choices=["double_end"], default="double_end")
+    parser.add_argument("--grn-feature-method", choices=["legacy", "legacy_nmf", "legacy_lap_hks"], default="legacy")
+    parser.add_argument("--grn-residual-lambda", type=float, default=0.15)
     parser.add_argument("--regsim-knn-k", type=int, default=50)
     parser.add_argument("--regsim-weight", type=float, default=0.2)
     parser.add_argument("--wyt-network-svd-dim", type=int, default=32)
@@ -239,6 +241,8 @@ def main() -> None:
         grn_state_dim=args.grn_state_dim,
         grn_projection_seed=args.grn_projection_seed,
         grn_gate_mode=args.grn_gate_mode,
+        grn_feature_method=args.grn_feature_method,
+        grn_residual_lambda=args.grn_residual_lambda,
         regsim_knn_k=args.regsim_knn_k,
         regsim_weight=args.regsim_weight,
         wyt_network_svd_dim=args.wyt_network_svd_dim,

@@ -261,7 +261,7 @@ class LightCCIGRNNetworkBuilder(LightCCINetworkBuilder):
                     "grn_state_metadata": state.metadata,
                 }
             )
-        if self.retain_joint_inputs:
+        if self.retain_joint_inputs or cfg.grn_feature_method != "legacy":
             graph.metadata.update(
                 {
                     "grn_genes": list(prepared.genes),

@@ -43,6 +43,8 @@ class CoarseFrontendRequest:
     grn_projection_seed: int = 20260713
     grn_knn_k: int = 50
     grn_graph_weight: float = 0.2
+    grn_feature_method: str = "legacy"
+    grn_residual_lambda: float = 0.15
     maturity_t: Path | None = None
     maturity_tp: Path | None = None
     maturity_id_column: str = "spot_id"
@@ -85,6 +87,8 @@ class CoarseFrontendRequest:
             raise ValueError("grn_knn_k must be positive.")
         if not 0.0 <= self.grn_graph_weight <= 1.0:
             raise ValueError("grn_graph_weight must be between 0 and 1.")
+        from mignet_ce.grn_representation import GRNFeatureConfig
+        GRNFeatureConfig(self.grn_feature_method, self.grn_residual_lambda).validate()
         if (self.maturity_t is None) != (self.maturity_tp is None):
             raise ValueError(
                 "maturity_t and maturity_tp must either both be provided or both be omitted."

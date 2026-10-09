@@ -91,6 +91,8 @@ def _pairwise_zscore_torch(
 def build_macro_pij_builder(
     stage_t: CompleteCombinedStage,
     stage_tp: CompleteCombinedStage,
+    *,
+    grn_enhancer=None,
 ):
     """Build the differentiable macro PIJ callback used by the trainer."""
     cache: dict[tuple[str, str], torch.Tensor] = {}
@@ -146,6 +148,8 @@ def build_macro_pij_builder(
         )
         regulator_program = torch.sparse.mm(adjacency, values.T).T
         target_program = torch.sparse.mm(adjacency.transpose(0, 1), values.T).T
+        if grn_enhancer is not None:
+            return grn_enhancer.feature_torch(values, adjacency, projection_reg, projection_tar, label)
         return (
             (values * regulator_program) @ projection_reg
             + (values * target_program) @ projection_tar
@@ -546,6 +550,7 @@ def prepare_complete_pair(
     nmf_max_iter: int,
     seed: int,
     mid_dim: int,
+    grn_enhancer=None,
 ) -> CompleteCombinedPair:
     from mignet_ce.representations.wyt_network80 import joint_fixed_pca
 
@@ -556,7 +561,12 @@ def prepare_complete_pair(
         max_iter=nmf_max_iter,
         seed=seed,
     )
-    g_t, g_tp = pairwise_zscore(stage_t.g_raw, stage_tp.g_raw)
+    if grn_enhancer is None:
+        g_t_raw, g_tp_raw = stage_t.g_raw, stage_tp.g_raw
+    else:
+        g_t_raw = grn_enhancer.feature_numpy(stage_t.expression_grn, stage_t, "t")
+        g_tp_raw = grn_enhancer.feature_numpy(stage_tp.expression_grn, stage_tp, "tp")
+    g_t, g_tp = pairwise_zscore(g_t_raw, g_tp_raw)
     _, micro_pij, canonical_ng_metadata = canonical_ng_pij_numpy(
         n_t,
         n_tp,
@@ -640,6 +650,7 @@ def _evaluate_exact_macro(
     nmf_max_iter: int,
     seed: int,
     normalize_macro_cci: bool,
+    grn_enhancer=None,
 ) -> dict[str, object]:
     cci_t = project_macro_cci_raw(stage_t.cci, assignment_t)
     cci_tp = project_macro_cci_raw(stage_tp.cci, assignment_tp)
@@ -648,18 +659,12 @@ def _evaluate_exact_macro(
         cci_tp = row_normalize_sparse(cci_tp)
     expression_t = pool_features(stage_t.expression_grn, assignment_t)
     expression_tp = pool_features(stage_tp.expression_grn, assignment_tp)
-    g_t_raw = project_grn_state(
-        expression_t,
-        stage_t.grn_adjacency,
-        stage_t.projection_reg,
-        stage_t.projection_tar,
-    )
-    g_tp_raw = project_grn_state(
-        expression_tp,
-        stage_tp.grn_adjacency,
-        stage_tp.projection_reg,
-        stage_tp.projection_tar,
-    )
+    if grn_enhancer is None:
+        g_t_raw = project_grn_state(expression_t, stage_t.grn_adjacency, stage_t.projection_reg, stage_t.projection_tar)
+        g_tp_raw = project_grn_state(expression_tp, stage_tp.grn_adjacency, stage_tp.projection_reg, stage_tp.projection_tar)
+    else:
+        g_t_raw = grn_enhancer.feature_numpy(expression_t, stage_t, 't')
+        g_tp_raw = grn_enhancer.feature_numpy(expression_tp, stage_tp, 'tp')
     g_t, g_tp = pairwise_zscore(g_t_raw, g_tp_raw)
     n_t, n_tp, n_metadata = sparse_shared_core_directed_nmf(
         cci_t,
@@ -695,6 +700,7 @@ def strict_complete_combined_evaluation(
     nmf_components: int,
     nmf_max_iter: int,
     seed: int,
+    grn_enhancer=None,
 ) -> dict[str, object]:
     pooled_n_t, pooled_n_tp = pairwise_zscore(
         pool_features(pair.n_t, assignment_t),
@@ -702,20 +708,16 @@ def strict_complete_combined_evaluation(
     )
     pooled_expression_t = pool_features(stage_t.expression_grn, assignment_t)
     pooled_expression_tp = pool_features(stage_tp.expression_grn, assignment_tp)
-    recomputed_g_t, recomputed_g_tp = pairwise_zscore(
-        project_grn_state(
-            pooled_expression_t,
-            stage_t.grn_adjacency,
-            stage_t.projection_reg,
-            stage_t.projection_tar,
-        ),
-        project_grn_state(
-            pooled_expression_tp,
-            stage_tp.grn_adjacency,
-            stage_tp.projection_reg,
-            stage_tp.projection_tar,
-        ),
-    )
+    if grn_enhancer is None:
+        recomputed_g_t, recomputed_g_tp = pairwise_zscore(
+            project_grn_state(pooled_expression_t, stage_t.grn_adjacency, stage_t.projection_reg, stage_t.projection_tar),
+            project_grn_state(pooled_expression_tp, stage_tp.grn_adjacency, stage_tp.projection_reg, stage_tp.projection_tar),
+        )
+    else:
+        recomputed_g_t, recomputed_g_tp = pairwise_zscore(
+            grn_enhancer.feature_numpy(pooled_expression_t, stage_t, 't'),
+            grn_enhancer.feature_numpy(pooled_expression_tp, stage_tp, 'tp'),
+        )
     _, training_pij, training_metadata = canonical_ng_pij_numpy(
         pooled_n_t,
         pooled_n_tp,
@@ -732,6 +734,7 @@ def strict_complete_combined_evaluation(
         nmf_max_iter=nmf_max_iter,
         seed=seed,
         normalize_macro_cci=False,
+        grn_enhancer=grn_enhancer,
     )
     exact_rownorm = _evaluate_exact_macro(
         stage_t,
@@ -742,6 +745,7 @@ def strict_complete_combined_evaluation(
         nmf_max_iter=nmf_max_iter,
         seed=seed,
         normalize_macro_cci=True,
+        grn_enhancer=grn_enhancer,
     )
     micro_ei = float(pair.micro_ei)
     raw_ei = float(exact_raw["EI_macro"])

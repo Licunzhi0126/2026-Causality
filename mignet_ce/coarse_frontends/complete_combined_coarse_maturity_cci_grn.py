@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from functools import partial
 
+from mignet_ce.grn_representation import GRNFeatureConfig, GRNPairEnhancer
+
 from mignet_ce.coarse_frontends._common import (
     CoarseFrontendRequest,
     load_spot_pair,
@@ -48,6 +50,14 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         state_dim=request.grn_state_dim,
         projection_seed=request.grn_projection_seed,
     )
+    grn_enhancer = None
+    if request.grn_feature_method != "legacy":
+        grn_enhancer = GRNPairEnhancer.fit(
+            stage_t, stage_tp, GRNFeatureConfig(
+                method=request.grn_feature_method,
+                residual_lambda=request.grn_residual_lambda,
+            ),
+        )
     pair = prepare_complete_pair(
         stage_t,
         stage_tp,
@@ -55,6 +65,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         nmf_max_iter=request.nmf_max_iter,
         seed=request.seed,
         mid_dim=request.mid_dim,
+        grn_enhancer=grn_enhancer,
     )
     prepared = PreparedCoarseInput(
         method=METHOD,
@@ -68,7 +79,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         micro_features_tp=pair.micro_features_tp,
         micro_pij=pair.micro_pij,
         micro_ei=pair.micro_ei,
-        macro_pij_builder=build_macro_pij_builder(stage_t, stage_tp),
+        macro_pij_builder=build_macro_pij_builder(stage_t, stage_tp, grn_enhancer=grn_enhancer),
         feature_blocks_t={"N": pair.n_t, "X": stage_t.expression_grn},
         feature_blocks_tp={"N": pair.n_tp, "X": stage_tp.expression_grn},
         independent_width_feature_blocks=frozenset({"X"}),
@@ -87,6 +98,8 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             "nmf_components": int(request.nmf_components),
             "nmf_max_iter_used": int(request.nmf_max_iter),
             "feature_seed": int(request.seed),
+            "grn_feature_method": request.grn_feature_method,
+            "grn_feature_metadata": {"method": "legacy"} if grn_enhancer is None else grn_enhancer.metadata,
             "N": pair.n_metadata,
             "Canonical_NG": pair.canonical_ng_metadata,
             "stage_t": stage_t.metadata,
@@ -102,6 +115,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             nmf_components=request.nmf_components,
             nmf_max_iter=request.nmf_max_iter,
             seed=request.seed,
+            grn_enhancer=grn_enhancer,
         ),
     )
     prepared.validate()

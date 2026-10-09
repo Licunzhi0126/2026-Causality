@@ -57,6 +57,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-projection-seed", type=int, default=20260713)
     parser.add_argument("--grn-knn-k", type=int, default=50)
     parser.add_argument("--grn-graph-weight", type=float, default=0.2)
+    parser.add_argument("--grn-feature-method", choices=["legacy", "legacy_nmf", "legacy_lap_hks"], default="legacy")
+    parser.add_argument("--grn-residual-lambda", type=float, default=0.15)
 
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--mid-dim", type=int, default=32)
@@ -177,6 +179,8 @@ def main(argv: list[str] | None = None) -> None:
         grn_projection_seed=args.grn_projection_seed,
         grn_knn_k=args.grn_knn_k,
         grn_graph_weight=args.grn_graph_weight,
+        grn_feature_method=args.grn_feature_method,
+        grn_residual_lambda=args.grn_residual_lambda,
         maturity_t=args.maturity_t,
         maturity_tp=args.maturity_tp,
         maturity_id_column=args.maturity_id_column,

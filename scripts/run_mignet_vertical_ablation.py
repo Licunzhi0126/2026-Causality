@@ -53,6 +53,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-state-dim", type=int, default=64)
     parser.add_argument("--grn-projection-seed", type=int, default=20260713)
     parser.add_argument("--grn-gate-mode", choices=["double_end"], default="double_end")
+    parser.add_argument("--grn-feature-method", choices=["legacy", "legacy_nmf", "legacy_lap_hks"], default="legacy")
+    parser.add_argument("--grn-residual-lambda", type=float, default=0.15)
     parser.add_argument("--kl-block-weight-n", type=float, default=0.5)
     parser.add_argument("--kl-block-weight-g", type=float, default=0.5)
     parser.add_argument("--joint-grn-rank", type=int, default=32)
@@ -200,6 +202,8 @@ def main() -> None:
         grn_state_dim=args.grn_state_dim,
         grn_projection_seed=args.grn_projection_seed,
         grn_gate_mode=args.grn_gate_mode,
+        grn_feature_method=args.grn_feature_method,
+        grn_residual_lambda=args.grn_residual_lambda,
         kl_block_weight_n=args.kl_block_weight_n,
         kl_block_weight_g=args.kl_block_weight_g,
         joint_grn_rank=args.joint_grn_rank,
