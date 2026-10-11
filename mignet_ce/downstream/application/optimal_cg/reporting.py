@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 
 def collect_summary(training_root: Path) -> dict[str, object]:
     summary = json.loads((training_root / "summary.json").read_text(encoding="utf-8"))
@@ -21,5 +23,16 @@ def collect_summary(training_root: Path) -> dict[str, object]:
 
 def write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+
+
+def _json_default(value: object) -> object:
+    """Convert the explicit non-JSON values emitted by Optimal CG reports."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Cannot serialize {type(value).__name__}")
 

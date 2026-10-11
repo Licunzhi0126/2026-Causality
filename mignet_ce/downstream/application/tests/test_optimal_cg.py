@@ -7,7 +7,7 @@ import subprocess
 import pandas as pd
 import pytest
 
-from mignet_ce.downstream.application.optimal_cg.reporting import collect_summary
+from mignet_ce.downstream.application.optimal_cg.reporting import collect_summary, write_json
 from mignet_ce.downstream.application.optimal_cg.maturity_bridge import resolve_maturity
 from mignet_ce.downstream.application.optimal_cg.trainer_bridge import REQUIRED_OUTPUTS, run_training
 from mignet_ce.downstream.application.optimal_cg.validation import validate_maturity
@@ -32,7 +32,7 @@ def test_runner_bridge_uses_existing_two_stage_cli(tmp_path: Path) -> None:
         for name in REQUIRED_OUTPUTS:
             (out_dir / name).write_text("{}" if name == "summary.json" else "", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
-    record = run_training(python="python", inputs=inputs, maturity_t=maturity_t, maturity_tp=maturity_tp, out_dir=out_dir, runner=runner)
+    record = run_training(python="python", inputs=inputs, maturity_t=maturity_t, maturity_tp=maturity_tp, out_dir=out_dir, runner=runner, run_local_analysis=False)
     assert "maturity_cci_grn_two_stage" in record["command"]
     assert record["command"][record["command"].index("--k") + 1] == "40"
 
@@ -42,6 +42,13 @@ def test_runner_summary_consistency(tmp_path: Path) -> None:
     payload = {"EI_micro_fixed": 1.0, "EI_macro_best_checkpoint": 1.5, "delta_EI_best_checkpoint": 0.5, "I_available": 2.0, "I_retained": 1.0, "closure_quality": 0.5, "Keff_source": 3.0, "Keff_target": 4.0, "best_epoch": 12}
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert collect_summary(tmp_path)["best_epoch"] == 12
+
+
+def test_write_json_serializes_nested_path(tmp_path: Path) -> None:
+    output = tmp_path / "provenance.json"
+    training_root = tmp_path / "local" / "training"
+    write_json(output, {"trainer": {"local_pair_analysis": {"rows": [{"training_root": training_root}]}}})
+    assert json.loads(output.read_text(encoding="utf-8"))["trainer"]["local_pair_analysis"]["rows"][0]["training_root"] == str(training_root)
 
 
 def test_maturity_proxy_uses_numeric_stage_labels(tmp_path: Path) -> None:
