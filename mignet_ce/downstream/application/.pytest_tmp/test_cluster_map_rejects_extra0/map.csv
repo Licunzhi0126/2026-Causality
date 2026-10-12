@@ -1,0 +1,4 @@
+barcode,cluster,cell_type,x,y
+spot-a,1,A,1,2
+spot-b,2,B,3,4
+extra,3,C,0,0

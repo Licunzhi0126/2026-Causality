@@ -1,0 +1,5 @@
+source_cluster,source_cell_type,target_cluster,target_cell_type,probability,rank
+1,Alpha,1,Alpha,0.8,1
+1,Alpha,2,Beta,0.2,2
+2,Beta,2,Beta,0.9,1
+2,Beta,1,Alpha,0.1,2
