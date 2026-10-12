@@ -66,6 +66,10 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         seed=request.seed,
         mid_dim=request.mid_dim,
         grn_enhancer=grn_enhancer,
+        cci_feature_method=request.cci_feature_method,
+        cci_laplacian_components=request.cci_laplacian_components,
+        cci_laplacian_normalized=request.cci_laplacian_normalized,
+        alpha_cci=request.alpha_cci,
     )
     prepared = PreparedCoarseInput(
         method=METHOD,
@@ -79,7 +83,9 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
         micro_features_tp=pair.micro_features_tp,
         micro_pij=pair.micro_pij,
         micro_ei=pair.micro_ei,
-        macro_pij_builder=build_macro_pij_builder(stage_t, stage_tp, grn_enhancer=grn_enhancer),
+        macro_pij_builder=build_macro_pij_builder(
+            stage_t, stage_tp, grn_enhancer=grn_enhancer, alpha_cci=request.alpha_cci,
+        ),
         feature_blocks_t={"N": pair.n_t, "X": stage_t.expression_grn},
         feature_blocks_tp={"N": pair.n_tp, "X": stage_tp.expression_grn},
         independent_width_feature_blocks=frozenset({"X"}),
@@ -99,6 +105,10 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             "nmf_max_iter_used": int(request.nmf_max_iter),
             "feature_seed": int(request.seed),
             "grn_feature_method": request.grn_feature_method,
+            "cci_feature_method": request.cci_feature_method,
+            "cci_laplacian_components": int(request.cci_laplacian_components),
+            "cci_laplacian_normalized": bool(request.cci_laplacian_normalized),
+            "alpha_cci": float(request.alpha_cci),
             "grn_feature_metadata": {"method": "legacy"} if grn_enhancer is None else grn_enhancer.metadata,
             "N": pair.n_metadata,
             "Canonical_NG": pair.canonical_ng_metadata,
@@ -116,6 +126,10 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             nmf_max_iter=request.nmf_max_iter,
             seed=request.seed,
             grn_enhancer=grn_enhancer,
+            cci_feature_method=request.cci_feature_method,
+            cci_laplacian_components=request.cci_laplacian_components,
+            cci_laplacian_normalized=request.cci_laplacian_normalized,
+            alpha_cci=request.alpha_cci,
         ),
     )
     prepared.validate()

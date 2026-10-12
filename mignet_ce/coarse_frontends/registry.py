@@ -49,6 +49,13 @@ def prepare_coarse_input(
             f"GRN structural method {request.grn_feature_method} is not integrated into coarse frontend {method}; "
             "choose legacy or a supported GRN+maturity frontend."
         )
+    if method not in {"complete_combined_coarse_maturity_cci_grn", "maturity_cci_grn_two_stage"} and (
+        request.cci_feature_method != "shared_nmf" or abs(request.alpha_cci - 0.01) > 1e-12
+    ):
+        raise ValueError(
+            "Custom CCI feature and alpha_cci are only integrated into the maturity+GRN "
+            "single-stage and two-stage coarse frontends."
+        )
     try:
         frontend = COARSE_FRONTEND_REGISTRY[method]
     except KeyError as exc:

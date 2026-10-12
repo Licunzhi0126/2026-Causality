@@ -45,6 +45,10 @@ class CoarseFrontendRequest:
     grn_graph_weight: float = 0.2
     grn_feature_method: str = "legacy"
     grn_residual_lambda: float = 0.15
+    cci_feature_method: str = "shared_nmf"
+    cci_laplacian_components: int = 5
+    cci_laplacian_normalized: bool = True
+    alpha_cci: float = 0.01
     maturity_t: Path | None = None
     maturity_tp: Path | None = None
     maturity_id_column: str = "spot_id"
@@ -89,6 +93,12 @@ class CoarseFrontendRequest:
             raise ValueError("grn_graph_weight must be between 0 and 1.")
         from mignet_ce.grn_representation import GRNFeatureConfig
         GRNFeatureConfig(self.grn_feature_method, self.grn_residual_lambda).validate()
+        if self.cci_feature_method not in {"shared_nmf", "laplacian_hks"}:
+            raise ValueError("cci_feature_method must be shared_nmf or laplacian_hks.")
+        if self.cci_laplacian_components <= 0:
+            raise ValueError("cci_laplacian_components must be positive.")
+        if not 0.0 <= self.alpha_cci <= 1.0:
+            raise ValueError("alpha_cci must lie in [0, 1].")
         if (self.maturity_t is None) != (self.maturity_tp is None):
             raise ValueError(
                 "maturity_t and maturity_tp must either both be provided or both be omitted."

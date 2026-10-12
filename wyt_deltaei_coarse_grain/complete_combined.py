@@ -20,6 +20,7 @@ from scipy.special import logsumexp
 
 from mignet_ce.io.loaders import read_grn_edges
 from mignet_ce.metrics import effective_information
+from mignet_ce.pij.compare._shared.features import laplacian_hks_features
 from mignet_ce.networks.light_cci_grn import (
     deterministic_projection_matrix,
     prepare_grn_inputs,
@@ -93,6 +94,7 @@ def build_macro_pij_builder(
     stage_tp: CompleteCombinedStage,
     *,
     grn_enhancer=None,
+    alpha_cci: float = CANONICAL_ALPHA_CCI,
 ):
     """Build the differentiable macro PIJ callback used by the trainer."""
     cache: dict[tuple[str, str], torch.Tensor] = {}
@@ -171,7 +173,7 @@ def build_macro_pij_builder(
             g_tp,
             beta_n=CANONICAL_FEATURE_BETA_N,
             beta_g=CANONICAL_FEATURE_BETA_G,
-            alpha_cci=CANONICAL_ALPHA_CCI,
+            alpha_cci=alpha_cci,
             temperature=CANONICAL_TEMPERATURE,
         )
 
@@ -542,6 +544,43 @@ def native_v7_pij_numpy(
     }
 
 
+def build_cci_pair_features(
+    stage_t: CompleteCombinedStage,
+    stage_tp: CompleteCombinedStage,
+    *,
+    cci_feature_method: str,
+    nmf_components: int,
+    nmf_max_iter: int,
+    seed: int,
+    cci_laplacian_components: int = 5,
+    cci_laplacian_normalized: bool = True,
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Create matched-time CCI features via the selected, explicit method."""
+    if cci_feature_method == "shared_nmf":
+        return sparse_shared_core_directed_nmf(
+            stage_t.cci, stage_tp.cci, components=nmf_components,
+            max_iter=nmf_max_iter, seed=seed,
+        )
+    if cci_feature_method == "laplacian_hks":
+        n_t = laplacian_hks_features(
+            stage_t.cci, n_components=cci_laplacian_components,
+            normalized=cci_laplacian_normalized,
+        )
+        n_tp = laplacian_hks_features(
+            stage_tp.cci, n_components=cci_laplacian_components,
+            normalized=cci_laplacian_normalized,
+        )
+        n_t, n_tp = pairwise_zscore(n_t, n_tp)
+        return n_t, n_tp, {
+            "definition": "cci_laplacian_hks_pairwise_zscore",
+            "method": cci_feature_method,
+            "components": int(cci_laplacian_components),
+            "laplacian_normalized": bool(cci_laplacian_normalized),
+            "shape_t": list(n_t.shape), "shape_tp": list(n_tp.shape),
+        }
+    raise ValueError(f"Unsupported CCI feature method: {cci_feature_method}")
+
+
 def prepare_complete_pair(
     stage_t: CompleteCombinedStage,
     stage_tp: CompleteCombinedStage,
@@ -551,15 +590,18 @@ def prepare_complete_pair(
     seed: int,
     mid_dim: int,
     grn_enhancer=None,
+    cci_feature_method: str = "shared_nmf",
+    cci_laplacian_components: int = 5,
+    cci_laplacian_normalized: bool = True,
+    alpha_cci: float = CANONICAL_ALPHA_CCI,
 ) -> CompleteCombinedPair:
     from mignet_ce.representations.wyt_network80 import joint_fixed_pca
 
-    n_t, n_tp, n_metadata = sparse_shared_core_directed_nmf(
-        stage_t.cci,
-        stage_tp.cci,
-        components=nmf_components,
-        max_iter=nmf_max_iter,
-        seed=seed,
+    n_t, n_tp, n_metadata = build_cci_pair_features(
+        stage_t, stage_tp, cci_feature_method=cci_feature_method,
+        nmf_components=nmf_components, nmf_max_iter=nmf_max_iter, seed=seed,
+        cci_laplacian_components=cci_laplacian_components,
+        cci_laplacian_normalized=cci_laplacian_normalized,
     )
     if grn_enhancer is None:
         g_t_raw, g_tp_raw = stage_t.g_raw, stage_tp.g_raw
@@ -572,6 +614,7 @@ def prepare_complete_pair(
         n_tp,
         g_t,
         g_tp,
+        alpha_cci=alpha_cci,
     )
     encoder_t, encoder_tp = pairwise_zscore(
         np.hstack([n_t, g_t]),
@@ -651,6 +694,10 @@ def _evaluate_exact_macro(
     seed: int,
     normalize_macro_cci: bool,
     grn_enhancer=None,
+    cci_feature_method: str = "shared_nmf",
+    cci_laplacian_components: int = 5,
+    cci_laplacian_normalized: bool = True,
+    alpha_cci: float = CANONICAL_ALPHA_CCI,
 ) -> dict[str, object]:
     cci_t = project_macro_cci_raw(stage_t.cci, assignment_t)
     cci_tp = project_macro_cci_raw(stage_tp.cci, assignment_tp)
@@ -666,14 +713,18 @@ def _evaluate_exact_macro(
         g_t_raw = grn_enhancer.feature_numpy(expression_t, stage_t, 't')
         g_tp_raw = grn_enhancer.feature_numpy(expression_tp, stage_tp, 'tp')
     g_t, g_tp = pairwise_zscore(g_t_raw, g_tp_raw)
-    n_t, n_tp, n_metadata = sparse_shared_core_directed_nmf(
-        cci_t,
-        cci_tp,
-        components=nmf_components,
-        max_iter=nmf_max_iter,
-        seed=seed,
+    # Re-extract the *selected* CCI representation from projected macro CCI.
+    from dataclasses import replace
+    n_t, n_tp, n_metadata = build_cci_pair_features(
+        replace(stage_t, cci=cci_t), replace(stage_tp, cci=cci_tp),
+        cci_feature_method=cci_feature_method,
+        nmf_components=nmf_components, nmf_max_iter=nmf_max_iter, seed=seed,
+        cci_laplacian_components=cci_laplacian_components,
+        cci_laplacian_normalized=cci_laplacian_normalized,
     )
-    _, pij, canonical_ng_metadata = canonical_ng_pij_numpy(n_t, n_tp, g_t, g_tp)
+    _, pij, canonical_ng_metadata = canonical_ng_pij_numpy(
+        n_t, n_tp, g_t, g_tp, alpha_cci=alpha_cci,
+    )
     return {
         "EI_macro": float(effective_information(pij.copy())),
         "macro_cci_normalization": (
@@ -701,6 +752,10 @@ def strict_complete_combined_evaluation(
     nmf_max_iter: int,
     seed: int,
     grn_enhancer=None,
+    cci_feature_method: str = "shared_nmf",
+    cci_laplacian_components: int = 5,
+    cci_laplacian_normalized: bool = True,
+    alpha_cci: float = CANONICAL_ALPHA_CCI,
 ) -> dict[str, object]:
     pooled_n_t, pooled_n_tp = pairwise_zscore(
         pool_features(pair.n_t, assignment_t),
@@ -723,6 +778,7 @@ def strict_complete_combined_evaluation(
         pooled_n_tp,
         recomputed_g_t,
         recomputed_g_tp,
+        alpha_cci=alpha_cci,
     )
     training_ei = float(effective_information(training_pij.copy()))
     exact_raw = _evaluate_exact_macro(
@@ -735,6 +791,10 @@ def strict_complete_combined_evaluation(
         seed=seed,
         normalize_macro_cci=False,
         grn_enhancer=grn_enhancer,
+        cci_feature_method=cci_feature_method,
+        cci_laplacian_components=cci_laplacian_components,
+        cci_laplacian_normalized=cci_laplacian_normalized,
+        alpha_cci=alpha_cci,
     )
     exact_rownorm = _evaluate_exact_macro(
         stage_t,
@@ -746,12 +806,20 @@ def strict_complete_combined_evaluation(
         seed=seed,
         normalize_macro_cci=True,
         grn_enhancer=grn_enhancer,
+        cci_feature_method=cci_feature_method,
+        cci_laplacian_components=cci_laplacian_components,
+        cci_laplacian_normalized=cci_laplacian_normalized,
+        alpha_cci=alpha_cci,
     )
     micro_ei = float(pair.micro_ei)
     raw_ei = float(exact_raw["EI_macro"])
     rownorm_ei = float(exact_rownorm["EI_macro"])
     return {
         "evaluation_protocol": "complete_combined_coarse_canonical_ng",
+        "cci_feature_method": cci_feature_method,
+        "cci_laplacian_components": int(cci_laplacian_components),
+        "cci_laplacian_normalized": bool(cci_laplacian_normalized),
+        "alpha_cci": float(alpha_cci),
         "EI_micro_canonical_ng": micro_ei,
         "EI_macro_training_interface_pool_N_recompute_G": training_ei,
         "deltaEI_training_interface_pool_N_recompute_G": training_ei - micro_ei,

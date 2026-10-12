@@ -59,6 +59,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--grn-graph-weight", type=float, default=0.2)
     parser.add_argument("--grn-feature-method", choices=["legacy", "legacy_nmf", "legacy_lap_hks"], default="legacy")
     parser.add_argument("--grn-residual-lambda", type=float, default=0.15)
+    parser.add_argument("--cci-feature-method", choices=["shared_nmf", "laplacian_hks"], default="shared_nmf")
+    parser.add_argument("--cci-laplacian-components", type=int, default=5)
+    parser.add_argument("--alpha-cci", type=float, default=0.01)
 
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--mid-dim", type=int, default=32)
@@ -181,6 +184,9 @@ def main(argv: list[str] | None = None) -> None:
         grn_graph_weight=args.grn_graph_weight,
         grn_feature_method=args.grn_feature_method,
         grn_residual_lambda=args.grn_residual_lambda,
+        cci_feature_method=args.cci_feature_method,
+        cci_laplacian_components=args.cci_laplacian_components,
+        alpha_cci=args.alpha_cci,
         maturity_t=args.maturity_t,
         maturity_tp=args.maturity_tp,
         maturity_id_column=args.maturity_id_column,
