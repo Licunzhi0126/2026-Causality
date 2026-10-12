@@ -189,7 +189,18 @@ def inspect_optimal_run(run_dir: Path) -> dict:
 
 def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
     root = Path(root)
+    if not root.exists():
+        return pd.DataFrame(), [f"Optimal runs directory does not exist: {root}"]
+    if not root.is_dir():
+        return pd.DataFrame(), [f"Optimal runs root is not a directory: {root}"]
     runs = [root] if (root / "summary.json").is_file() else sorted({p.parent for p in root.rglob("summary.json")})
+    if not runs:
+        return pd.DataFrame(), [
+            f"Found 0 summary.json under {root}. GRN/CCI input files are not trained optimal runs. "
+            "Run both coarse-graining frameworks first and point --optimal-runs-root "
+            "to their completed output directory; alternatively use --stage natural "
+            "to generate only natural EI/CQ tables."
+        ]
     good, errors = [], []
     for run in runs:
         try:

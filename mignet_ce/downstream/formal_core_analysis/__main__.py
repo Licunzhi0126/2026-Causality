@@ -21,18 +21,31 @@ def main() -> None:
     p.add_argument("--alpha", type=float, default=.20)
     p.add_argument("--grn-method", default="legacy_nmf")
     p.add_argument("--optimal-runs-root", type=Path, help="Completed, traceable strict reconstruction runs")
+    p.add_argument("--stage", choices=("all", "natural"), default="all",
+                   help="all: natural + 18 strict optimal runs (default); natural: EI/CQ existence tables only")
     p.add_argument("--allow-incomplete", action="store_true", help="Emit explicitly named exploratory partial tables if K10 or 3x3 optimal matrix missing; never final tables")
     p.add_argument("--figure-pair", default="12.5->13.5", choices=PAIRS)
     p.add_argument("--skip-figures", action="store_true")
     p.add_argument("--preflight", action="store_true", help="Read-only audit of the data and strict optimal runs; compute no new values")
     a = p.parse_args()
-    if not a.preflight and a.optimal_runs_root is None and not a.allow_incomplete:
-        raise ValueError("Formal core complete publication tables require --optimal-runs-root with all 18 strict results")
+    if a.stage == "all" and not a.preflight and a.optimal_runs_root is None and not a.allow_incomplete:
+        raise ValueError("Full formal core requires --optimal-runs-root containing 18 completed strict runs. "
+                         "Use --stage natural to generate EI/CQ existence without optimal runs.")
+    if a.stage == "all" and not a.preflight and a.optimal_runs_root and not a.allow_incomplete:
+        root = a.optimal_runs_root
+        if not root.is_dir():
+            raise FileNotFoundError(f"--optimal-runs-root is missing or not a directory: {root}")
+        summary_count = 1 if (root / "summary.json").is_file() else sum(1 for _ in root.rglob("summary.json"))
+        if not summary_count:
+            raise RuntimeError(f"Found 0 summary.json under --optimal-runs-root={root}. "
+                               "The updated GRN/CCI inputs do not themselves contain trained "
+                               "Single-stage/Two-stage models. Run both frameworks first, then "
+                               "supply their results, or use --stage natural for natural EI/CQ only.")
     if abs(a.alpha - .20)>1e-9 or a.grn_method != "legacy_nmf":
         raise ValueError("Formal core is frozen to GRN-NMF / α=0.20; other alpha/method requires a new matched formal protocol")
     if a.preflight:
         report = inspect_inputs(a.sensitivity_root, a.data_root, a.optimal_runs_root,
-                                a.alpha, a.grn_method, a.figure_pair, a.skip_figures)
+                                a.alpha, a.grn_method, a.figure_pair, a.skip_figures, stage=a.stage)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         ok = report["ready_for_incomplete_preview"] if a.allow_incomplete else report["ready_for_publication_candidate"]
         if not ok:
@@ -41,7 +54,8 @@ def main() -> None:
     out = a.output_root
     out.mkdir(parents=True, exist_ok=True)
     ei, cq, m = selected_candidate_sensitivity(a.sensitivity_root, a.alpha, a.grn_method)
-    status = {"status": "processing", "scientific_source": str(a.sensitivity_root.resolve()),
+    status = {"status": "processing", "stage": a.stage,
+              "scientific_source": str(a.sensitivity_root.resolve()),
               "alpha": a.alpha, "grn_feature": a.grn_method,
               "strict_protocol": "raw projected macro CCI + re-extracted HKS N + recomputed GRN G",
               "new_k10_input_present": "seurat_k10" in set(ei.layer),
@@ -74,7 +88,7 @@ def main() -> None:
         except (FileNotFoundError, ValueError) as exc:
             if not a.allow_incomplete: raise
             status["figure1_error"] = str(exc)
-    if a.optimal_runs_root:
+    if a.stage == "all" and a.optimal_runs_root:
         runs, rejected = collect_optimal_runs(a.optimal_runs_root)
         (out/"audit").mkdir(parents=True, exist_ok=True)
         (out/"audit"/"optimal_rejected.json").write_text(json.dumps(rejected,indent=2,ensure_ascii=False),encoding="utf-8")
@@ -112,7 +126,11 @@ def main() -> None:
                     except (FileNotFoundError, ValueError) as exc:
                         if not a.allow_incomplete: raise
                         status["figure2_error"] = str(exc)
-    status["status"] = "complete" if full and "optimal_missing_conditions" not in status and status.get("optimal_strict_runs_verified",0)==18 else "incomplete_exploratory"
+    if a.stage == "natural":
+        status["optimal"] = "not_requested"
+        status["status"] = "natural_complete" if full else "incomplete_exploratory"
+    else:
+        status["status"] = "complete" if full and "optimal_missing_conditions" not in status and status.get("optimal_strict_runs_verified",0)==18 else "incomplete_exploratory"
     (out/"output_manifest.json").write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(status,ensure_ascii=False,indent=2))
 
