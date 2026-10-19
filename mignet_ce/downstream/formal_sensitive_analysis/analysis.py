@@ -16,6 +16,7 @@ import pandas as pd
 import scipy.sparse as sp
 
 from mignet_ce.io.loaders import read_expression_h5ad, read_grn_edges
+from mignet_ce.io.organ_paths import resolve_organ_paths
 from mignet_ce.networks.light_cci_grn import (
     prepare_grn_inputs, build_projected_grn_state, deterministic_projection_matrix,
 )
@@ -43,7 +44,7 @@ class SensitiveConfig:
     pairs: tuple[tuple[str, str], ...] = DEFAULT_PAIRS
     layers: tuple[str, ...] = ("spot", "seurat_k150", "seurat_k40")
     alphas: tuple[float, ...] = DEFAULT_ALPHAS
-    grn_methods: tuple[str, ...] = ("legacy_nmf", "legacy_lap_hks")
+    grn_methods: tuple[str, ...] = ("legacy_nmf",)
     transitions: tuple[str, ...] = ("KL+OT",)
     organ: str = "heart"
     grn_residual_lambda: float = 0.15
@@ -67,24 +68,18 @@ class SensitiveConfig:
             raise ValueError("alpha values must be distinct within [0,1]")
         if not self.pairs or not all(len(p) == 2 and p[0] != p[1] for p in self.pairs):
             raise ValueError("Invalid developmental time pairs")
-        if not set(self.grn_methods) <= {"legacy_nmf", "legacy_lap_hks"}:
+        if tuple(self.grn_methods) != ("legacy_nmf",):
             raise ValueError("Unsupported GRN feature method")
-        if not set(self.transitions) <= {"KL", "KL+OT"}:
+        if tuple(self.transitions) != ("KL+OT",):
             raise ValueError("Unsupported transition type")
         if self.beta <= 0 or self.tau <= 0:
             raise ValueError("beta and tau must be positive")
 
 
-def _locations(config: SensitiveConfig, layer: str, stage: str) -> dict[str, Path]:
-    stem = LAYER_STEMS[layer]
-    base = config.data_root
-    return {
-        "h5ad": base / layer / config.organ / f"{stem}_{config.organ}_{stage}.h5ad",
-        "grn": (config.grn_root or (base / "grn")) / layer / f"{stem}_{config.organ}_{stage}" / "grn_edges.csv",
-        "cci": (config.cci_root or (base / "cci_clean")) / layer / f"{stem}_{config.organ}_{stage}_CCI_total.npz",
-        "map": base / layer / config.organ / f"{stem}_{config.organ}_{stage}_spot_domain_map.csv",
-        "cci_index": (config.cci_index_root / layer / f"{stem}_{config.organ}_{stage}_index.tsv") if config.cci_index_root else None,
-    }
+def _locations(config: SensitiveConfig, layer: str, stage: str) -> dict[str, Path | None]:
+    return resolve_organ_paths(config.data_root, layer, config.organ, stage,
+                               cci_root=config.cci_root, grn_root=config.grn_root,
+                               cci_index_root=config.cci_index_root)
 
 
 def _sha256(path: Path) -> str:
@@ -165,6 +160,19 @@ def _inputs(cfg: SensitiveConfig):
                 if np.any(s.sum(axis=0) <= 0):
                     raise ValueError(f"Empty predefined macro state: {mapping_path}")
                 mappings[(layer, t)] = s
+    # Seurat K150 and K40 are independently clustered and are not generally nested.
+    # Their spot co-membership gives a defensible *soft overlap* mapping, rather
+    # than a fictitious one-to-one hierarchy. The source-side measure for CQ is
+    # the real K150 transition PIJ; no optimization or best-of-K selection.
+    if {"seurat_k150", "seurat_k40"} <= set(cfg.layers):
+        for t in times:
+            s150 = mappings[("seurat_k150", t)]
+            s40 = mappings[("seurat_k40", t)]
+            overlap = s150.T @ s40
+            denom = overlap.sum(axis=1, keepdims=True)
+            if np.any(denom <= 0):
+                raise ValueError(f"Cannot construct K150->K40 overlap mapping: {t}")
+            mappings[("k150_to_k40", t)] = overlap / denom
     return states, lap, mappings, paths
 
 
@@ -229,6 +237,25 @@ def run(config: SensitiveConfig) -> dict:
                                                  "signal_threshold_bits": float(budget["signal_threshold_bits"]),
                                                  "closure_JS_direct_bits": direct_js, "information_identity_error": float(budget["information_identity_error"]),
                                                  "GRN_cost_share_spot": shares["spot"], "GRN_cost_share_macro": shares[layer]})
+                    if {"seurat_k150", "seurat_k40"} <= set(config.layers):
+                        src, dst = maps[("k150_to_k40", t)], maps[("k150_to_k40", tp)]
+                        budget = information_closure_budget(kernels["seurat_k150"], src, dst)
+                        direct_js = float(np.mean(js_rows(budget["observed"], src @ kernels["seurat_k40"])))
+                        closure_rows.append({"grn_feature": method, "time_pair": f"{t}->{tp}", "alpha": alpha,
+                                             "transition": transition, "hierarchy": "seurat_k150->seurat_k40",
+                                             "mapping_method": "spot_overlap_soft_contingency",
+                                             "EI_spot_bits": eis["spot"] if "spot" in eis else np.nan,
+                                             "EI_macro_direct_bits": eis["seurat_k40"],
+                                             "delta_EI_direct_bits": eis["seurat_k40"]-eis["seurat_k150"],
+                                             "I_available_bits": float(budget["I_available_bits"]),
+                                             "I_retained_bits": float(budget["I_macro_retained_bits"]),
+                                             "CQ": float(budget["closure_quality"]),
+                                             "signal_status": str(budget["signal_status"]),
+                                             "signal_threshold_bits": float(budget["signal_threshold_bits"]),
+                                             "closure_JS_direct_bits": direct_js,
+                                             "information_identity_error": float(budget["information_identity_error"]),
+                                             "GRN_cost_share_spot": shares["seurat_k150"],
+                                             "GRN_cost_share_macro": shares["seurat_k40"]})
                     _atomic_csv(pd.DataFrame(ei_rows), out / "alpha_layer_ei.csv")
                     if closure_rows:
                         _atomic_csv(pd.DataFrame(closure_rows), out / "alpha_natural_cq.csv")
@@ -242,7 +269,7 @@ def run(config: SensitiveConfig) -> dict:
         "projection_seed": config.projection_seed, "projection_dim": config.projection_dim, "grn_topk_targets": config.grn_topk,
         "cci_order_provenance": "index_TSV_matches_H5AD_order_origin_not_independently_verified" if config.cci_index_root is not None else config.cci_index_provenance, "cci_order_assumption_acknowledged": config.allow_inferred_cci_order,
         "ei_rows": len(ei_rows), "cq_rows": len(closure_rows), "elapsed_seconds": time.monotonic() - start, "input_sources": sources,
-        "k10_available": "seurat_k10" in config.layers,
+        "k10_available": "seurat_k10" in config.layers, "organ": config.organ,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest

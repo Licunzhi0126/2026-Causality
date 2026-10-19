@@ -1,15 +1,16 @@
-# Formal sensitivity (new standalone downstream workflow)
+# Formal sensitivity (NMF + KL–OT)
 
-Execution: `python -m mignet_ce.downstream.formal_sensitive_analysis --data-root DATA --output-root OUTPUT --allow-inferred-cci-order`
+Input H5AD and mapping files: `DATA/<scale>/<organ>/...`; CCI and index: `DATA/cci/<scale>/...`; GRN: `DATA/grn/<scale>/<stem>_<organ>_<stage>/grn_edges.csv`. Defaults use `--organ heart`, `--grn-methods legacy_nmf`, `--transitions KL+OT`, and the original 12 alpha values. The internal key `legacy_nmf` denotes the selected NMF implementation. Figures and legends are labeled **NMF + KL–OT**.
 
-Input folder tree: `DATA/{spot,seurat_k150,seurat_k40}/heart/*.h5ad`, matching GRN in `DATA/grn/{layer}/{stem}_heart_{stage}/grn_edges.csv`, and CCI in `DATA/cci_clean/{layer}/{stem}_heart_{stage}_CCI_total.npz`.
+Examples:
 
-Optional K10 input: pass `--layers spot seurat_k150 seurat_k40 seurat_k10` **only when authentic K10 H5AD/CCI/GRN/domain maps are present**. No K10 data included in current sandbox.
+```bash
+python -m mignet_ce.downstream.formal_sensitive_analysis \
+  --data-root DATA --output-root OUTPUT --organ heart
+python -m mignet_ce.downstream.formal_sensitive_analysis \
+  --output-root OUTPUT --plots-only
+```
 
-Default: GRN NMF & Laplacian-HKS dual-end gating enhanced states, CCI Laplacian-HKS, KL+OT, 12 α, 3 time pairs, 3 scales; this is a model-development experiment, not independent proof of emergence. Scientific functions reuse `mignet_ce` core but do NOT import legacy `sensitive_analysis` or `paper_assets`.
+Authentic CCI index TSV files are required by default from `DATA/cci`; no blind row-order assumption. Changing organ changes the biological input. Cross-organ natural EI/CQ Formal Core runs calculate only alpha 0.20 with `--skip-plots`; sensitivity sweeps are not repeated for all organs.
 
-**CCI index caveat**: supplied NPZ does not encode authenticated unit order. Default is fail-closed; `--allow-inferred-cci-order` explicitly acknowledges assuming the sparse adjacency matches H5AD obs order. Shape checks and past numerical agreement do not prove original row order.
-
-Raw `alpha_layer_ei.csv` and `alpha_natural_cq.csv` contain every condition; `alpha_method_summary.csv` aggregates and plots. `CQ` is induced information-retention CQ, not direct prediction closure (separate `closure_JS_direct_bits`). Non-informative CQ is retained in raw files and excluded from qualified median. No automatic parameter selection. `manifest.json` is written only after all requested scientific calculations succeed. Partial atomic CSVs may exist if interrupted.
-
-HKS joint scaling is across the *selected* stages; for exact comparison to full three-stage development, select all three time pairs. `--plots-only` never recomputes EI and requires completion manifest.
+Four plots: min ΔEI, median ΔEI, informative-case CQ median, and direct prediction JS. Updated design includes manuscript-oriented minimal styling, an α=0.20 reference line, and PDF/PNG/SVG exports. `--plots-only` filters stale other GRN methods from old CSVs before plotting.

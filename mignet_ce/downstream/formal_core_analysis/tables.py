@@ -62,10 +62,11 @@ def build_cq_grid(cq: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) ->
     required = {"time_pair", "hierarchy", "CQ", "signal_status", "I_available_bits", "I_retained_bits"}
     if not required <= set(cq):
         raise ValueError(f"CQ CSV missing {sorted(required-set(cq))}")
-    hierarchy = (("Spot -> K150", "spot->seurat_k150"), ("Spot -> K40", "spot->seurat_k40"),
-                 ("Spot -> K10", "spot->seurat_k10"))
-    if not require_k10:
-        hierarchy = hierarchy[:2]
+    hierarchy = (("Spot -> K150", "spot->seurat_k150"),
+                 ("K150 -> K40", "seurat_k150->seurat_k40"),
+                 ("Spot -> K40", "spot->seurat_k40"))
+    if require_k10:
+        hierarchy += (("Spot -> K10", "spot->seurat_k10"),)
     rows, audit = [], []
     for pair in pairs:
         row = {"Time pair": pair}
@@ -74,13 +75,12 @@ def build_cq_grid(cq: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) ->
             if len(hit) != 1:
                 raise ValueError(f"Expected one CQ entry for {name} {pair}; got {len(hit)}")
             record = hit.iloc[0].to_dict()
-            valid = str(record["signal_status"]) == "informative"
             value = float(record["CQ"])
-            if not (np.isfinite(value) and 0 <= value <= 1 + 1e-6):
+            if np.isfinite(value) and not (0 <= value <= 1 + 1e-6):
                 raise ValueError(f"Invalid CQ at {name} {pair}: {value}")
-            row[title] = value if valid else float("nan")
+            row[title] = value if np.isfinite(value) else np.nan
             audit.append({"Time pair": pair, "Hierarchy": title, "raw_CQ": value,
-                          "shown_CQ": value if valid else None, "signal_status": record["signal_status"],
+                          "shown_CQ": value if np.isfinite(value) else None, "signal_status": record["signal_status"],
                           "I_available_bits": record["I_available_bits"], "I_retained_bits": record["I_retained_bits"]})
         rows.append(row)
     return pd.DataFrame(rows), pd.DataFrame(audit)
@@ -115,7 +115,8 @@ def _infer_run_descriptors(run: Path, summary: dict, config: dict) -> dict:
         pair = f"{pair[0]}->{pair[1]}"
     if pair is not None:
         pair = str(pair).replace(":", "->").replace("_to_", "->")
-    return {"method": method, "input_scale": scale, "time_pair": pair}
+    return {"method": method, "input_scale": scale, "time_pair": pair,
+            "organ": merged.get("organ")}
 
 
 def inspect_optimal_run(run_dir: Path) -> dict:
@@ -137,14 +138,26 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     provenance = feature.get("provenance", {})
     input_t = provenance.get("h5ad_t", "")
     input_tp = provenance.get("h5ad_tp", "")
+    # Explicit context produced by the multiscale runner is preferred; provenance
+    # paths are used to validate organ identity, never the output directory name.
+    context_path = p / "experiment_context.json"
+    context = _json(context_path) if context_path.is_file() else {}
+    if desc["organ"] is None:
+        desc["organ"] = context.get("organ")
+    mt = re.search(r"_(heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
+    mp = re.search(r"_(heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
+    if mt and mp:
+        if mt.group(1) != mp.group(1):
+            raise ValueError(f"Cross-organ input accidentally mixed: {p}")
+        if desc["organ"] is not None and desc["organ"] != mt.group(1):
+            raise ValueError(f"Organ metadata disagrees with H5AD provenance: {p}")
+        desc["organ"] = mt.group(1)
+        if desc["time_pair"] is None:
+            desc["time_pair"] = f"{mt.group(2)}->{mp.group(2)}"
+    if desc["organ"] not in {"heart", "lung", "brain"}:
+        raise ValueError(f"Could not verify organ from input provenance/metadata: {p}")
     if desc["input_scale"] is None:
         desc["input_scale"] = next((scale for scale in SCALES if f"/{scale}/" in str(input_t).replace("\\", "/")), None)
-    if desc["time_pair"] is None and input_t and input_tp:
-        # Exact time points taken from paths recorded by the completed source loader.
-        match_t = re.search(r"_heart_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
-        match_tp = re.search(r"_heart_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
-        if match_t and match_tp:
-            desc["time_pair"] = f"{match_t.group(1)}->{match_tp.group(1)}"
     if desc["input_scale"] not in SCALES or desc["time_pair"] not in PAIRS:
         raise ValueError(f"Could not verify source input scale/time pair from saved manifest: {p}")
     cci = strict.get("cci_feature_method")
@@ -174,6 +187,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     if budget["information_identity_error"] > 1e-5:
         raise ValueError(f"Information budget identity failed: {p}")
     return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
+            "organ": desc["organ"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
             "K": summary.get("K"), "delta_EI_strict_raw": float(raw),
             "delta_EI_train": summary.get("delta_EI_best_checkpoint"),
@@ -182,7 +196,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             "I_available_bits": float(budget["I_available_bits"]),
             "I_retained_bits": float(budget["I_macro_retained_bits"]),
             "signal_status": budget["signal_status"],
-            "CQ_display": float(budget["closure_quality"]) if budget["signal_status"] == "informative" else float("nan"),
+            "CQ_display": float(budget["closure_quality"]),
             "CCI": cci, "alpha": float(alpha), "run_dir": str(p.resolve()),
             "provenance": "saved_run_audit_requires_formal_maturity_validation"}
 
@@ -232,4 +246,97 @@ def build_optimal_grid(frame: pd.DataFrame, measure: str, *, require_complete: b
                 else:
                     row[pair] = float(selected.iloc[0][measure])
             rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# The four cross-organ formal tables are built without requiring absent
+# measurements to be fabricated. Missing cells are NaN and audited separately.
+ORGANS = ("heart", "lung", "brain")
+NATURAL_COLUMNS = ("Spot -> K150", "K150 -> K40", "Spot -> K40")
+
+
+def selected_organ_sensitivity(root: Path, organ: str, alpha: float = .20):
+    """Read a single organ's completed scientific source, or signal missing."""
+    root = Path(root)
+    candidate = root / organ
+    if (candidate / "manifest.json").is_file():
+        src = candidate
+    elif organ == "heart" and (root / "manifest.json").is_file():
+        src = root  # backwards compatible with existing heart-only runs
+    else:
+        return None
+    ei, cq, manifest = selected_candidate_sensitivity(src, alpha, "legacy_nmf")
+    source_organ = manifest.get("organ", "heart")
+    if source_organ != organ:
+        raise ValueError(f"Organ manifest mismatch: expected {organ}, got {source_organ}: {src}")
+    return ei, cq, src
+
+
+def build_multiorgan_natural(source_root: Path, *, organs=ORGANS, pairs=PAIRS):
+    """Return EI grid, CQ grid, CQ audit and provenance/coverage audit."""
+    ei_rows, cq_rows, audit, coverage = [], [], [], []
+    for organ in organs:
+        source = selected_organ_sensitivity(source_root, organ)
+        ei, cq, src = source if source is not None else (None, None, None)
+        for pair in pairs:
+            ei_row = {"Organ": organ.title(), "Time pair": pair,
+                      **{c: np.nan for c in NATURAL_COLUMNS}}
+            cq_row = dict(ei_row)
+            for name, lower, upper in LEVELS[:3]:
+                if ei is not None:
+                    a = ei.loc[ei.time_pair.eq(pair) & ei.layer.eq(lower)]
+                    b = ei.loc[ei.time_pair.eq(pair) & ei.layer.eq(upper)]
+                    if len(a) > 1 or len(b) > 1:
+                        raise ValueError(f"Duplicate measured EI: {organ}/{pair}/{name}")
+                    if len(a) == len(b) == 1:
+                        va, vb = float(a.iloc[0].EI_bits), float(b.iloc[0].EI_bits)
+                        if not (np.isfinite(va) and np.isfinite(vb)):
+                            raise ValueError(f"Invalid EI: {organ}/{pair}/{name}")
+                        ei_row[name] = vb - va
+                if cq is not None:
+                    target = f"{lower}->{upper}"
+                    hits = cq.loc[cq.time_pair.eq(pair) & cq.hierarchy.eq(target)]
+                    if len(hits) > 1:
+                        raise ValueError(f"Duplicate measured CQ: {organ}/{pair}/{name}")
+                    if len(hits) == 1:
+                        hit = hits.iloc[0]
+                        value = float(hit.CQ)
+                        if np.isfinite(value) and not (-1e-6 <= value <= 1+1e-6):
+                            raise ValueError(f"Invalid CQ: {organ}/{pair}/{name}: {value}")
+                        cq_row[name] = value if np.isfinite(value) else np.nan
+                        audit.append({"Organ": organ, "Time pair": pair, "Hierarchy": name,
+                                      "CQ": value, "signal_status": hit.signal_status,
+                                      "I_available_bits": hit.I_available_bits,
+                                      "I_retained_bits": hit.I_retained_bits,
+                                      "mapping_method": getattr(hit, "mapping_method", "spot_domain_map")})
+                for metric, row in (("EI", ei_row), ("CQ", cq_row)):
+                    coverage.append({"Organ": organ, "Time pair": pair, "Hierarchy": name,
+                                     "Metric": metric, "available": bool(pd.notna(row[name])),
+                                     "source": str(src) if src else ""})
+            ei_rows.append(ei_row)
+            cq_rows.append(cq_row)
+    return (pd.DataFrame(ei_rows), pd.DataFrame(cq_rows),
+            pd.DataFrame(audit), pd.DataFrame(coverage))
+
+
+def build_multiorgan_optimal(runs: pd.DataFrame, measure: str, *, organs=ORGANS, pairs=PAIRS) -> pd.DataFrame:
+    rows = []
+    for organ in organs:
+        row = {"Organ": organ.title()}
+        for pair in pairs:
+            if runs.empty:
+                row[pair] = np.nan
+                continue
+            match = runs.loc[runs.organ.eq(organ) & runs.time_pair.eq(pair) &
+                             runs.method.eq("maturity_cci_grn_two_stage") & runs.input_scale.eq("spot")]
+            if len(match) > 1:
+                raise ValueError(f"Multiple strict runs for {organ}/{pair}; refuse cherry-picking")
+            if len(match) == 1:
+                if int(match.iloc[0].K) != 40:
+                    raise ValueError(f"Unexpected K for {organ}/{pair}; formal protocol requires 40")
+                value = float(match.iloc[0][measure])
+                row[pair] = value if np.isfinite(value) else np.nan
+            else:
+                row[pair] = np.nan
+        rows.append(row)
     return pd.DataFrame(rows)

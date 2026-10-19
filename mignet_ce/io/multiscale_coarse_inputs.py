@@ -16,6 +16,7 @@ import pandas as pd
 import scipy.sparse as sp
 
 from mignet_ce.io.loaders import read_commot_index, standardize_grn_edges
+from mignet_ce.io.organ_paths import organ_h5ad_dir
 
 
 DEFAULT_SCALES = ("spot", "seurat_k150", "seurat_k40")
@@ -110,9 +111,9 @@ def resolve_stage_inputs(
         raise ValueError(f"Unsupported scale {scale!r}; expected one of {list(SCALE_SPECS)}.") from exc
     sample = spec.sample(str(organ), str(stage))
     h5ad_root = roots.h5ad_root(scale)
-    h5ad = h5ad_root / str(organ) / f"{sample}.h5ad"
+    h5ad = organ_h5ad_dir(h5ad_root, str(organ), f"{sample}.h5ad")
     domain_map = (
-        h5ad_root / str(organ) / f"{sample}_spot_domain_map.csv"
+        organ_h5ad_dir(h5ad_root, str(organ), f"{sample}_spot_domain_map.csv")
         if spec.requires_domain_map
         else None
     )
