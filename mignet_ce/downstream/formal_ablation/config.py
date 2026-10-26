@@ -69,5 +69,7 @@ class FormalAblationConfig:
                       cost_fusion='(1-alpha)*GRN_raw_KL+alpha*CCI_raw_KL',
                       feature_engine='production_low_level_pairwise_zscore',
                       grn_provider=GRN_PROVIDER, cci_provider=CCI_PROVIDER,
-                      explicit_no_selection=True)
+                      explicit_no_selection=True,
+                      cosine_baseline='cosine feature distances + exponential row normalization; no Sinkhorn',
+                      table2_pij_methods=['KL','KL+OT','Cosine'])
         return result

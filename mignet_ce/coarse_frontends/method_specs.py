@@ -23,12 +23,7 @@ class CoarseMethodSpec:
 
 _LEGACY_METHODS = (
     "complete_combined_coarse",
-    "complete_combined_coarse_maturity_cci",
     "complete_combined_coarse_maturity_cci_grn",
-    "wyt_cg_cci",
-    "wyt_cg_cci_regsim",
-    "wyt_cg_regsim_v7",
-    "wyt_cg_regsim_v9",
 )
 
 
@@ -41,11 +36,6 @@ COARSE_METHOD_SPECS.update(
         "complete_combined_coarse": CoarseMethodSpec(
             name="complete_combined_coarse",
             requires_grn=True,
-        ),
-        "complete_combined_coarse_maturity_cci": CoarseMethodSpec(
-            name="complete_combined_coarse_maturity_cci",
-            requires_maturity=True,
-            default_lambda_dev=0.05,
         ),
         "complete_combined_coarse_maturity_cci_grn": CoarseMethodSpec(
             name="complete_combined_coarse_maturity_cci_grn",

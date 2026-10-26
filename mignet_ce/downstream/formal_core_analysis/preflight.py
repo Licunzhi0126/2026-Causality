@@ -54,22 +54,22 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         missing_optimal = [f"{method}/{scale}/{pair}" for method in METHODS for scale in SCALES for pair in PAIRS if (method, scale, pair) not in valid_set]
         if not missing_optimal:
             try:
-                build_optimal_grid(runs, "delta_EI_strict_raw", require_complete=True)
+                build_optimal_grid(runs, "trained_delta_EI", require_complete=True)
                 build_optimal_grid(runs, "CQ_display", require_complete=True)
             except ValueError as exc:
                 issues.append(str(exc))
         if rejected:
-            cautions.append(f"{len(rejected)} run directories rejected by strict audit")
+            cautions.append(f"{len(rejected)} run directories rejected by trained PIJ audit")
     if missing_optimal:
-        cautions.append(f"Missing {len(missing_optimal)} of 18 strict optimal conditions")
+        cautions.append(f"Missing {len(missing_optimal)} of 18 trained optimal conditions")
     return {
         "pipeline": "formal_core_analysis", "stage": stage,
         "scientific_input_status": manifest.get("status"),
         "optimal_run_root": str(optimal_root) if stage == "all" and optimal_root else None,
-        "strict_summary_json_found": summary_json_found,
+        "trained_summary_json_found": summary_json_found,
         "alpha": alpha, "grn_method": grn_method, "has_k10": k10_ready,
         "missing_ei_conditions": [f"{a}/{b}" for a, b in missing_ei],
-        "strict_optimal_runs": available_runs, "missing_optimal_conditions": missing_optimal,
+        "trained_optimal_runs": available_runs, "missing_optimal_conditions": missing_optimal,
         "rejected_runs": rejected, "missing_spatial_maps": missing_spatial,
         "ready_for_publication_candidate": not issues and not missing_ei and (stage == "natural" or not missing_optimal),
         "ready_for_incomplete_preview": not issues,

@@ -10,7 +10,6 @@ import scipy.sparse as sp
 
 
 MacroPijBuilder = Callable[["MacroPijInputs"], Any]
-PosthocEvaluator = Callable[[np.ndarray, np.ndarray], Mapping[str, object]]
 
 
 @dataclass(frozen=True)
@@ -52,7 +51,6 @@ class PreparedCoarseInput:
     maturity_confidence_tp: np.ndarray | None = None
     maturity_provenance: Mapping[str, object] = field(default_factory=dict)
     provenance: Mapping[str, object] = field(default_factory=dict)
-    posthoc_evaluator: PosthocEvaluator | None = None
 
     def validate(self) -> None:
         n_t = len(self.unit_ids_t)
@@ -168,6 +166,5 @@ class PreparedCoarseInput:
             "maturity_confidence_available_t": self.maturity_confidence_t is not None,
             "maturity_confidence_available_tp": self.maturity_confidence_tp is not None,
             "maturity_provenance": dict(self.maturity_provenance),
-            "posthoc_evaluation_available": self.posthoc_evaluator is not None,
             "provenance": dict(self.provenance),
         }

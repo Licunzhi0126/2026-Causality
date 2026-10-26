@@ -30,9 +30,7 @@ from wyt_deltaei_coarse_grain.complete_combined import (
     pairwise_zscore,
     pool_features,
     prepare_complete_pair,
-    project_macro_cci_raw,
     sparse_shared_core_directed_nmf,
-    strict_complete_combined_evaluation,
 )
 from wyt_deltaei_coarse_grain.development import load_maturity_csv
 
@@ -182,67 +180,6 @@ def _cci_only_macro_pij(inputs: MacroPijInputs, *, temperature: float) -> torch.
     return single_kl_pij_torch(n_t, n_tp, temperature=temperature)
 
 
-def _evaluate_cci_only_macro(
-    network_t: sp.csr_matrix,
-    network_tp: sp.csr_matrix,
-    micro_ei: float,
-    micro_n_t: np.ndarray,
-    micro_n_tp: np.ndarray,
-    assignment_t: np.ndarray,
-    assignment_tp: np.ndarray,
-    *,
-    nmf_components: int,
-    nmf_max_iter: int,
-    seed: int,
-    temperature: float,
-) -> dict[str, object]:
-    pooled_t, pooled_tp = pairwise_zscore(
-        pool_features(micro_n_t, assignment_t),
-        pool_features(micro_n_tp, assignment_tp),
-    )
-    _, pooled_pij = single_kl_pij_numpy(
-        pooled_t,
-        pooled_tp,
-        temperature=temperature,
-    )
-    pooled_ei = float(effective_information(pooled_pij.copy()))
-
-    strict_values: dict[str, float] = {}
-    for label, normalize in (("raw", False), ("rownorm", True)):
-        macro_t = project_macro_cci_raw(network_t, assignment_t)
-        macro_tp = project_macro_cci_raw(network_tp, assignment_tp)
-        if normalize:
-            macro_t = row_normalize_sparse(macro_t)
-            macro_tp = row_normalize_sparse(macro_tp)
-        exact_t, exact_tp, _ = sparse_shared_core_directed_nmf(
-            macro_t,
-            macro_tp,
-            components=nmf_components,
-            max_iter=nmf_max_iter,
-            seed=seed,
-        )
-        _, exact_pij = single_kl_pij_numpy(
-            exact_t,
-            exact_tp,
-            temperature=temperature,
-        )
-        strict_values[label] = float(effective_information(exact_pij.copy()))
-    return {
-        "evaluation_protocol": "complete_combined_coarse_light_cci_n_only",
-        "EI_micro_light_cci_N": float(micro_ei),
-        "EI_macro_training_interface_pool_N": pooled_ei,
-        "deltaEI_training_interface_pool_N": pooled_ei - float(micro_ei),
-        "EI_macro_strict_raw_projected_CCI_reextract_N": strict_values["raw"],
-        "deltaEI_strict_raw_projected_CCI_reextract_N": (
-            strict_values["raw"] - float(micro_ei)
-        ),
-        "EI_macro_strict_rownorm_projected_CCI_reextract_N": strict_values["rownorm"],
-        "deltaEI_strict_rownorm_projected_CCI_reextract_N": (
-            strict_values["rownorm"] - float(micro_ei)
-        ),
-    }
-
-
 def _prepare_cci_only(
     request: CoarseFrontendRequest,
     *,
@@ -296,20 +233,7 @@ def _prepare_cci_only(
             "coarse_core": "complete_combined_N_only",
             "network_adjacency_policy": "exact_registered_network_output",
             "N": n_metadata,
-            "strict_posthoc_filename": "strict_complete_combined_maturity_evaluation.json",
         },
-        posthoc_evaluator=partial(
-            _evaluate_cci_only_macro,
-            cci_t,
-            cci_tp,
-            micro_ei,
-            n_t,
-            n_tp,
-            nmf_components=request.nmf_components,
-            nmf_max_iter=request.nmf_max_iter,
-            seed=request.seed,
-            temperature=request.pij_temperature,
-        ),
     )
     prepared.validate()
     return _attach_required_maturity(prepared, request)
@@ -417,17 +341,7 @@ def _prepare_cci_grn(
             "Canonical_NG": pair.canonical_ng_metadata,
             "stage_t": stage_t.metadata,
             "stage_tp": stage_tp.metadata,
-            "strict_posthoc_filename": "strict_complete_combined_maturity_evaluation.json",
         },
-        posthoc_evaluator=partial(
-            strict_complete_combined_evaluation,
-            stage_t,
-            stage_tp,
-            pair,
-            nmf_components=request.nmf_components,
-            nmf_max_iter=request.nmf_max_iter,
-            seed=request.seed,
-        ),
     )
     prepared.validate()
     return _attach_required_maturity(prepared, request)

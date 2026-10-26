@@ -505,7 +505,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--time-points", nargs="+", default=["11.5", "12.5", "13.5", "14.5"])
     parser.add_argument("--level-pairs", nargs="+", default=None)
     parser.add_argument("--network-method", choices=sorted(NETWORK_METHODS), default="light_cci")
-    parser.add_argument("--pij-method", choices=sorted(PIJ_METHODS), default="compare_main_lap_sr_spatial_sot")
+    parser.add_argument("--pij-method", choices=sorted(PIJ_METHODS), default="compare_N_kl")
     parser.add_argument("--development-feature-root", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--nmf-components", type=int, default=5)

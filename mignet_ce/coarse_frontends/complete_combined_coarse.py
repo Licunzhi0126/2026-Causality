@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Complete Native-V7 and WYT coarse-graining frontend."""
 
-from functools import partial
 
 from mignet_ce.coarse_frontends._common import (
     CoarseFrontendRequest,
@@ -13,7 +12,6 @@ from wyt_deltaei_coarse_grain.complete_combined import (
     build_macro_pij_builder,
     prepare_complete_pair,
     prepare_complete_stage,
-    strict_complete_combined_evaluation,
 )
 from mignet_ce.networks.wyt_cci_regsim import (
     build_regsim_similarity_network,
@@ -104,24 +102,11 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             "nmf_components": int(request.nmf_components),
             "nmf_max_iter_used": int(request.nmf_max_iter),
             "feature_seed": int(request.seed),
-            "strict_posthoc_protocol": (
-                "raw_and_rownorm_S_transpose_A_S_reextract_N_recompute_G"
-            ),
             "N": pair.n_metadata,
             "Canonical_NG": pair.canonical_ng_metadata,
             "stage_t": stage_t.metadata,
             "stage_tp": stage_tp.metadata,
-            "strict_posthoc_filename": "strict_canonical_ng_evaluation.json",
         },
-        posthoc_evaluator=partial(
-            strict_complete_combined_evaluation,
-            stage_t,
-            stage_tp,
-            pair,
-            nmf_components=request.nmf_components,
-            nmf_max_iter=request.nmf_max_iter,
-            seed=request.seed,
-        ),
     )
     prepared.validate()
     return prepared

@@ -7,6 +7,8 @@ from .config import HIERARCHIES, TIME_PAIRS, T1_CONFIGS, FIXED_GRN, FIXED_CCI, F
 VALUE_COLS = TIME_PAIRS
 
 def build_tables(raw: pd.DataFrame, *, allow_incomplete: bool = False, hierarchies=None) -> dict[str,pd.DataFrame]:
+    if allow_incomplete:
+        raise ValueError('正式消融表不允许缺失数值占位；请补齐数据再绘图。')
     need = {'table','hierarchy','time_pair','grn_feature','cci_feature','pij','input','delta_EI'}
     if not need.issubset(raw.columns): raise ValueError(f'Missing raw columns: {sorted(need - set(raw.columns))}')
     data = raw.copy()
@@ -15,7 +17,6 @@ def build_tables(raw: pd.DataFrame, *, allow_incomplete: bool = False, hierarchi
     def one(t, hierarchy, pair, g,c,pij,inp):
         found=data.loc[data['table'].eq(t)&data['hierarchy'].eq(hierarchy)&data['time_pair'].eq(pair)&data['grn_feature'].eq(g)&data['cci_feature'].eq(c)&data['pij'].eq(pij)&data['input'].eq(inp)]
         if len(found)!=1:
-            if allow_incomplete and len(found)==0:return float('nan')
             raise ValueError(f'Expected one {t}: {hierarchy},{pair},{g},{c},{pij},{inp}; got {len(found)}')
         value=float(found.iloc[0]['delta_EI'])
         if not np.isfinite(value):raise ValueError(f'Nonfinite delta_EI: {t},{hierarchy},{pair}')
@@ -28,7 +29,7 @@ def build_tables(raw: pd.DataFrame, *, allow_incomplete: bool = False, hierarchi
             if table=='table1':
                 specs = [(g,c,'KL+OT','GRN+CCI') for g,c in T1_CONFIGS]
             elif table=='table2':
-                specs = [(FIXED_GRN,FIXED_CCI,p,'GRN+CCI') for p in ('KL','KL+OT')]
+                specs = [(FIXED_GRN,FIXED_CCI,p,'GRN+CCI') for p in ('KL','KL+OT','Cosine')]
             else:
                 specs = [(FIXED_GRN,FIXED_CCI,FIXED_PIJ,i) for i in ('GRN-only','CCI-only','GRN+CCI')]
             for g,c,p,i in specs:

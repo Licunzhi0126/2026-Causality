@@ -1,119 +1,141 @@
-"""Multi-organ formal EI/CQ tables from authenticated saved computations.
-
-No training, interpolation, or fabricated numeric values. Missing sources become
-explicit NaN cells in CSV and em-dashes in rendered tables.
-"""
+"""CLI: python -m mignet_ce.downstream.formal_core_analysis --help"""
 from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
 import pandas as pd
 
-from .tables import (ORGANS, PAIRS, build_multiorgan_natural,
-                     build_multiorgan_optimal, collect_optimal_runs)
-from .plots import save_table
+from .tables import (
+    build_ei_grid, build_cq_grid, selected_candidate_sensitivity,
+    collect_optimal_runs, build_optimal_grid, build_optimal_triplet_grid, PAIRS,
+)
+from .plots import save_table, save_triplet_table, draw_natural_figure, draw_optimal_figure
+from .preflight import inspect_inputs
 
 
-def build_argparser():
-    p = argparse.ArgumentParser(description="Heart/Lung/Brain formal EI/CQ and spot Two-stage tables")
-    p.add_argument("--sensitivity-root", type=Path, required=True,
-                   help="Root containing heart/lung/brain completed sensitivity sources; old heart-only root accepted")
-    p.add_argument("--optimal-runs-root", type=Path,
-                   help="Root containing separate organ/ Two-stage spot strict runs")
-    p.add_argument("--data-root", type=Path, help="Optional, for input path audit only")
-    p.add_argument("--developmental-root", type=Path, help="Optional, for input path audit only")
+def main() -> None:
+    p = argparse.ArgumentParser(description="Standalone formal EI/CQ/optimal tables and Heart figures; no legacy paper_assets")
+    p.add_argument("--sensitivity-root", type=Path, required=True)
+    p.add_argument("--data-root", type=Path, required=True)
     p.add_argument("--output-root", type=Path, required=True)
-    p.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
     p.add_argument("--alpha", type=float, default=.20)
     p.add_argument("--grn-method", default="legacy_nmf")
-    p.add_argument("--stage", choices=("all", "natural", "optimal"), default="all")
-    p.add_argument("--preflight", action="store_true", help="Report input and result coverage without writing tables")
-    p.add_argument("--allow-incomplete", action="store_true", help="Compatibility flag; missing values are always shown as dashes and audited")
-    p.add_argument("--figure-pair", choices=PAIRS, default="12.5->13.5",
-                   help="Reserved for Heart spatial figure workflow; this entry renders only tables")
-    p.add_argument("--skip-figures", action="store_true", help="Compatibility flag; cross-organ tables only")
-    return p
-
-
-def generate(a):
-    if abs(a.alpha-.20)>1e-9 or a.grn_method != "legacy_nmf":
-        raise ValueError("Frozen final method is NMF + KL–OT, alpha 0.20")
-    organs = tuple(dict.fromkeys(a.organs))
-    natural = a.stage in ("all", "natural")
-    optimal = a.stage in ("all", "optimal")
-    status = {"protocol": "NMF+KL–OT, CCI Laplacian-HKS, alpha=.20",
-              "organs": list(organs), "pairs": list(PAIRS),
-              "optimal": "spot / maturity_cci_grn_two_stage / K40 / strict deltaEI; induced CQ",
-              "missing_values": "NaN in CSV / dash in figures; never imputed",
-              "natural_cq_k150_k40": "spot-overlap soft mapping, not strictly nested hierarchy",
-              "tables": [], "rejected_runs": []}
-    out = a.output_root
-    tab = out / "tables"
-    results: list[tuple[str, pd.DataFrame, str, str]] = []
-    if natural:
-        ei, cq, cq_audit, coverage = build_multiorgan_natural(a.sensitivity_root, organs=organs)
-        results += [("table_ei_hierarchy", ei, "Natural ΔEI across developmental scales", "ΔEI (bits) · authentic measured transitions"),
-                    ("table_cq_hierarchy", cq, "Natural information-retention CQ", "Low-information numeric CQ retained · K150 → K40 uses spot-overlap soft map")]
-        status["missing_natural_cells"] = int((~coverage.available).sum())
-    else:
-        cq_audit = coverage = pd.DataFrame()
-    if optimal:
-        runs, rejected = collect_optimal_runs(a.optimal_runs_root) if a.optimal_runs_root else (pd.DataFrame(), ["No --optimal-runs-root provided"])
-        status["rejected_runs"] = rejected
-        # Validated unrelated/multiscale/historical runs remain in the inventory,
-        # but only organ-specific spot Two-stage results enter these two tables.
-        strict = build_multiorgan_optimal(runs, "delta_EI_strict_raw", organs=organs)
-        induced = build_multiorgan_optimal(runs, "CQ_display", organs=organs)
-        results += [("table_optimal_strict_deltaei", strict, "Two-stage · spot input · Strict ΔEI", "K = 40 · strict reconstruction, not training checkpoint"),
-                    ("table_optimal_induced_cq", induced, "Two-stage · spot input · Induced CQ", "K = 40 · information-retention CQ; low-information values retained")]
-        status["missing_optimal_cells"] = int(strict.iloc[:, 1:].isna().sum().sum())
-    else:
-        runs = pd.DataFrame()
-    for name, frame, _, _ in results:
-        status["tables"].append({"name": name, "rows": len(frame),
-                                 "available_values": int(frame.iloc[:, 2 if "hierarchy" in name else 1:].notna().sum().sum())})
-    missing = status.get("missing_natural_cells", 0)+status.get("missing_optimal_cells", 0)
-    status["status"] = "complete" if missing == 0 else "incomplete_exploratory"
+    p.add_argument("--optimal-runs-root", type=Path, help="Completed, trained-PIJ verified runs")
+    p.add_argument("--stage", choices=("all", "natural"), default="all",
+                   help="all: natural + 18 trained optimal runs (default); natural: EI/CQ existence tables only")
+    p.add_argument("--allow-incomplete", action="store_true", help="Emit explicitly named exploratory partial tables if K10 or 3x3 optimal matrix missing; never final tables")
+    p.add_argument("--figure-pair", default="12.5->13.5", choices=PAIRS)
+    p.add_argument("--skip-figures", action="store_true")
+    p.add_argument("--preflight", action="store_true", help="Read-only audit of the data and trained optimal runs; compute no new values")
+    a = p.parse_args()
+    if a.stage == "all" and not a.preflight and a.optimal_runs_root is None and not a.allow_incomplete:
+        raise ValueError("Full formal core requires --optimal-runs-root containing 18 completed trained optimal runs. "
+                         "Use --stage natural to generate EI/CQ existence without optimal runs.")
+    if a.stage == "all" and not a.preflight and a.optimal_runs_root and not a.allow_incomplete:
+        root = a.optimal_runs_root
+        if not root.is_dir():
+            raise FileNotFoundError(f"--optimal-runs-root is missing or not a directory: {root}")
+        summary_count = 1 if (root / "summary.json").is_file() else sum(1 for _ in root.rglob("summary.json"))
+        if not summary_count:
+            raise RuntimeError(f"Found 0 summary.json under --optimal-runs-root={root}. "
+                               "The updated GRN/CCI inputs do not themselves contain trained "
+                               "Single-stage/Two-stage models. Run both frameworks first, then "
+                               "supply their results, or use --stage natural for natural EI/CQ only.")
+    if abs(a.alpha - .20)>1e-9 or a.grn_method != "legacy_nmf":
+        raise ValueError("Formal core is frozen to GRN-NMF / α=0.20; other alpha/method requires a new matched formal protocol")
     if a.preflight:
-        if a.data_root is not None:
-            from mignet_ce.io.organ_paths import resolve_organ_paths
-            found, absent = [], []
-            for organ in organs:
-                for t in ("11.5", "12.5", "13.5"):
-                    for scale in ("spot", "seurat_k150", "seurat_k40"):
-                        files = resolve_organ_paths(a.data_root, scale, organ, t)
-                        for label, path in files.items():
-                            if path is not None:
-                                (found if path.is_file() else absent).append(f"{organ}/{scale}/{t}/{label}: {path}")
-                        if a.developmental_root is not None and scale == "spot":
-                            dev = a.developmental_root / "spot" / f"{organ}_{t}_features.csv"
-                            (found if dev.is_file() else absent).append(f"{organ}/{scale}/{t}/development: {dev}")
-            status["input_files_present"] = len(found)
-            status["missing_input_files"] = absent
-        print(json.dumps(status, ensure_ascii=False, indent=2))
-        return status
-    tab.mkdir(parents=True, exist_ok=True)
-    for name, frame, title, subtitle in results:
-        frame.to_csv(tab / f"{name}.csv", index=False)
-        save_table(frame, tab / name, title=title, subtitle=subtitle,
-                   group_cols=("Organ",) if "Time pair" in frame.columns else ())
-    audit_path = out / "audit"
-    audit_path.mkdir(parents=True, exist_ok=True)
-    if natural:
-        coverage.to_csv(audit_path / "natural_cell_coverage.csv", index=False)
-        cq_audit.to_csv(audit_path / "natural_cq_signal_audit.csv", index=False)
-    if optimal:
-        if not runs.empty:
-            runs.to_csv(audit_path / "strict_optimal_run_inventory.csv", index=False)
-        (audit_path / "strict_optimal_rejected.json").write_text(json.dumps(status["rejected_runs"], ensure_ascii=False, indent=2), encoding="utf8")
-    (out / "output_manifest.json").write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf8")
-    print(json.dumps(status, ensure_ascii=False, indent=2))
-    return status
+        report = inspect_inputs(a.sensitivity_root, a.data_root, a.optimal_runs_root,
+                                a.alpha, a.grn_method, a.figure_pair, a.skip_figures, stage=a.stage)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        ok = report["ready_for_incomplete_preview"] if a.allow_incomplete else report["ready_for_publication_candidate"]
+        if not ok:
+            raise SystemExit(2)
+        return
+    out = a.output_root
+    out.mkdir(parents=True, exist_ok=True)
+    ei, cq, m = selected_candidate_sensitivity(a.sensitivity_root, a.alpha, a.grn_method)
+    status = {"status": "processing", "stage": a.stage,
+              "scientific_source": str(a.sensitivity_root.resolve()),
+              "alpha": a.alpha, "grn_feature": a.grn_method,
+              "delta_EI_protocol": "selected checkpoint + persisted training macro PIJ",
+              "new_k10_input_present": "seurat_k10" in set(ei.layer),
+              "source_cci_order": m["cci_order_provenance"], "requires_fresh_formal_optimal": True,
+              "legacy_paper_assets_imported": False, "fig2_roi_enlarge": False,
+              "report_level": "exploratory_partial" if a.allow_incomplete else "publication_candidate"}
+    # Without K10, user-requested FULL existence table must not be silently faked.
+    full = "seurat_k10" in set(ei.layer)
+    if not full and not a.allow_incomplete:
+        raise FileNotFoundError("Cannot build complete EI/CQ K10 tables from spot/K150/K40 data. Use --allow-incomplete only for explicitly labeled smoke results.")
+    grid = build_ei_grid(ei, require_k10=full)
+    grid_cq, audit_cq = build_cq_grid(cq, require_k10=full)
+    suffix = "" if full else "_PARTIAL_NO_K10"
+    tab = out / "tables"
+    tab.mkdir(exist_ok=True)
+    for name,frame in (("table_ei_hierarchy"+suffix,grid),("table_cq_hierarchy"+suffix,grid_cq)):
+        frame.to_csv(tab/(name+".csv"),index=False)
+        save_table(frame, tab/name, title=name.replace("_"," "),
+                   subtitle="Actual measured values · low-signal CQ values retained; status in audit CSV · PNAS candidate" if full
+                   else "EXPLORATORY ONLY · NO K10 · not a complete paper results table")
+    audit_cq.to_csv(tab/("cq_low_signal_audit"+suffix+".csv"), index=False)
+    status["natural_ei_rows"] = len(grid)
+    status["natural_cq_rows"] = len(grid_cq)
+    status["cq_low_signal_reported"] = int((audit_cq.signal_status != "informative").sum())
+    if not a.skip_figures:
+        try:
+            draw_natural_figure(a.data_root, grid, a.figure_pair,
+                                out/"figures"/("figure1_natural"+suffix),require_k10=full, draft=a.allow_incomplete)
+            status["figure1"] = "generated_from_real_spot_domain_coordinates"
+        except (FileNotFoundError, ValueError) as exc:
+            if not a.allow_incomplete: raise
+            status["figure1_error"] = str(exc)
+    if a.stage == "all" and a.optimal_runs_root:
+        runs, rejected = collect_optimal_runs(a.optimal_runs_root)
+        (out/"audit").mkdir(parents=True, exist_ok=True)
+        (out/"audit"/"optimal_rejected.json").write_text(json.dumps(rejected,indent=2,ensure_ascii=False),encoding="utf-8")
+        if runs.empty:
+            if not a.allow_incomplete: raise RuntimeError(f"No valid trained optimal results: {rejected[:5]}")
+            status["optimal"] = "no_valid_trained_runs"
+        else:
+            runs.to_csv(out/"audit"/"trained_optimal_run_inventory.csv",index=False)
+            full_optimal = True
+            try:
+                complete=build_optimal_triplet_grid(runs,require_complete=True)
+            except ValueError as exc:
+                if not a.allow_incomplete: raise
+                status["optimal_missing_conditions"] = str(exc)
+                full_optimal = False
+            # Never output blank or dash-filled provisional paper tables.
+            if full_optimal:
+                name="table_optimal_trained_deltaei_keff"
+                complete.to_csv(tab/(name+".csv"),index=False)
+                save_triplet_table(complete,tab/name,title="Trained ΔEI and effective state usage",
+                                   subtitle="Within each pair: ΔEI (wide), source Keff, target Keff (narrow). Saved checkpoint measurements.")
+                cq_grid = build_optimal_grid(runs,"CQ_display",require_complete=True)
+                cq_name="table_optimal_induced_cq"
+                cq_grid.to_csv(tab/(cq_name+".csv"),index=False)
+                save_table(cq_grid,tab/cq_name,title="Optimal induced CQ: Single-stage vs Two-stage",
+                           subtitle="Measured CQ=Iretained/Iavailable; low-signal values included and documented in audit CSV",group_cols=("Method",))
+                status["optimal_cq_low_signal_count"] = int((runs.signal_status != "informative").sum())
+            status["optimal_trained_runs_verified"] = len(runs)
+            status["optimal_rejected_runs"] = len(rejected)
+            if not a.skip_figures:
+                # Figure 2 generated only for real run matching chosen figure-pair, and flagged as exploratory if incomplete.
+                available = runs[runs.time_pair.eq(a.figure_pair)]
+                if len(available):
+                    x = available.sort_values(["method", "input_scale"]).iloc[0]
+                    try:
+                        draw_optimal_figure(a.data_root,str(x.input_scale),a.figure_pair,Path(x.run_dir),float(x.trained_delta_EI),
+                                            out/"figures"/"figure2_optimal_NO_ROI_ENLARGE", draft=a.allow_incomplete)
+                        status["figure2"] = str(x.run_dir)
+                    except (FileNotFoundError, ValueError) as exc:
+                        if not a.allow_incomplete: raise
+                        status["figure2_error"] = str(exc)
+    if a.stage == "natural":
+        status["optimal"] = "not_requested"
+        status["status"] = "natural_complete" if full else "incomplete_exploratory"
+    else:
+        status["status"] = "complete" if full and "optimal_missing_conditions" not in status and status.get("optimal_trained_runs_verified",0)==18 else "incomplete_exploratory"
+    (out/"output_manifest.json").write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding="utf-8")
+    print(json.dumps(status,ensure_ascii=False,indent=2))
 
-
-def main():
-    generate(build_argparser().parse_args())
-
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__":main()

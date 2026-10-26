@@ -70,7 +70,7 @@ def save_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str, gr
         for col in cols:
             v = row[col]
             if pd.isna(v):
-                output.append("—")
+                raise ValueError(f"Cannot render missing value in formal result: row={_}, column={col}")
             elif isinstance(v, (float, np.floating)):
                 output.append(f"{v:+.4f}" if "ei" in title.lower() else f"{v:.4f}")
             else:
@@ -111,6 +111,65 @@ def save_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str, gr
     fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
+
+
+def save_triplet_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str) -> None:
+    """Compact three-cell time-pair group. Only numbers in the three subcells.
+
+    Label/metric mapping is explained in the caption, not repeated inside cells.
+    Source and target Keff have narrower cells than Delta EI.
+    """
+    from matplotlib.patches import Rectangle
+    from .tables import METHODS, SCALES, PAIRS
+    path=Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    if len(frame)!=len(METHODS)*len(SCALES):
+        raise ValueError("Full trained delta/Keff table requires exactly six method-scale rows")
+    expected=["Method","Input scale"]+[f"{pair}::{metric}" for pair in PAIRS
+                        for metric in ("trained_delta_EI","Keff_t","Keff_tp")]
+    if list(frame.columns)!=expected:
+        raise ValueError(f"Expected canonical triplet-grid columns; got {list(frame.columns)}")
+    # widths: Method | Scale | [large ΔEI, small Keff source, small Keff target] × 3.
+    widths=[2.05,1.13]+[1.22,.86,.86]*len(PAIRS)
+    coords=np.r_[0,np.cumsum(widths)]
+    W=float(coords[-1]); n=len(frame)
+    fig,ax=plt.subplots(figsize=(15.7,4.6))
+    fig.subplots_adjust(top=.69,bottom=.14,left=.035,right=.985)
+    ax.set_xlim(0,W);ax.set_ylim(0,n+2);ax.set_aspect('auto');ax.axis('off')
+    line='#D1D1D1'; fg='#242424'
+    def cell(col,row,txt='',fontsize=11,align='center',bold=False,width_override=None):
+        x=coords[col]; w=widths[col] if width_override is None else width_override
+        ax.add_patch(Rectangle((x,row),w,1,facecolor='white',edgecolor=line,linewidth=.65))
+        if txt:
+            ax.text(x+(w/2 if align=='center' else .12),row+.5,txt,ha=align,va='center',
+                    fontsize=fontsize,color=fg,fontweight='semibold' if bold else 'normal')
+    for col,label in enumerate(('Method','Input scale')):
+        cell(col,n,label,fontsize=11)
+    for i,pair in enumerate(PAIRS):
+        start=2+3*i
+        cell(start,n,pair,fontsize=11.4, width_override=sum(widths[start:start+3]))
+    # Draw three value subcells (no row-level metric-name text).
+    short={"complete_combined_coarse_maturity_cci_grn":"Single-stage",
+           "maturity_cci_grn_two_stage":"Two-stage",
+           "spot":"Spot","seurat_k150":"K150","seurat_k40":"K40"}
+    for i,(_,row) in enumerate(frame.iterrows()):
+        y=n-i-1
+        cell(1,y,short.get(str(row["Input scale"]),str(row["Input scale"])))
+        for j,pair in enumerate(PAIRS):
+            for k,metric in enumerate(('trained_delta_EI','Keff_t','Keff_tp')):
+                v=float(row[f'{pair}::{metric}'])
+                if not np.isfinite(v):raise ValueError('No missing/invalid metric may be rendered')
+                cell(2+j*3+k,y,f'{v:+.4f}' if k==0 else f'{v:.2f}',fontsize=10.3 if k==0 else 9.6)
+    # Visually merge Method blocks: group labels occupy a single vertically merged cell.
+    for i,method in enumerate(METHODS):
+        low=n-(i+1)*len(SCALES)
+        ax.add_patch(Rectangle((coords[0],low),widths[0],len(SCALES),facecolor='white',edgecolor=line,linewidth=.65))
+        ax.text(coords[0]+.12,low+len(SCALES)/2,short[method],va='center',ha='left',fontsize=11.2,color=fg)
+    fig.text(.035,.955,title,fontsize=18.5,color=fg,va='top')
+    fig.text(.035,.855,subtitle,fontsize=9.7,color='#666666',va='top')
+    fig.savefig(path.with_suffix('.png'),dpi=210,bbox_inches='tight',facecolor='white')
+    fig.savefig(path.with_suffix('.pdf'),bbox_inches='tight',facecolor='white')
+    plt.close(fig)
 
 def _coordinates(data_root: Path, scale: str, time: str) -> pd.DataFrame:
     stem={"seurat_k150":"seurat150","seurat_k40":"seurat","seurat_k10":"seurat10"}[scale]
@@ -159,7 +218,7 @@ def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, 
     else:render_figure1(**kw)
 
 
-def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, strict_delta: float, path: Path, *, draft: bool=False) -> None:
+def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, trained_delta: float, path: Path, *, draft: bool=False) -> None:
     t,tp=time_pair.split("->")
     stage_assignments=[]
     for stage,filename in ((t,"assignments_t.csv"),(tp,"assignments_tp.csv")):
@@ -172,4 +231,4 @@ def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_d
             mapped=d.spot_id.map(lookup).map(ass.set_index("spot_id").hard_cluster)
         if mapped.isna().any():raise ValueError(f"Missing {mapped.isna().sum()} assignments")
         stage_assignments.append(pd.DataFrame({"spot_id":d.spot_id,"hard_cluster":mapped.to_numpy()}))
-    render_figure2(source_stage=t,target_stage=tp,source_spot=_stage_data(data_root,t,"seurat_k40"),target_spot=_stage_data(data_root,tp,"seurat_k40"),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=strict_delta,method_label=f"{input_scale} · measured strict reconstruction",output_path=Path(path).with_suffix(".png"),demo=draft)
+    render_figure2(source_stage=t,target_stage=tp,source_spot=_stage_data(data_root,t,"seurat_k40"),target_spot=_stage_data(data_root,tp,"seurat_k40"),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=trained_delta,method_label=f"{input_scale} · saved trained PIJ",output_path=Path(path).with_suffix(".png"),demo=draft)

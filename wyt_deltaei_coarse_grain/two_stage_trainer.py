@@ -1143,6 +1143,7 @@ def train_deltaei_two_stage(
             "EI_micro_fixed": float(fixed_micro_ei.cpu()),
             "EI_macro_best_checkpoint": float(final_macro_ei.cpu()),
             "delta_EI_best_checkpoint": float(final_delta.cpu()),
+            "trained_delta_EI": float(final_delta.cpu()),
             "development_constraint_enabled": bool(config.lambda_dev > 0.0),
             "development_maturity_available": bool(
                 maturity_t is not None and maturity_tp is not None
@@ -1238,27 +1239,6 @@ def train_deltaei_two_stage(
                     maturity_values,
                 ).items():
                     summary[f"{key}_{label}"] = value
-        if prepared.posthoc_evaluator is not None:
-            strict_evaluation = dict(
-                prepared.posthoc_evaluator(assignment_t_np, assignment_tp_np)
-            )
-            strict_filename = str(
-                prepared.provenance.get(
-                    "strict_posthoc_filename",
-                    "strict_canonical_ng_evaluation.json",
-                )
-            )
-            write_json(out_dir / strict_filename, strict_evaluation)
-            summary["strict_posthoc_file"] = strict_filename
-            for key, value in strict_evaluation.items():
-                if (
-                    isinstance(value, (int, float, np.generic))
-                    and (
-                        key.startswith("EI_")
-                        or key.startswith("deltaEI_")
-                    )
-                ):
-                    summary[key] = float(value)
         write_final_arrays(
             out_dir,
             prepared,
@@ -1276,24 +1256,6 @@ def train_deltaei_two_stage(
         _log(log_handle, f"EI_micro fixed: {float(fixed_micro_ei.cpu()):.6f}")
         _log(log_handle, f"EI_macro: {float(final_macro_ei.cpu()):.6f}")
         _log(log_handle, f"Delta EI: {float(final_delta.cpu()):.6f}")
-        if (
-            prepared.posthoc_evaluator is not None
-            and "deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G" in summary
-        ):
-            _log(
-                log_handle,
-                "Strict raw Delta EI: "
-                f"{summary['deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G']:.6f}",
-            )
-        if (
-            prepared.posthoc_evaluator is not None
-            and "deltaEI_strict_rownorm_projected_CCI_reextract_N_recompute_G" in summary
-        ):
-            _log(
-                log_handle,
-                "Strict row-normalized Delta EI: "
-                f"{summary['deltaEI_strict_rownorm_projected_CCI_reextract_N_recompute_G']:.6f}",
-            )
         _log(log_handle, f"Saved to: {out_dir}")
 
     return WYTTwoStageDeltaEIResult(

@@ -72,7 +72,6 @@ def run_local_optimal_cg(*, pair: LocalPairData, inputs: dict[str, Path], maturi
         prepared,
         micro_pij=pair.pij_conditional.astype(np.float32),
         micro_ei=float(effective_information(pair.pij_conditional.copy())),
-        posthoc_evaluator=None,
         provenance={
             **dict(prepared.provenance),
             "local_pair_source_cluster": pair.source_cluster,

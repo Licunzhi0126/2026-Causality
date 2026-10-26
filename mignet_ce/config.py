@@ -143,189 +143,50 @@ PAIR_PRESETS: Dict[str, Tuple[VerticalPairSpec, ...]] = {
     ),
 }
 
-COMPARE_PIJ_METHODS: Tuple[str, ...] = (
-    "compare_E_cos",
-    "compare_E_kl",
-    "compare_E_sot",
-    "compare_N_cos",
-    "compare_N_kl",
-    "compare_N_sot",
-    "compare_L_cos",
-    "compare_L_kl",
-    "compare_L_sot",
-    "compare_Sr_cos",
-    "compare_Sr_kl",
-    "compare_Sr_sot",
-    "compare_E_N_cos",
-    "compare_E_N_kl",
-    "compare_E_N_sot",
-    "compare_E_L_cos",
-    "compare_E_L_kl",
-    "compare_E_L_sot",
-    "compare_E_Sr_cos",
-    "compare_E_Sr_kl",
-    "compare_E_Sr_sot",
-    "compare_N_L_cos",
-    "compare_N_L_kl",
-    "compare_N_L_sot",
-    "compare_N_Sr_cos",
-    "compare_N_Sr_kl",
-    "compare_N_Sr_sot",
-    "compare_L_Sr_cos",
-    "compare_L_Sr_kl",
-    "compare_L_Sr_sot",
-)
-COST_FUSION_NEW_PIJ_METHODS: Tuple[str, ...] = (
-    "compare_L_euc_sot",
-    "compare_L_E_costmix_cos_sot",
-    "compare_L_E_costmix_euc_sot",
-    "compare_L_Sr_costmix_cos_sot",
-    "compare_L_Sr_costmix_euc_sot",
-    "compare_L_E_Sr_costmix_cos_sot",
-    "compare_L_E_Sr_costmix_euc_sot",
-    "compare_E_euc_sot",
-    "compare_E_Sr_costmix_cos_sot",
-    "compare_E_Sr_costmix_euc_sot",
-)
-COST_FUSION_EXPERIMENT_PIJ_METHODS: Tuple[str, ...] = (
-    "compare_L_sot",
-    "compare_L_euc_sot",
-    "compare_L_E_costmix_cos_sot",
-    "compare_L_E_costmix_euc_sot",
-    "compare_L_Sr_costmix_cos_sot",
-    "compare_L_Sr_costmix_euc_sot",
-    "compare_L_E_Sr_costmix_cos_sot",
-    "compare_L_E_Sr_costmix_euc_sot",
-    "compare_E_sot",
-    "compare_E_euc_sot",
-    "compare_E_Sr_costmix_cos_sot",
-    "compare_E_Sr_costmix_euc_sot",
-)
-FEATURE_VERSION_PIJ_METHODS = {
-    "compare_NG_kl_splitbeta_v1",
-    "compare_Ncomp_Gcos_v2",
-    "compare_Nshape_Gcos_v3",
-}
+# Only the following compare method remains in the supported vertical PIJ API.
+# Cosine distance for formal PIJ ablation is implemented directly in
+# downstream/formal_ablation and uses compare/_shared/cosine.py, not old wrappers.
+COMPARE_PIJ_METHODS: Tuple[str, ...] = ("compare_N_kl",)
+COST_FUSION_NEW_PIJ_METHODS: Tuple[str, ...] = ()
+COST_FUSION_EXPERIMENT_PIJ_METHODS: Tuple[str, ...] = ()
+FEATURE_VERSION_PIJ_METHODS: set[str] = set()
 BASELINE_DERIVED_PIJ_METHODS = {
     "compare_NG_kl_grnanchor_v5",
-    "compare_NG_kl_splitrole_grnanchor_v6",
     "compare_NG_kl_sinkhorn_grnanchor_v7",
-    "compare_NG_kl_sparseot_grnanchor_v8",
-    "compare_NG_fgw_grnanchor_v9",
-    "compare_NG_multiscale_fgw_annealed_v10",
 }
-CANONICAL_NG_PIJ_METHODS = {
-    "NG_KLot",
-}
-# DEPRECATION-CANDIDATE(user-removal): backward-compatible empty category name;
-# NG_KLot is canonical and no longer belongs to an experimental category.
-EXPERIMENTAL_NG_PIJ_METHODS = set()
-WYT_PIJ_METHODS = {
-    "wyt_single_kl",
-    "wyt_regsim_v7",
-    "wyt_regsim_v9",
-}
-MAIN_LIGHTCCI_PIJ_METHOD = "compare_main_lap_sr_spatial_sot"
+CANONICAL_NG_PIJ_METHODS = {"NG_KLot"}
+EXPERIMENTAL_NG_PIJ_METHODS: set[str] = set()
+WYT_PIJ_METHODS = {"wyt_single_kl"}
 
 PIJ_METHODS = {
     "joint_nmf",
     "laplacian",
     "3dot",
     "slat",
-    "expr_ot",
-    "pure_expression_ot",
-    "energy_ot",
-    "energy_entropy_ot",
-    "pseudotime_ot",
-    "sr_ot",
-    "spatial_ot",
-    "sr_spatial_ot",
-    "pseudotime_spatial_ot",
-    "sr_expression_ot",
-    "pseudotime_expression_ot",
-    "expr_pseudotime_sr_ot",
-    "expr_pseudotime_sr_spatial_ot",
-    "expr_pseudotime_sr_energy_ot",
-    "expr_pseudotime_sr_energy_spatial_ot",
-    "velocity_ot",
-    "development_ot",
     *COMPARE_PIJ_METHODS,
-    *COST_FUSION_NEW_PIJ_METHODS,
-    *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
     *CANONICAL_NG_PIJ_METHODS,
     *WYT_PIJ_METHODS,
-    MAIN_LIGHTCCI_PIJ_METHOD,
 }
 PIJ_METHOD_PRESETS = {
     "core": ("joint_nmf", "laplacian", "3dot", "slat"),
-    "ot_basic": ("expr_ot", "energy_entropy_ot"),
-    "pure_expression": ("pure_expression_ot",),
-    "development_scalar": ("pseudotime_ot", "sr_ot"),
-    "development_all": ("pseudotime_ot", "sr_ot", "velocity_ot", "development_ot"),
-    "ot_ablation_v2": (
-        "sr_ot",
-        "pseudotime_ot",
-        "spatial_ot",
-        "sr_spatial_ot",
-        "pseudotime_spatial_ot",
-        "sr_expression_ot",
-        "pseudotime_expression_ot",
+    "lightcci_core": (
+        "compare_N_kl",
+        "compare_NG_kl_grnanchor_v5",
+        "compare_NG_kl_sinkhorn_grnanchor_v7",
+        "NG_KLot",
+        "wyt_single_kl",
     ),
-    "ot_ablation_v3": (
-        "energy_ot",
-        "expr_pseudotime_sr_ot",
-        "expr_pseudotime_sr_spatial_ot",
-        "expr_pseudotime_sr_energy_ot",
-    ),
-    "ot_ablation_v4": (
-        "expr_pseudotime_sr_energy_ot",
-        "expr_pseudotime_sr_energy_spatial_ot",
-    ),
-    "development_ot_ablation": (
-        "sr_ot",
-        "pseudotime_ot",
-        "spatial_ot",
-        "sr_spatial_ot",
-        "pseudotime_spatial_ot",
-        "sr_expression_ot",
-        "pseudotime_expression_ot",
-    ),
-    "lightcci_compare_matrix": COMPARE_PIJ_METHODS,
-    "lightcci_cost_fusion": COST_FUSION_EXPERIMENT_PIJ_METHODS,
-    "lightcci_cost_fusion_new_only": COST_FUSION_NEW_PIJ_METHODS,
-    "lightcci_main": (MAIN_LIGHTCCI_PIJ_METHOD,),
-    "lightcci_all": (*COMPARE_PIJ_METHODS, MAIN_LIGHTCCI_PIJ_METHOD),
     "all": (
         "joint_nmf",
         "laplacian",
         "3dot",
         "slat",
-        "expr_ot",
-        "pure_expression_ot",
-        "energy_ot",
-        "energy_entropy_ot",
-        "pseudotime_ot",
-        "sr_ot",
-        "spatial_ot",
-        "sr_spatial_ot",
-        "pseudotime_spatial_ot",
-        "sr_expression_ot",
-        "pseudotime_expression_ot",
-        "expr_pseudotime_sr_ot",
-        "expr_pseudotime_sr_spatial_ot",
-        "expr_pseudotime_sr_energy_ot",
-        "expr_pseudotime_sr_energy_spatial_ot",
-        "velocity_ot",
-        "development_ot",
-        *COMPARE_PIJ_METHODS,
-        *COST_FUSION_NEW_PIJ_METHODS,
-        *FEATURE_VERSION_PIJ_METHODS,
-        *BASELINE_DERIVED_PIJ_METHODS,
-        *CANONICAL_NG_PIJ_METHODS,
-        *EXPERIMENTAL_NG_PIJ_METHODS,
-        *WYT_PIJ_METHODS,
-        MAIN_LIGHTCCI_PIJ_METHOD,
+        "compare_N_kl",
+        "compare_NG_kl_grnanchor_v5",
+        "compare_NG_kl_sinkhorn_grnanchor_v7",
+        "NG_KLot",
+        "wyt_single_kl",
     ),
 }
 EMBEDDING_METHODS = {"joint_nmf", "laplacian"}
@@ -339,12 +200,11 @@ LIGHT_CCI_NETWORK_METHODS = {
 GRN_AUGMENTED_LIGHT_CCI_NETWORK_METHODS = {"light_cci_grn", "light_cci_grn_pgr", "joint_cci_grn"}
 LIGHT_CCI_GRN_ALLOWED_PIJ_METHODS = {
     "compare_N_kl",
-    *FEATURE_VERSION_PIJ_METHODS,
     *BASELINE_DERIVED_PIJ_METHODS,
     *CANONICAL_NG_PIJ_METHODS,
-    *EXPERIMENTAL_NG_PIJ_METHODS,
     "wyt_single_kl",
 }
+DEVELOPMENT_PIJ_METHODS: set[str] = set()
 NETWORK_METHODS = {
     "legacy_mixed_grn_cci",
     "legacy_inter_cci_only",
@@ -357,23 +217,7 @@ NETWORK_METHODS = {
     "expression_only",
     *LIGHT_CCI_NETWORK_METHODS,
 }
-DEVELOPMENT_PIJ_METHODS = {
-    "pseudotime_ot",
-    "sr_ot",
-    "sr_spatial_ot",
-    "pseudotime_spatial_ot",
-    "sr_expression_ot",
-    "pseudotime_expression_ot",
-    "expr_pseudotime_sr_ot",
-    "expr_pseudotime_sr_spatial_ot",
-    "expr_pseudotime_sr_energy_ot",
-    "expr_pseudotime_sr_energy_spatial_ot",
-    "velocity_ot",
-    "development_ot",
-    *(method for method in COMPARE_PIJ_METHODS if "_Sr" in method),
-    *(method for method in COST_FUSION_NEW_PIJ_METHODS if "_Sr_costmix" in method),
-    MAIN_LIGHTCCI_PIJ_METHOD,
-}
+DEVELOPMENT_PIJ_METHODS: set[str] = set()
 
 
 @dataclass
@@ -509,8 +353,6 @@ class TemporalRunConfig:
             raise ValueError("joint_cci_grn requires pij_method='compare_N_kl'.")
         if self.network_method == "wyt_cci_regsim" and method not in WYT_PIJ_METHODS:
             raise ValueError(f"wyt_cci_regsim requires pij_method in {sorted(WYT_PIJ_METHODS)}.")
-        if method in {"wyt_regsim_v7", "wyt_regsim_v9"} and self.network_method != "wyt_cci_regsim":
-            raise ValueError(f"{method} requires network_method='wyt_cci_regsim'.")
         if method == "wyt_single_kl" and self.network_method not in {
             "light_cci_grn",
             "light_cci_grn_pgr",

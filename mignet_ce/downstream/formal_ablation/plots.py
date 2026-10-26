@@ -21,6 +21,10 @@ SUBTITLES = {
 
 def render_table(frame:pd.DataFrame, table_id:str, out:Path, *,dpi:int=250, preview:bool=False)->None:
     if table_id not in TITLES:raise ValueError(table_id)
+    if frame.empty:
+        raise ValueError('Cannot render an empty formal-ablation table.')
+    if frame[list(TIME_PAIRS)].isna().any().any() or not np.isfinite(frame[list(TIME_PAIRS)].to_numpy(dtype=float)).all():
+        raise ValueError('Cannot render formal-ablation metrics with missing/nonfinite cells.')
     n=len(frame); cols=list(frame.columns)
     fig_h = max(5.6,2.0+n*.255)
     fig,ax=plt.subplots(figsize=(13.6,fig_h)); ax.axis('off')
@@ -28,11 +32,11 @@ def render_table(frame:pd.DataFrame, table_id:str, out:Path, *,dpi:int=250, prev
     ax.text(.014,.990,TITLES[table_id],transform=ax.transAxes,ha='left',va='top',fontsize=15,fontweight='normal',color='#202020')
     ax.text(.014,.930,SUBTITLES[table_id],transform=ax.transAxes,ha='left',va='top',fontsize=10,fontweight='normal',color='#666666')
     if preview:
-        ax.text(.986,.990,'LAYOUT PREVIEW  ·  Round 12 Pilot',transform=ax.transAxes,va='top',ha='right',fontsize=9,color='#8B8B8B')
-        ax.text(.014,.884,'Only Spot/K150/K40 have pilot values; K10 cells are intentionally blank.',transform=ax.transAxes,ha='left',va='top',fontsize=8.5,color='#999999')
+        ax.text(.986,.990,'LAYOUT DEMO  ·  SYNTHETIC DATA',transform=ax.transAxes,va='top',ha='right',fontsize=9,color='#8B8B8B')
+        ax.text(.014,.884,'Synthetic test values: NOT scientific results.',transform=ax.transAxes,ha='left',va='top',fontsize=8.5,color='#999999')
     body=[]
     for _,r in frame.iterrows():
-        body.append([('—' if pd.isna(r[c]) else f'{float(r[c]):+.4f}') if c in TIME_PAIRS else str(r[c]) for c in cols])
+        body.append([(f'{float(r[c]):+.4f}') if c in TIME_PAIRS else str(r[c]) for c in cols])
     # Similar to previous Paper Assets table: hierarchy grouping, spacious columns.
     if table_id=='table1':widths=[.195,.18,.18,.148,.148,.149]
     else:widths=[.27,.205,.175,.175,.175]
@@ -46,7 +50,7 @@ def render_table(frame:pd.DataFrame, table_id:str, out:Path, *,dpi:int=250, prev
         if r==0:txt.set_color('#4A4A4A');txt.set_fontsize(9.4)
         elif c==0:txt.set_ha('left')
     # Soft hierarchy groups, no thick separators, no emphatic maxima.
-    blocks = 4 if table_id=='table1' else 2 if table_id=='table2' else 3
+    blocks = 4 if table_id=='table1' else 3
     for k in range(len(frame["Hierarchy"].drop_duplicates())):
         first=1+k*blocks;last=first+blocks-1
         for j in range(first,last+1):

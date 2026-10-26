@@ -233,16 +233,15 @@ def build_demo_assets(
         {
             "Method": [
                 "complete_combined_coarse",
-                "complete_combined_coarse_maturity_cci",
                 "complete_combined_coarse_maturity_cci_grn",
                 "maturity_cci_grn_two_stage",
             ],
-            "DeltaEI 11.5->12.5": [2.27, 0.60, 2.21, np.nan],
-            "DeltaEI 12.5->13.5": [1.77, 0.62, 1.51, np.nan],
-            "DeltaEI 11.5->13.5": [1.18, 0.61, 1.59, np.nan],
-            "K@11.5": [9, 12, 10, np.nan],
-            "K@12.5": [8, 11, 13, np.nan],
-            "K@13.5": [11, 9, 8, np.nan],
+            "DeltaEI 11.5->12.5": [2.27, 2.21, 1.67],
+            "DeltaEI 12.5->13.5": [1.77, 1.51, 1.21],
+            "DeltaEI 11.5->13.5": [1.18, 1.59, 1.43],
+            "K@11.5": [9, 10, 7],
+            "K@12.5": [8, 13, 8],
+            "K@13.5": [11, 8, 9],
         }
     )
     table3.to_csv(tables_dir / "demo_table3_optimal_coarse.csv", index=False)

@@ -10,8 +10,12 @@ import pandas as pd
 from .style import RED, set_asset_style
 
 def _format_value(value: object, integer: bool = False) -> str:
-    if value is None or (isinstance(value, float) and not np.isfinite(value)):
-        return "-"
+    if value is None or pd.isna(value):
+        raise ValueError('正式论文表格存在缺失单元格：请检查输入数据与结果映射，不允许使用占位符。')
+    if isinstance(value, (float, np.floating, int, np.integer)) and not np.isfinite(value):
+        raise ValueError('正式论文表格存在非有限数值：必须先检查科学计算。')
+    if isinstance(value, str) and value.strip().lower() in {'', '-', '—', '--', 'nan', 'none', 'na', 'n/a'}:
+        raise ValueError('正式论文表格存在旧占位文本：不能隐藏本应报告的结果。')
     if integer:
         try:
             return str(int(round(float(value))))
@@ -270,9 +274,9 @@ def _feature_ablation_panel_frame(hierarchies: tuple[str, ...]) -> pd.DataFrame:
                     "Input": input_name,
                     "Feature method": feature_method,
                     "Probability method": probability_method,
-                    "11.5->12.5": "—",
-                    "12.5->13.5": "—",
-                    "11.5->13.5": "—",
+                    "11.5->12.5": "DEMO ONLY",
+                    "12.5->13.5": "DEMO ONLY",
+                    "11.5->13.5": "DEMO ONLY",
                 }
             )
     return pd.DataFrame(rows)
@@ -398,7 +402,7 @@ def render_feature_ablation_preview(
     fig.text(
         0.5,
         0.979,
-        "Six hierarchy groups; each group uses the same 10 controlled rows. Values intentionally blank in this style preview.",
+        "Six hierarchy groups; each group uses the same 10 controlled rows. Cells explicitly marked DEMO ONLY; no experimental values.",
         ha="center",
         va="top",
         fontsize=8.8,

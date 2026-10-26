@@ -321,27 +321,18 @@ def discover_coarse_runs(coarse_root: Path, methods: Iterable[str]) -> pd.DataFr
         if row["K"] is None and config_path.is_file():
             row["K"] = _json(config_path).get("k")
 
-        # Paper-table contract: best_epoch comes from summary.json, while DeltaEI and
-        # hard-K are read from the matching metrics.csv row whenever available.
-        metrics_path = run_dir / "metrics.csv"
-        if metrics_path.exists() and summary.get("best_epoch") is not None:
-            try:
-                history = pd.read_csv(metrics_path)
-                epoch = int(summary["best_epoch"])
-                match = history[pd.to_numeric(history.get("epoch"), errors="coerce") == epoch]
-                if len(match) == 1:
-                    best = match.iloc[0]
-                    row["metrics_path"] = str(metrics_path)
-                    row["delta_EI_paper"] = best.get("delta_EI", summary.get("delta_EI_best_checkpoint"))
-                    row["hardK_t_paper"] = best.get("hardK_t", summary.get("hardK_t"))
-                    row["hardK_tp_paper"] = best.get("hardK_tp", summary.get("hardK_tp"))
-                elif len(match) > 1:
-                    raise ValueError(f"Multiple metrics rows at best_epoch={epoch}")
-            except Exception as exc:
-                warnings.warn(f"Could not resolve best-epoch metrics for {run_dir}: {exc}", RuntimeWarning)
-        row.setdefault("delta_EI_paper", summary.get("delta_EI_best_checkpoint"))
-        row.setdefault("hardK_t_paper", summary.get("hardK_t"))
-        row.setdefault("hardK_tp_paper", summary.get("hardK_tp"))
+        # The published DeltaEI must come from the saved selected checkpoint,
+        # never from a pre-update row in metrics.csv. The canonical field is
+        # trained_delta_EI; old summaries store exactly the same contract as
+        # delta_EI_best_checkpoint.
+        trained = summary.get("trained_delta_EI", summary.get("delta_EI_best_checkpoint"))
+        if trained is None or not np.isfinite(float(trained)):
+            raise ValueError(f"Missing finite trained DeltaEI in {summary_path}")
+        row["trained_delta_EI"] = float(trained)
+        row["delta_EI_best_checkpoint"] = float(trained)
+        row["delta_EI_paper"] = float(trained)
+        row["hardK_t_paper"] = summary.get("hardK_t")
+        row["hardK_tp_paper"] = summary.get("hardK_tp")
         rows.append(row)
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -349,7 +340,7 @@ def discover_coarse_runs(coarse_root: Path, methods: Iterable[str]) -> pd.DataFr
             f"No summary.json files for methods {sorted(allowed)} were found under {root}."
         )
     frame["time_pair"] = frame["time_pair"].map(normalize_time_pair)
-    for column in ("delta_EI_best_checkpoint", "delta_EI_paper", "hardK_t", "hardK_tp", "hardK_t_paper", "hardK_tp_paper", "best_epoch", "K", "seed"):
+    for column in ("delta_EI_best_checkpoint", "trained_delta_EI", "delta_EI_paper", "hardK_t", "hardK_tp", "hardK_t_paper", "hardK_tp_paper", "best_epoch", "K", "seed"):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame

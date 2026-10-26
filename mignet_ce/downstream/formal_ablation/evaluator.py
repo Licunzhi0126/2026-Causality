@@ -14,7 +14,7 @@ from mignet_ce.pij.compare._shared.features import (
     _build_pairwise_grn_state_side, _standardize_pairwise_features,
 )
 from mignet_ce.pij.compare._shared.kl import pairwise_feature_kl
-from mignet_ce.pij.compare._shared.cosine import row_normalized_kernel_from_cost
+from mignet_ce.pij.compare._shared.cosine import pairwise_cosine_distance, row_normalized_kernel_from_cost
 from mignet_ce.pij.compare._shared.ng_kl_ot import canonical_ng_pij_from_cost_numpy
 from .config import (FormalAblationConfig, TIME_POINTS, TIME_PAIRS,
                      T1_CONFIGS, FIXED_GRN, FIXED_CCI, GRN_PROVIDER)
@@ -74,7 +74,8 @@ def _cci_pair(context, cfg, side, pair, method):
     s,t=standardized[pair]
     if s.shape[1]!=t.shape[1] or not np.isfinite(s).all() or not np.isfinite(t).all():
         raise RuntimeError(f'Invalid {side} {method} features for pair {pair}')
-    return pairwise_feature_kl(s,t,beta=cfg.beta)
+    return (pairwise_feature_kl(s,t,beta=cfg.beta),
+            pairwise_cosine_distance(s,t) if method == FIXED_CCI else None)
 
 def build_cost_blocks(cfg: FormalAblationConfig, hierarchy: tuple[str,str,str], context) -> dict:
     """GRN via integrated production GRN feature path, CCI via original low-level NMF/Lap."""
@@ -88,10 +89,15 @@ def build_cost_blocks(cfg: FormalAblationConfig, hierarchy: tuple[str,str,str], 
             for label,pair in zip(TIME_PAIRS,pair_indices):
                 s,t=raw[pair]
                 costs[(side,label,'GRN',grn)] = pairwise_feature_kl(s,t,beta=cfg.beta)
+                if grn == FIXED_GRN:
+                    costs[(side,label,'GRN',grn,'Cosine')] = pairwise_cosine_distance(s,t)
         for label in TIME_PAIRS:
             pair=(TIME_POINTS.index(label.split('->')[0]),TIME_POINTS.index(label.split('->')[1]))
             for cci in ('NMF','Laplacian'):
-                costs[(side,label,'CCI',cci)]=_cci_pair(context,cfg,side,pair,cci)
+                kl_cost, cosine_cost = _cci_pair(context,cfg,side,pair,cci)
+                costs[(side,label,'CCI',cci)] = kl_cost
+                if cci == FIXED_CCI:
+                    costs[(side,label,'CCI',cci,'Cosine')] = cosine_cost
     return costs
 
 def experiment_specs() -> tuple[tuple[str,str,str,str,str], ...]:
@@ -99,6 +105,7 @@ def experiment_specs() -> tuple[tuple[str,str,str,str,str], ...]:
     return tuple([('table1',g,c,'KL+OT','GRN+CCI') for g,c in T1_CONFIGS] + [
         ('table2',FIXED_GRN,FIXED_CCI,'KL','GRN+CCI'),
         ('table2',FIXED_GRN,FIXED_CCI,'KL+OT','GRN+CCI'),
+        ('table2',FIXED_GRN,FIXED_CCI,'Cosine','GRN+CCI'),
         ('table3',FIXED_GRN,FIXED_CCI,'KL+OT','GRN-only'),
         ('table3',FIXED_GRN,FIXED_CCI,'KL+OT','CCI-only'),
         ('table3',FIXED_GRN,FIXED_CCI,'KL+OT','GRN+CCI'),
@@ -106,8 +113,10 @@ def experiment_specs() -> tuple[tuple[str,str,str,str,str], ...]:
 
 def transition(cost: np.ndarray, method: str, tau: float):
     if cost.ndim != 2 or cost.size == 0 or not np.isfinite(cost).all() or (cost < -1e-10).any():
-        raise ValueError('Invalid formal-ablation raw KL cost.')
-    if method == 'KL':
+        raise ValueError('Invalid formal-ablation cost matrix.')
+    if method in ('KL', 'Cosine'):
+        # 'Cosine' means cosine distance + exponential row-normalized kernel;
+        # it does NOT perform Sinkhorn/OT. KL and Cosine use the same tau.
         _,p = row_normalized_kernel_from_cost(cost,tau=tau)
         return p, {'ot_residual': np.nan, 'ot_iterations': 0, 'ot_fallback': False}
     if method == 'KL+OT':
@@ -129,8 +138,11 @@ def evaluate_cost_blocks(cfg: FormalAblationConfig, hierarchy: tuple[str,str,str
         for time_pair in TIME_PAIRS:
             result = {}
             for side,layer in [('lower',lower),('upper',upper)]:
-                dg = costs[(side,time_pair,'GRN',grn)]
-                dc = costs[(side,time_pair,'CCI',cci)]
+                # Cosine baseline uses cosine *feature* distances (not cosine
+                # applied to KL costs), with identical upstream NMF/HKS features.
+                suffix = ('Cosine',) if pij == 'Cosine' else ()
+                dg = costs[(side,time_pair,'GRN',grn,*suffix)]
+                dc = costs[(side,time_pair,'CCI',cci,*suffix)]
                 if dg.shape != dc.shape: raise ValueError(f'GRN/CCI cost shape mismatch: {dg.shape} and {dc.shape}')
                 if input_group == 'GRN-only': combined = dg
                 elif input_group == 'CCI-only': combined = dc

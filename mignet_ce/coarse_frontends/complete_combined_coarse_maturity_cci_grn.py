@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Sparse complete-combined LightCCI-GRN preparation with required maturity."""
 
-from functools import partial
 
 from mignet_ce.grn_representation import GRNFeatureConfig, GRNPairEnhancer
 
@@ -17,7 +16,6 @@ from wyt_deltaei_coarse_grain.complete_combined import (
     build_macro_pij_builder,
     prepare_complete_pair,
     prepare_complete_stage,
-    strict_complete_combined_evaluation,
 )
 from wyt_deltaei_coarse_grain.complete_combined_maturity import _attach_required_maturity
 
@@ -115,22 +113,7 @@ def prepare(request: CoarseFrontendRequest) -> PreparedCoarseInput:
             "stage_t": stage_t.metadata,
             "stage_tp": stage_tp.metadata,
             "loader_optimization": "sparse_complete_stage_equivalent_to_registered_light_cci_grn_core",
-            "strict_posthoc_filename": "strict_complete_combined_maturity_evaluation.json",
         },
-        posthoc_evaluator=partial(
-            strict_complete_combined_evaluation,
-            stage_t,
-            stage_tp,
-            pair,
-            nmf_components=request.nmf_components,
-            nmf_max_iter=request.nmf_max_iter,
-            seed=request.seed,
-            grn_enhancer=grn_enhancer,
-            cci_feature_method=request.cci_feature_method,
-            cci_laplacian_components=request.cci_laplacian_components,
-            cci_laplacian_normalized=request.cci_laplacian_normalized,
-            alpha_cci=request.alpha_cci,
-        ),
     )
     prepared.validate()
     return _attach_required_maturity(prepared, request)

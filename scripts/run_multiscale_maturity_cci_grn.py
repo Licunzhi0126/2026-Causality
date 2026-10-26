@@ -356,7 +356,7 @@ def aggregate_run(spec: RunSpec, *, status: str, error: str = "") -> dict[str, o
         for key in fixed_keys:
             row[key] = summary.get(key)
         for key, value in summary.items():
-            if key.startswith("EI_strict") or key.startswith("deltaEI_strict"):
+            if key == "trained_delta_EI":
                 row[key] = value
     return row
 

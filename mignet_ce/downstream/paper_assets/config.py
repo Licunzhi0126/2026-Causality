@@ -53,7 +53,6 @@ TABLE1_CROSS_LEVELS = {
 
 DEFAULT_COARSE_METHODS = (
     "complete_combined_coarse",
-    "complete_combined_coarse_maturity_cci",
     "complete_combined_coarse_maturity_cci_grn",
 )
 DEFAULT_TABLE3_METHODS = (*DEFAULT_COARSE_METHODS, "maturity_cci_grn_two_stage")
