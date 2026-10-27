@@ -10,6 +10,7 @@ from .tables import (
     collect_optimal_runs, build_optimal_grid, build_optimal_triplet_grid, PAIRS,
 )
 from .plots import save_table, save_triplet_table, draw_natural_figure, draw_optimal_figure
+from .closure_js import natural_js_grid
 from .preflight import inspect_inputs
 
 
@@ -58,6 +59,7 @@ def main() -> None:
               "scientific_source": str(a.sensitivity_root.resolve()),
               "alpha": a.alpha, "grn_feature": a.grn_method,
               "delta_EI_protocol": "selected checkpoint + persisted training macro PIJ",
+              "closure_JS_protocol": "natural: selected measured formal sensitivity; optimal: saved train micro PIJ/S_t/S_tp/train macro PIJ, uniform mean of JS_rows in bits",
               "new_k10_input_present": "seurat_k10" in set(ei.layer),
               "source_cci_order": m["cci_order_provenance"], "requires_fresh_formal_optimal": True,
               "legacy_paper_assets_imported": False, "fig2_roi_enlarge": False,
@@ -76,6 +78,17 @@ def main() -> None:
         save_table(frame, tab/name, title=name.replace("_"," "),
                    subtitle="Actual measured values · low-signal CQ values retained; status in audit CSV · PNAS candidate" if full
                    else "EXPLORATORY ONLY · NO K10 · not a complete paper results table")
+    # Use ONLY the selected natural sensitivity measurements. Missing K10 must
+    # remain NaN/— in an explicitly marked exploratory table, never imputed.
+    natural_js = natural_js_grid(cq, pairs=PAIRS, allow_missing_k10=not full and a.allow_incomplete)
+    natural_js_name = "table_natural_closure_js_direct_bits" + suffix
+    natural_js.to_csv(tab / (natural_js_name + ".csv"), index=False)
+    save_table(natural_js, tab / natural_js_name,
+               title="Natural hierarchy · Closure JS Direct (bits)",
+               subtitle=("Measured formal-sensitive results · K150→K40 soft spot-overlap · lower is better"
+                         if full else "EXPLORATORY · K10 not provided (—) · K150→K40 soft spot-overlap · lower is better"),
+               allow_missing=not full and a.allow_incomplete)
+    status["natural_direct_js_table"] = natural_js_name
     audit_cq.to_csv(tab/("cq_low_signal_audit"+suffix+".csv"), index=False)
     status["natural_ei_rows"] = len(grid)
     status["natural_cq_rows"] = len(grid_cq)
@@ -115,6 +128,14 @@ def main() -> None:
                 cq_grid.to_csv(tab/(cq_name+".csv"),index=False)
                 save_table(cq_grid,tab/cq_name,title="Optimal induced CQ: Single-stage vs Two-stage",
                            subtitle="Measured CQ=Iretained/Iavailable; low-signal values included and documented in audit CSV",group_cols=("Method",))
+                js_grid = build_optimal_grid(runs, "closure_JS_direct_bits", require_complete=True)
+                js_name = "table_optimal_closure_js_direct_bits"
+                js_grid.to_csv(tab / (js_name + ".csv"), index=False)
+                save_table(js_grid, tab / js_name,
+                           title="Optimal coarse-graining · Closure JS Direct (bits)",
+                           subtitle="P_micro,train × S_target vs S_source × PIJ_macro,train · measured checkpoint arrays · lower is better",
+                           group_cols=("Method",))
+                status["optimal_direct_js_table"] = js_name
                 status["optimal_cq_low_signal_count"] = int((runs.signal_status != "informative").sum())
             status["optimal_trained_runs_verified"] = len(runs)
             status["optimal_rejected_runs"] = len(rejected)

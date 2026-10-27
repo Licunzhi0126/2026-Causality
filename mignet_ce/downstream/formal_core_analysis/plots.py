@@ -50,7 +50,8 @@ def _merge_group_column_visually(ax, fig, table, rendered: list[list[str]], grou
                 color="#2a2a2a", fontweight="normal", zorder=10)
 
 
-def save_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str, group_cols: tuple[str, ...] = ()) -> None:
+def save_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str, group_cols: tuple[str, ...] = (),
+               allow_missing: bool = False) -> None:
     """Formal-ablation-style table; vertically merge repeated Method groups.
 
     Values/NaNs in the data columns are never changed to improve appearance.
@@ -70,7 +71,9 @@ def save_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle: str, gr
         for col in cols:
             v = row[col]
             if pd.isna(v):
-                raise ValueError(f"Cannot render missing value in formal result: row={_}, column={col}")
+                if not allow_missing:
+                    raise ValueError(f"Cannot render missing value in formal result: row={_}, column={col}")
+                output.append("—")  # Exploratory missing K10 only; never a measured zero.
             elif isinstance(v, (float, np.floating)):
                 output.append(f"{v:+.4f}" if "ei" in title.lower() else f"{v:.4f}")
             else:

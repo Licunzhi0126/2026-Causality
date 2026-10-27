@@ -95,11 +95,16 @@ def selected_candidate_sensitivity(root: Path, alpha: float, grn_method: str, tr
         raise ValueError("Sensitivity run did not finish")
     ei = pd.read_csv(root / "alpha_layer_ei.csv")
     cq = pd.read_csv(root / "alpha_natural_cq.csv")
+    if manifest.get("cci_feature") != "laplacian_hks":
+        raise ValueError("Sensitivity manifest must identify CCI=laplacian_hks")
     def select(f):
-        required = {"grn_feature", "cci_feature", "transition", "alpha"}
+        required = {"grn_feature", "transition", "alpha"}
         if not required <= set(f):
             raise ValueError(f"Sensitivity CSV lacks selector columns: {sorted(required-set(f))}")
-        s = f.loc[f.grn_feature.eq(grn_method) & f.cci_feature.eq("laplacian_hks") & f.transition.eq(transition) & np.isclose(f.alpha, alpha)].copy()
+        # Sensitivity CQ CSV intentionally omits per-row cci_feature;
+        # the completed manifest records the single CCI representation.
+        select_cci = f.cci_feature.eq("laplacian_hks") if "cci_feature" in f.columns else True
+        s = f.loc[f.grn_feature.eq(grn_method) & select_cci & f.transition.eq(transition) & np.isclose(f.alpha, alpha)].copy()
         if s.empty:
             raise ValueError(f"No actual computed {grn_method}, α={alpha}, {transition} measurements")
         return s
@@ -193,6 +198,9 @@ def inspect_optimal_run(run_dir: Path) -> dict:
         if not np.isclose(verified_keff, float(summary[f"Keff_{label}"]), atol=1e-3, rtol=0):
             raise ValueError(f"Recomputed Keff_{label} mismatch at {p}")
     budget = information_closure_budget(micro, st, stp)
+    # Direct prediction uses the persisted TRAINED macro kernel, not induced Q.
+    from .closure_js import direct_js_bits
+    direct_js = direct_js_bits(micro, st, stp, macro_pij)
     if budget["information_identity_error"] > 1e-5:
         raise ValueError(f"Information budget identity failed: {p}")
     return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
@@ -205,6 +213,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             "I_retained_bits": float(budget["I_macro_retained_bits"]),
             "signal_status": budget["signal_status"],
             "CQ_display": float(budget["closure_quality"]),
+            "closure_JS_direct_bits": direct_js,
             "CCI": cci, "alpha": float(alpha), "run_dir": str(p.resolve()),
             "provenance": "persisted_train_PIJ_checkpoint_and_assignments_verified"}
 

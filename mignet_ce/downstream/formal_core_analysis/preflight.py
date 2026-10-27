@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from .tables import PAIRS, SCALES, METHODS, selected_candidate_sensitivity, collect_optimal_runs, build_optimal_grid
 from .plots import _coordinates
+from .closure_js import natural_js_grid
 
 
 def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path | None,
@@ -23,12 +24,26 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
     k10_ready = not any(layer == "seurat_k10" for _, layer in missing_ei)
     if missing_ei:
         cautions.append(f"Missing EI measurements for {len(missing_ei)} pair/layer conditions")
+    # Existing measurements must contain a real JS for every required hierarchy;
+    # K10 absence is permitted only in a visibly incomplete preview.
+    missing_natural_js: list[str] = []
+    for pair in PAIRS:
+        for hierarchy in ("spot->seurat_k150", "spot->seurat_k40", "seurat_k150->seurat_k40", "spot->seurat_k10"):
+            hit = cq.loc[cq.time_pair.eq(pair) & cq.hierarchy.eq(hierarchy)]
+            if len(hit) != 1 or "closure_JS_direct_bits" not in cq.columns:
+                missing_natural_js.append(f"{pair}/{hierarchy}")
+    if missing_natural_js:
+        cautions.append(f"Missing {len(missing_natural_js)} required natural direct JS cells")
+    try:
+        natural_js_grid(cq, pairs=PAIRS, allow_missing_k10=True)
+    except (ValueError, TypeError) as exc:
+        issues.append(f"Natural direct JS invalid: {exc}")
     missing_spatial = []
     if not skip_figures:
-        for stage in figure_pair.split("->"):
+        for time_point in figure_pair.split("->"):
             for scale in ("seurat_k150", "seurat_k40") + (("seurat_k10",) if k10_ready else ()):
                 try:
-                    _coordinates(data_root, scale, stage)
+                    _coordinates(data_root, scale, time_point)
                 except (FileNotFoundError, ValueError) as exc:
                     missing_spatial.append(str(exc))
     if missing_spatial:
@@ -56,6 +71,7 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
             try:
                 build_optimal_grid(runs, "trained_delta_EI", require_complete=True)
                 build_optimal_grid(runs, "CQ_display", require_complete=True)
+                build_optimal_grid(runs, "closure_JS_direct_bits", require_complete=True)
             except ValueError as exc:
                 issues.append(str(exc))
         if rejected:
@@ -69,9 +85,10 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         "trained_summary_json_found": summary_json_found,
         "alpha": alpha, "grn_method": grn_method, "has_k10": k10_ready,
         "missing_ei_conditions": [f"{a}/{b}" for a, b in missing_ei],
+        "missing_natural_direct_js": missing_natural_js,
         "trained_optimal_runs": available_runs, "missing_optimal_conditions": missing_optimal,
         "rejected_runs": rejected, "missing_spatial_maps": missing_spatial,
-        "ready_for_publication_candidate": not issues and not missing_ei and (stage == "natural" or not missing_optimal),
+        "ready_for_publication_candidate": not issues and not missing_ei and not missing_natural_js and (stage == "natural" or not missing_optimal),
         "ready_for_incomplete_preview": not issues,
         "issues": issues, "cautions": cautions,
         "does_not_train_optimal_models": True,
