@@ -12,6 +12,10 @@ from .tables import (
 from .plots import save_table, save_triplet_table, draw_natural_figure, draw_optimal_figure
 from .closure_js import natural_js_grid
 from .preflight import inspect_inputs
+from .methods import METHODS, expected_conditions
+from .tables import SCALES
+
+EXPECTED_RUNS = expected_conditions(SCALES, PAIRS)
 
 
 def main() -> None:
@@ -23,14 +27,14 @@ def main() -> None:
     p.add_argument("--grn-method", default="legacy_nmf")
     p.add_argument("--optimal-runs-root", type=Path, help="Completed, trained-PIJ verified runs")
     p.add_argument("--stage", choices=("all", "natural"), default="all",
-                   help="all: natural + 18 trained optimal runs (default); natural: EI/CQ existence tables only")
+                   help=f"all: natural + {EXPECTED_RUNS} trained optimal runs (default); natural: EI/CQ existence tables only")
     p.add_argument("--allow-incomplete", action="store_true", help="Emit explicitly named exploratory partial tables if K10 or 3x3 optimal matrix missing; never final tables")
     p.add_argument("--figure-pair", default="12.5->13.5", choices=PAIRS)
     p.add_argument("--skip-figures", action="store_true")
     p.add_argument("--preflight", action="store_true", help="Read-only audit of the data and trained optimal runs; compute no new values")
     a = p.parse_args()
     if a.stage == "all" and not a.preflight and a.optimal_runs_root is None and not a.allow_incomplete:
-        raise ValueError("Full formal core requires --optimal-runs-root containing 18 completed trained optimal runs. "
+        raise ValueError(f"Full formal core requires --optimal-runs-root containing {EXPECTED_RUNS} completed trained optimal runs. "
                          "Use --stage natural to generate EI/CQ existence without optimal runs.")
     if a.stage == "all" and not a.preflight and a.optimal_runs_root and not a.allow_incomplete:
         root = a.optimal_runs_root
@@ -40,7 +44,7 @@ def main() -> None:
         if not summary_count:
             raise RuntimeError(f"Found 0 summary.json under --optimal-runs-root={root}. "
                                "The updated GRN/CCI inputs do not themselves contain trained "
-                               "Single-stage/Two-stage models. Run both frameworks first, then "
+                               "models for all registered methods. Run the coarse methods first, then "
                                "supply their results, or use --stage natural for natural EI/CQ only.")
     if abs(a.alpha - .20)>1e-9 or a.grn_method != "legacy_nmf":
         raise ValueError("Formal core is frozen to GRN-NMF / α=0.20; other alpha/method requires a new matched formal protocol")
@@ -58,6 +62,7 @@ def main() -> None:
     status = {"status": "processing", "stage": a.stage,
               "scientific_source": str(a.sensitivity_root.resolve()),
               "alpha": a.alpha, "grn_feature": a.grn_method,
+              "methods": list(METHODS), "expected_optimal_runs": EXPECTED_RUNS,
               "delta_EI_protocol": "selected checkpoint + persisted training macro PIJ",
               "closure_JS_protocol": "natural: selected measured formal sensitivity; optimal: saved train micro PIJ/S_t/S_tp/train macro PIJ, uniform mean of JS_rows in bits",
               "new_k10_input_present": "seurat_k10" in set(ei.layer),
@@ -126,7 +131,7 @@ def main() -> None:
                 cq_grid = build_optimal_grid(runs,"CQ_display",require_complete=True)
                 cq_name="table_optimal_induced_cq"
                 cq_grid.to_csv(tab/(cq_name+".csv"),index=False)
-                save_table(cq_grid,tab/cq_name,title="Optimal induced CQ: Single-stage vs Two-stage",
+                save_table(cq_grid,tab/cq_name,title="Optimal coarse-graining · Induced CQ",
                            subtitle="Measured CQ=Iretained/Iavailable; low-signal values included and documented in audit CSV",group_cols=("Method",))
                 js_grid = build_optimal_grid(runs, "closure_JS_direct_bits", require_complete=True)
                 js_name = "table_optimal_closure_js_direct_bits"
@@ -155,7 +160,7 @@ def main() -> None:
         status["optimal"] = "not_requested"
         status["status"] = "natural_complete" if full else "incomplete_exploratory"
     else:
-        status["status"] = "complete" if full and "optimal_missing_conditions" not in status and status.get("optimal_trained_runs_verified",0)==18 else "incomplete_exploratory"
+        status["status"] = "complete" if full and "optimal_missing_conditions" not in status and status.get("optimal_trained_runs_verified",0)==EXPECTED_RUNS else "incomplete_exploratory"
     (out/"output_manifest.json").write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(status,ensure_ascii=False,indent=2))
 

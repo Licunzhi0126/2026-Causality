@@ -16,10 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-METHODS = (
-    "complete_combined_coarse_maturity_cci_grn",
-    "maturity_cci_grn_two_stage",
-)
+from .methods import METHODS, expected_conditions
 SCALES = ("spot", "seurat_k150", "seurat_k40")
 TIMES = ("11.5", "12.5", "13.5")
 PAIRS = ("11.5:12.5", "12.5:13.5", "11.5:13.5")
@@ -29,7 +26,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Native maturity -> 18 trained optimal runs -> formal Core output")
+    p = argparse.ArgumentParser(description="Native maturity -> four coarse methods -> formal Core output")
     p.add_argument("--data-root", type=Path, required=True, help="Factory root with spot/seurat_k150/seurat_k40")
     p.add_argument("--grn-root", type=Path, required=True)
     p.add_argument("--cci-root", type=Path, required=True, help="True CCI matrices AND corresponding *_index.tsv")
@@ -285,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": 2,
         "output_root": str(a.output_root),
         "optimal_runs_root": str(a.output_root / "optimal_runs"),
-        "training_conditions": 18,
+        "training_conditions": expected_conditions(SCALES, PAIRS),
         "methods": list(METHODS), "scales": list(SCALES), "pairs": list(PAIRS),
         "grn_feature": "legacy_nmf", "cci_feature": "laplacian_hks",
         "transition": "KL+OT", "alpha_cci": 0.20,

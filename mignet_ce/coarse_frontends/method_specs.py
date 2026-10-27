@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 LEGACY_SINGLE_STAGE = "legacy_single_stage"
 DYNAMIC_CLOSURE_TWO_STAGE = "dynamic_closure_two_stage"
+SHR_METHOD_8 = "shr_method_8"
+SHR_METHOD_10 = "shr_method_10"
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,16 @@ COARSE_METHOD_SPECS.update(
             requires_grn=True,
             default_lambda_dev=0.05,
             objective_version="wyt_dynamic_closure_two_stage_v2",
+        ),
+        SHR_METHOD_8: CoarseMethodSpec(
+            name=SHR_METHOD_8, training_mode=SHR_METHOD_8, frontend=SHR_METHOD_8,
+            requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
+            objective_version="shr_method_8_v1",
+        ),
+        SHR_METHOD_10: CoarseMethodSpec(
+            name=SHR_METHOD_10, training_mode=SHR_METHOD_10, frontend=SHR_METHOD_10,
+            requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
+            objective_version="shr_method_10_v1",
         ),
     }
 )

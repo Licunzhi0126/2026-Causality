@@ -659,6 +659,18 @@ def train_deltaei(prepared: PreparedCoarseInput, config):
     )
 
     training_mode = training_mode_for_method(prepared.method)
+    if training_mode == "shr_method_8":
+        from wyt_deltaei_coarse_grain.shr_method_8_trainer import SHRMethod8Config, train_shr_method_8
+
+        if not isinstance(config, SHRMethod8Config):
+            raise TypeError("shr_method_8 requires SHRMethod8Config.")
+        return train_shr_method_8(prepared, config)
+    if training_mode == "shr_method_10":
+        from wyt_deltaei_coarse_grain.shr_method_10_trainer import SHRMethod10Config, train_shr_method_10
+
+        if not isinstance(config, SHRMethod10Config):
+            raise TypeError("shr_method_10 requires SHRMethod10Config.")
+        return train_shr_method_10(prepared, config)
     if training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
         from wyt_deltaei_coarse_grain.two_stage_trainer import (
             WYTTwoStageDeltaEIConfig,

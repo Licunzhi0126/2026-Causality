@@ -8,6 +8,7 @@ from pathlib import Path
 from .tables import PAIRS, SCALES, METHODS, selected_candidate_sensitivity, collect_optimal_runs, build_optimal_grid
 from .plots import _coordinates
 from .closure_js import natural_js_grid
+from .methods import expected_conditions
 
 
 def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path | None,
@@ -77,7 +78,7 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         if rejected:
             cautions.append(f"{len(rejected)} run directories rejected by trained PIJ audit")
     if missing_optimal:
-        cautions.append(f"Missing {len(missing_optimal)} of 18 trained optimal conditions")
+        cautions.append(f"Missing {len(missing_optimal)} of {expected_conditions(SCALES, PAIRS)} trained optimal conditions")
     return {
         "pipeline": "formal_core_analysis", "stage": stage,
         "scientific_input_status": manifest.get("status"),
@@ -86,6 +87,7 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         "alpha": alpha, "grn_method": grn_method, "has_k10": k10_ready,
         "missing_ei_conditions": [f"{a}/{b}" for a, b in missing_ei],
         "missing_natural_direct_js": missing_natural_js,
+        "expected_optimal_runs": expected_conditions(SCALES, PAIRS),
         "trained_optimal_runs": available_runs, "missing_optimal_conditions": missing_optimal,
         "rejected_runs": rejected, "missing_spatial_maps": missing_spatial,
         "ready_for_publication_candidate": not issues and not missing_ei and not missing_natural_js and (stage == "natural" or not missing_optimal),

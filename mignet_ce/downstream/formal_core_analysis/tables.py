@@ -9,6 +9,7 @@ import math
 import re
 import pandas as pd
 import numpy as np
+from .methods import METHODS
 
 LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
           ("K150 -> K40", "seurat_k150", "seurat_k40"),
@@ -18,7 +19,6 @@ LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
           ("Spot -> K10", "spot", "seurat_k10"))
 SCALES = ("spot", "seurat_k150", "seurat_k40")
 PAIRS = ("11.5->12.5", "12.5->13.5", "11.5->13.5")
-METHODS = ("complete_combined_coarse_maturity_cci_grn", "maturity_cci_grn_two_stage")
 TRAINED_DELTA_KEY = "trained_delta_EI"
 
 
@@ -228,7 +228,7 @@ def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
     if not runs:
         return pd.DataFrame(), [
             f"Found 0 summary.json under {root}. GRN/CCI input files are not trained optimal runs. "
-            "Run both coarse-graining frameworks first and point --optimal-runs-root "
+            "Run the registered coarse-graining methods first and point --optimal-runs-root "
             "to their completed output directory; alternatively use --stage natural "
             "to generate only natural EI/CQ tables."
         ]
@@ -242,7 +242,7 @@ def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
 
 
 def build_optimal_grid(frame: pd.DataFrame, measure: str, *, require_complete: bool = True) -> pd.DataFrame:
-    """Two frameworks x three scales; no best-of-seed / best-of-epoch selection."""
+    """Registered methods x three scales; no additional checkpoint selection."""
     if frame.empty:
         raise ValueError("No validated optimal runs")
     needed = {"method", "input_scale", "time_pair", measure}
