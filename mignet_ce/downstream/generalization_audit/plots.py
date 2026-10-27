@@ -316,6 +316,9 @@ def render_spatial_hierarchy_audit(
     organ: str = "heart",
     style_preview: bool = False,
     dpi: int = 300,
+    title: str = "Generalization Audit · Spatial-domain hierarchy",
+    subtitle: str = "Every Spot → its K150-domain centroid  |  Every K150 centroid → dominant-overlap K40 centroid",
+    footnote: str = "Domain colors are stage-local. Lines encode Spot→K150 membership and dominant-overlap K150→K40 mapping; they do not imply cross-time domain identity.",
 ) -> dict[str, object]:
     """Render the spatial hierarchy panel used by Generalization Audit.
 
@@ -349,12 +352,12 @@ def render_spatial_hierarchy_audit(
     _draw_gain_brackets(ax_gain, gains)
 
     fig.suptitle(
-        "Generalization Audit · Spatial-domain hierarchy",
+        title,
         x=0.49, y=0.976, fontsize=15.0, fontweight="bold", color=TEAL_DARK,
     )
     fig.text(
         0.49, 0.942,
-        "Every Spot → its K150-domain centroid  |  Every K150 centroid → dominant-overlap K40 centroid",
+        subtitle,
         ha="center", va="center", fontsize=8.5, color=MUTED,
     )
     if style_preview:
@@ -365,7 +368,7 @@ def render_spatial_hierarchy_audit(
         )
     fig.text(
         0.49, 0.025,
-        "Domain colors are stage-local. Lines encode Spot→K150 membership and dominant-overlap K150→K40 mapping; they do not imply cross-time domain identity.",
+        footnote,
         ha="center", va="center", fontsize=7.4, color=MUTED,
     )
     fig.subplots_adjust(left=0.045, right=0.985, top=0.89, bottom=0.09)
