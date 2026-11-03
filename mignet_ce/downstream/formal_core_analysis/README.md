@@ -62,7 +62,7 @@ python -m mignet_ce.downstream.formal_core_analysis \
 
 单方法入口仍是 `scripts/run_wyt_deltaei_coarse_grain.py --method shr_method_8` 或 `--method shr_method_10`，所需的 H5AD、CCI/index、GRN、maturity、K 与输出目录参数沿用原入口。Method 8 默认 `--graph-projection-dim 32`，不足 32 个联合样本或输入特征时明确报错，不自动改维度；小输入测试可显式设置较低维度。Method 10 默认 `--attention-heads 4`，要求 `hidden_dim` 能被 head 数整除、两层注意力。新增 `--lambda-retain`，原有方法的默认参数与训练循环不变。
 
-SHR 最佳 checkpoint 保存在 `best_model.pt`，仍按原实现要求有限指标、正 DeltaEI 以及双端 Keff 下限；按 DeltaEI、CQ、retained information 依次择优。无合格 checkpoint 时失败，不把诊断模型当作正式结果。输出包括原项目的 `S_t/S_tp`、训练 micro/macro PIJ、assignments 和 manifests，直接兼容 `inspect_optimal_run`。Method 8 另保存 `graph_projection.npz`。
+SHR 最佳 checkpoint 保存在 `best_model.pt`。Formal Core 的 Method 10 使用 `checkpoint_keff_min=1e-6`，与 SHR_new 成功运行命令对齐；训练期 `keff_min` 仍为默认 `0.30*K`（K=40 时为 12，K=10 时为 3），正 DeltaEI 条件不变。表格如实显示 checkpoint 的实际 Keff，不按实际 Keff 再过滤；CQ 表格直接显示实测 CQ，不附加低信号标签。输出包括原项目的 `S_t/S_tp`、训练 micro/macro PIJ、assignments 和 manifests，直接兼容 `inspect_optimal_run`。Method 8 另保存 `graph_projection.npz`。
 
 ### 仅预览排版（不跑实验）
 
@@ -99,3 +99,12 @@ python -m pytest -q -p no:cacheprovider \
 测试前先创建 `output/shr_method_tests/`。每次使用新的 basetemp，以保留此前测试产物。
 
 迁移源压缩包 SHA256：`23a9d5d4780b1c6648d1128ef9e6726890c5a68236d59310a6c4bea9382cb780`。
+
+
+## Formal Core continuation protocol (2026-11)
+
+- The full orchestrator passes `--checkpoint-keff-min 1e-6` **only** to `shr_method_10`; other methods retain their existing defaults.
+- Method 10 training-time `keff_min` remains `0.30*K` (12 for K=40; 3 for K=10). Positive trained ΔEI remains mandatory.
+- `--resume --resume-incomplete` reuses every run with a valid summary and matching protocol; for Method 10 it also checks `checkpoint_keff_min=1e-6`, so older Method 10 runs with the former strict floor are backed up and rerun. Other completed methods remain reused. Incomplete or protocol-mismatched run directories are backed up and rerun only. Backups are retained with the suffix `.incomplete_backup`.
+- Natural K150→K40 direct JS can be safely backfilled at the frozen alpha=0.20 into the existing sensitivity CQ CSV; the script verifies the recorded input hashes and keeps a pre-merge backup.
+- CQ tables show the raw measured values without low-signal annotations. Keff values are preserved in CSV and shown to three decimals in the rendered triplet table.

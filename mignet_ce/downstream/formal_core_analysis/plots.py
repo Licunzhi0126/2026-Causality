@@ -139,7 +139,7 @@ def save_triplet_table(frame: pd.DataFrame, path: Path, *, title: str, subtitle:
         values = pd.to_numeric(frame[column], errors="raise")
         if not np.isfinite(values.to_numpy(dtype=float)).all():
             raise ValueError("No missing/invalid metric may be rendered")
-        pattern = "{:+.4f}" if column.endswith("::trained_delta_EI") else "{:.2f}"
+        pattern = "{:+.4f}" if column.endswith("::trained_delta_EI") else "{:.3f}"
         rendered[column] = values.map(pattern.format)
     _save_triplet_layout(rendered, path, title=title, subtitle=subtitle)
 

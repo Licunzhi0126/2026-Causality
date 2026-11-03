@@ -58,32 +58,28 @@ def build_ei_grid(ei: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) ->
     return pd.DataFrame(rows)
 
 
-def build_cq_grid(cq: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) -> tuple[pd.DataFrame, pd.DataFrame]:
-    required = {"time_pair", "hierarchy", "CQ", "signal_status", "I_available_bits", "I_retained_bits"}
+def build_cq_grid(cq: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) -> pd.DataFrame:
+    """Build the CQ table from measured values without low-signal labels or suppression."""
+    required = {"time_pair", "hierarchy", "CQ"}
     if not required <= set(cq):
         raise ValueError(f"CQ CSV missing {sorted(required-set(cq))}")
     hierarchy = (("Spot -> K150", "spot->seurat_k150"), ("Spot -> K40", "spot->seurat_k40"),
                  ("Spot -> K10", "spot->seurat_k10"))
     if not require_k10:
         hierarchy = hierarchy[:2]
-    rows, audit = [], []
+    rows = []
     for pair in pairs:
         row = {"Time pair": pair}
         for title, name in hierarchy:
             hit = cq.loc[cq.time_pair.eq(pair) & cq.hierarchy.eq(name)]
             if len(hit) != 1:
                 raise ValueError(f"Expected one CQ entry for {name} {pair}; got {len(hit)}")
-            record = hit.iloc[0].to_dict()
-            valid = str(record["signal_status"]) == "informative"
-            value = float(record["CQ"])
+            value = float(hit.iloc[0]["CQ"])
             if not (np.isfinite(value) and 0 <= value <= 1 + 1e-6):
                 raise ValueError(f"Invalid CQ at {name} {pair}: {value}")
-            row[title] = value  # Do not suppress measured low-signal CQ.
-            audit.append({"Time pair": pair, "Hierarchy": title, "raw_CQ": value,
-                          "shown_CQ": value, "signal_status": record["signal_status"],
-                          "I_available_bits": record["I_available_bits"], "I_retained_bits": record["I_retained_bits"]})
+            row[title] = value
         rows.append(row)
-    return pd.DataFrame(rows), pd.DataFrame(audit)
+    return pd.DataFrame(rows)
 
 
 def selected_candidate_sensitivity(root: Path, alpha: float, grn_method: str, transition: str = "KL+OT"):
@@ -163,6 +159,33 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             raise ValueError(f"Missing finite {field} in summary.json: {p}")
     if not np.isclose(float(raw), float(summary["EI_macro_best_checkpoint"])-float(summary["EI_micro_fixed"]), atol=1e-4, rtol=0):
         raise ValueError(f"Saved trained Delta EI disagrees with EI_macro - EI_micro: {p}")
+    if desc["method"] == "shr_method_10":
+        if float(raw) <= 0.0:
+            raise ValueError(f"Method 10 checkpoint must have positive trained Delta EI: {p}")
+        history_path = p / "training_history.csv"
+        if not history_path.is_file():
+            raise FileNotFoundError(f"Method 10 checkpoint audit requires training_history.csv: {history_path}")
+        history = pd.read_csv(history_path)
+        required_history = {"epoch", "delta_EI", "Keff_t", "Keff_tp", "checkpoint_eligible"}
+        if not required_history <= set(history.columns):
+            raise ValueError(f"Method 10 training history missing {sorted(required_history-set(history.columns))}: {history_path}")
+        best_epoch = int(summary.get("best_epoch", -1))
+        selected = history.loc[pd.to_numeric(history["epoch"], errors="coerce").eq(best_epoch)]
+        if len(selected) != 1:
+            raise ValueError(f"Method 10 best_epoch={best_epoch} is not uniquely present in training history: {history_path}")
+        selected_row = selected.iloc[0]
+        if not bool(selected_row["checkpoint_eligible"]):
+            raise ValueError(f"Method 10 saved checkpoint was not marked eligible at epoch {best_epoch}: {p}")
+        if float(selected_row["delta_EI"]) <= 0.0:
+            raise ValueError(f"Method 10 selected checkpoint has non-positive Delta EI at epoch {best_epoch}: {p}")
+        k_for_floor = int(summary.get("K", config.get("k", 0)))
+        configured_floor = config.get("checkpoint_keff_min")
+        resolved_checkpoint_floor = float(configured_floor) if configured_floor is not None else 0.25 * k_for_floor
+        if (float(selected_row["Keff_t"]) < resolved_checkpoint_floor - 1e-8
+                or float(selected_row["Keff_tp"]) < resolved_checkpoint_floor - 1e-8):
+            raise ValueError(f"Method 10 selected checkpoint violates its recorded Keff floor at epoch {best_epoch}: {p}")
+        if not np.isclose(float(selected_row["delta_EI"]), float(raw), atol=2e-4, rtol=0):
+            raise ValueError(f"Method 10 history/checkpoint Delta EI mismatch at epoch {best_epoch}: {p}")
     # Independently check the persisted training transition matrix against summary.
     from mignet_ce.downstream.analysis.dynamic_closure.analysis import effective_information
     macro_path = p / "PIJ_macro_train.npy"
@@ -203,16 +226,22 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     direct_js = direct_js_bits(micro, st, stp, macro_pij)
     if budget["information_identity_error"] > 1e-5:
         raise ValueError(f"Information budget identity failed: {p}")
+    k_value = int(summary.get("K", config.get("k", 0)))
+    configured_keff_min = config.get("keff_min")
+    configured_checkpoint_min = config.get("checkpoint_keff_min")
+    keff_min_resolved = float(configured_keff_min) if configured_keff_min is not None else 0.30 * k_value
+    checkpoint_keff_min_resolved = float(configured_checkpoint_min) if configured_checkpoint_min is not None else 0.25 * k_value
     return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
             "K": summary.get("K"), "trained_delta_EI": float(raw),
+            "keff_min_resolved": keff_min_resolved,
+            "checkpoint_keff_min": checkpoint_keff_min_resolved,
             "Keff_t": float(summary["Keff_t"]), "Keff_tp": float(summary["Keff_tp"]),
             "hardK_t": summary.get("hardK_t"), "hardK_tp": summary.get("hardK_tp"),
             "CQ_induced": float(budget["closure_quality"]),
             "I_available_bits": float(budget["I_available_bits"]),
             "I_retained_bits": float(budget["I_macro_retained_bits"]),
-            "signal_status": budget["signal_status"],
-            "CQ_display": float(budget["closure_quality"]),
+            "CQ_raw": float(budget["closure_quality"]),
             "closure_JS_direct_bits": direct_js,
             "CCI": cci, "alpha": float(alpha), "run_dir": str(p.resolve()),
             "provenance": "persisted_train_PIJ_checkpoint_and_assignments_verified"}

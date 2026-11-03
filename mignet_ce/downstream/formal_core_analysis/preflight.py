@@ -71,7 +71,7 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         if not missing_optimal:
             try:
                 build_optimal_grid(runs, "trained_delta_EI", require_complete=True)
-                build_optimal_grid(runs, "CQ_display", require_complete=True)
+                build_optimal_grid(runs, "CQ_raw", require_complete=True)
                 build_optimal_grid(runs, "closure_JS_direct_bits", require_complete=True)
             except ValueError as exc:
                 issues.append(str(exc))

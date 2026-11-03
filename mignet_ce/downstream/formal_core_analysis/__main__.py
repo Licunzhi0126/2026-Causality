@@ -74,15 +74,20 @@ def main() -> None:
     if not full and not a.allow_incomplete:
         raise FileNotFoundError("Cannot build complete EI/CQ K10 tables from spot/K150/K40 data. Use --allow-incomplete only for explicitly labeled smoke results.")
     grid = build_ei_grid(ei, require_k10=full)
-    grid_cq, audit_cq = build_cq_grid(cq, require_k10=full)
+    grid_cq = build_cq_grid(cq, require_k10=full)
     suffix = "" if full else "_PARTIAL_NO_K10"
     tab = out / "tables"
     tab.mkdir(exist_ok=True)
+    # Remove obsolete signal-label artifacts from earlier renderer versions.
+    for stale in tab.glob("cq_low_signal_audit*.csv"):
+        stale.unlink()
     for name,frame in (("table_ei_hierarchy"+suffix,grid),("table_cq_hierarchy"+suffix,grid_cq)):
         frame.to_csv(tab/(name+".csv"),index=False)
-        save_table(frame, tab/name, title=name.replace("_"," "),
-                   subtitle="Actual measured values · low-signal CQ values retained; status in audit CSV · PNAS candidate" if full
-                   else "EXPLORATORY ONLY · NO K10 · not a complete paper results table")
+        subtitle = ("Measured values · CQ shown as raw measured values without signal labels"
+                    if name.startswith("table_cq") else "Actual measured EI values")
+        if not full:
+            subtitle = "EXPLORATORY ONLY · NO K10 · not a complete paper results table"
+        save_table(frame, tab/name, title=name.replace("_"," "), subtitle=subtitle)
     # Use ONLY the selected natural sensitivity measurements. Missing K10 must
     # remain NaN/— in an explicitly marked exploratory table, never imputed.
     natural_js = natural_js_grid(cq, pairs=PAIRS, allow_missing_k10=not full and a.allow_incomplete)
@@ -94,10 +99,9 @@ def main() -> None:
                          if full else "EXPLORATORY · K10 not provided (—) · K150→K40 soft spot-overlap · lower is better"),
                allow_missing=not full and a.allow_incomplete)
     status["natural_direct_js_table"] = natural_js_name
-    audit_cq.to_csv(tab/("cq_low_signal_audit"+suffix+".csv"), index=False)
     status["natural_ei_rows"] = len(grid)
     status["natural_cq_rows"] = len(grid_cq)
-    status["cq_low_signal_reported"] = int((audit_cq.signal_status != "informative").sum())
+    status["cq_display_policy"] = "raw_measured_values_without_low_signal_labels"
     if not a.skip_figures:
         try:
             draw_natural_figure(a.data_root, grid, a.figure_pair,
@@ -128,11 +132,11 @@ def main() -> None:
                 complete.to_csv(tab/(name+".csv"),index=False)
                 save_triplet_table(complete,tab/name,title="Trained ΔEI and effective state usage",
                                    subtitle="Within each pair: ΔEI (wide), source Keff, target Keff (narrow). Saved checkpoint measurements.")
-                cq_grid = build_optimal_grid(runs,"CQ_display",require_complete=True)
+                cq_grid = build_optimal_grid(runs,"CQ_raw",require_complete=True)
                 cq_name="table_optimal_induced_cq"
                 cq_grid.to_csv(tab/(cq_name+".csv"),index=False)
                 save_table(cq_grid,tab/cq_name,title="Optimal coarse-graining · Induced CQ",
-                           subtitle="Measured CQ=Iretained/Iavailable; low-signal values included and documented in audit CSV",group_cols=("Method",))
+                           subtitle="Measured CQ=Iretained/Iavailable; raw measured values shown",group_cols=("Method",))
                 js_grid = build_optimal_grid(runs, "closure_JS_direct_bits", require_complete=True)
                 js_name = "table_optimal_closure_js_direct_bits"
                 js_grid.to_csv(tab / (js_name + ".csv"), index=False)
@@ -141,7 +145,6 @@ def main() -> None:
                            subtitle="P_micro,train × S_target vs S_source × PIJ_macro,train · measured checkpoint arrays · lower is better",
                            group_cols=("Method",))
                 status["optimal_direct_js_table"] = js_name
-                status["optimal_cq_low_signal_count"] = int((runs.signal_status != "informative").sum())
             status["optimal_trained_runs_verified"] = len(runs)
             status["optimal_rejected_runs"] = len(rejected)
             if not a.skip_figures:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -97,6 +98,8 @@ def build_argparser() -> argparse.ArgumentParser:
     resume_group = parser.add_mutually_exclusive_group()
     resume_group.add_argument("--resume", action="store_true")
     resume_group.add_argument("--force", action="store_true")
+    parser.add_argument("--resume-incomplete", action="store_true",
+                        help="Requires --resume; back up and rerun only incomplete or protocol-mismatched run directories")
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument(
         "--runner-extra-args",
@@ -240,7 +243,12 @@ def runner_command(spec: RunSpec, runner_extra_args: Sequence[str]) -> list[str]
         "--out-dir",
         str(spec.run_dir),
     ]
-    return [*command, *map(str, runner_extra_args)]
+    extra = list(map(str, runner_extra_args))
+    if spec.method == "shr_method_10" and _runner_float_option(extra, "--keff-min") is None:
+        # Materialize the native 0.30*K floor in config.json for each K.
+        # This is 12 for K=40 and 3 for K=10; it does not change the default objective.
+        extra.extend(["--keff-min", f"{0.30 * spec.k:g}"])
+    return [*command, *extra]
 
 
 def run_experiments(
@@ -250,17 +258,47 @@ def run_experiments(
     runner_extra_args: Sequence[str],
     resume: bool,
     force: bool,
+    resume_incomplete: bool,
     continue_on_error: bool,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
+    expected_checkpoint_floor = _runner_float_option(runner_extra_args, "--checkpoint-keff-min")
     for spec in specs:
         summary_path = spec.run_dir / "summary.json"
         command = runner_command(spec, runner_extra_args)
-        if resume and _valid_summary(summary_path, expected_method=spec.method):
+        method_checkpoint_floor = expected_checkpoint_floor if spec.method == "shr_method_10" else None
+        method_training_floor = (
+            _runner_float_option(runner_extra_args, "--keff-min")
+            if spec.method == "shr_method_10" else None
+        )
+        if spec.method == "shr_method_10" and method_training_floor is None:
+            method_training_floor = 0.30 * spec.k
+        if resume and _valid_summary(
+            summary_path, expected_method=spec.method,
+            expected_checkpoint_keff_min=method_checkpoint_floor,
+            expected_keff_min=method_training_floor,
+        ):
             rows.append(aggregate_run(spec, status="resumed"))
             continue
         if spec.run_dir.exists():
-            if force:
+            if resume_incomplete:
+                resolved = spec.run_dir.resolve()
+                allowed_root = (Path(out_root).resolve() / spec.method)
+                try:
+                    relative = resolved.relative_to(allowed_root)
+                except ValueError as exc:
+                    raise ValueError(f"Refusing to back up run outside {allowed_root}: {resolved}") from exc
+                if len(relative.parts) != 3:
+                    raise ValueError(f"Unexpected incomplete run-directory shape: {resolved}")
+                # Keep backups OUTSIDE optimal_runs so recursive summary discovery
+                # cannot mistake an old partial summary for a second scientific run.
+                backup = (Path(out_root).resolve().parent / "_incomplete_run_backups" / spec.method / relative)
+                if backup.exists():
+                    raise FileExistsError(f"Refusing to overwrite existing incomplete-run backup: {backup}")
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                print(f"[resume-incomplete] preserving failed artifacts at {backup}", flush=True)
+                spec.run_dir.rename(backup)
+            elif force:
                 _remove_run_dir(spec.run_dir, out_root=out_root, method=spec.method)
             elif not any(spec.run_dir.iterdir()):
                 pass
@@ -294,8 +332,12 @@ def run_experiments(
         _write_json(context_path, context)
         try:
             subprocess.run(command, check=True, cwd=REPO_ROOT)
-            if not _valid_summary(summary_path, expected_method=spec.method):
-                raise RuntimeError(f"Runner completed without a valid summary: {summary_path}")
+            if not _valid_summary(
+                summary_path, expected_method=spec.method,
+                expected_checkpoint_keff_min=method_checkpoint_floor,
+                expected_keff_min=method_training_floor,
+            ):
+                raise RuntimeError(f"Runner completed without a valid summary/protocol match: {summary_path}")
             context["status"] = "success"
             _write_json(context_path, context)
             _write_json(spec.run_dir / "experiment_context.json", context)
@@ -397,14 +439,75 @@ def write_aggregate_outputs(
     return csv_path, manifest_path
 
 
-def _valid_summary(path: Path, *, expected_method: str | None = None) -> bool:
+def _valid_summary(
+    path: Path,
+    *,
+    expected_method: str | None = None,
+    expected_checkpoint_keff_min: float | None = None,
+    expected_keff_min: float | None = None,
+) -> bool:
     try:
         payload = _read_json(path)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False
     if not SUMMARY_REQUIRED_KEYS.issubset(payload):
         return False
-    return expected_method is None or payload.get("method") == expected_method
+    if expected_method is not None and payload.get("method") != expected_method:
+        return False
+    if (expected_checkpoint_keff_min is not None or expected_keff_min is not None) and expected_method == "shr_method_10":
+        try:
+            config = _read_json(Path(path).parent / "config.json")
+            if expected_checkpoint_keff_min is not None:
+                actual_checkpoint = config.get("checkpoint_keff_min")
+                if actual_checkpoint is None or not math.isclose(
+                    float(actual_checkpoint), float(expected_checkpoint_keff_min), rel_tol=0.0, abs_tol=1e-12
+                ):
+                    return False
+            if expected_keff_min is not None:
+                actual_keff = config.get("keff_min")
+                if actual_keff is None:
+                    actual_keff = 0.30 * int(config.get("k", payload.get("K", 0)))
+                if not math.isclose(
+                    float(actual_keff), float(expected_keff_min), rel_tol=0.0, abs_tol=1e-12
+                ):
+                    return False
+            # A summary is reusable only when the exact selected epoch is
+            # independently represented as an eligible positive-Delta-EI row.
+            history_path = Path(path).parent / "training_history.csv"
+            history = pd.read_csv(history_path)
+            required_history = {"epoch", "delta_EI", "Keff_t", "Keff_tp", "checkpoint_eligible"}
+            if not required_history <= set(history.columns):
+                return False
+            best_epoch = int(payload.get("best_epoch", -1))
+            selected = history.loc[pd.to_numeric(history["epoch"], errors="coerce").eq(best_epoch)]
+            if len(selected) != 1:
+                return False
+            selected_row = selected.iloc[0]
+            selected_delta = float(selected_row["delta_EI"])
+            summary_delta = float(payload.get("trained_delta_EI", payload["delta_EI_best_checkpoint"]))
+            if (not bool(selected_row["checkpoint_eligible"]) or selected_delta <= 0.0
+                    or not math.isclose(selected_delta, summary_delta, rel_tol=0.0, abs_tol=2e-4)):
+                return False
+            if expected_checkpoint_keff_min is not None and (
+                float(selected_row["Keff_t"]) < float(expected_checkpoint_keff_min) - 1e-8
+                or float(selected_row["Keff_tp"]) < float(expected_checkpoint_keff_min) - 1e-8
+            ):
+                return False
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError, KeyError):
+            return False
+    return True
+
+
+def _runner_float_option(values: Sequence[str], option: str) -> float | None:
+    values = list(map(str, values))
+    for index, value in enumerate(values):
+        if value == option:
+            if index + 1 >= len(values):
+                raise ValueError(f"Missing value after {option}")
+            return float(values[index + 1])
+        if value.startswith(option + "="):
+            return float(value.split("=", 1)[1])
+    return None
 
 
 def _remove_run_dir(run_dir: Path, *, out_root: Path, method: str) -> None:
@@ -472,6 +575,8 @@ def roots_from_args(args: argparse.Namespace) -> InputRoots:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_argparser().parse_args(argv)
+    if args.resume_incomplete and not args.resume:
+        raise SystemExit("--resume-incomplete requires --resume")
     k_by_scale = parse_k_by_scale(args.k_by_scale, args.scales)
     pairs = parse_pairs(args.time_points, args.pairs)
     required_times = list(dict.fromkeys(time for pair in pairs for time in pair))
@@ -498,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         runner_extra_args=args.runner_extra_args,
         resume=args.resume,
         force=args.force,
+        resume_incomplete=args.resume_incomplete,
         continue_on_error=args.continue_on_error,
     )
     csv_path, _ = write_aggregate_outputs(rows, out_root=args.out_root, method=args.method)

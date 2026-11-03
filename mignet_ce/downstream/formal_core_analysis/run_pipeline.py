@@ -21,6 +21,7 @@ SCALES = ("spot", "seurat_k150", "seurat_k40")
 TIMES = ("11.5", "12.5", "13.5")
 PAIRS = ("11.5:12.5", "12.5:13.5", "11.5:13.5")
 K_BY_SCALE = ("spot=40", "seurat_k150=40", "seurat_k40=10")
+METHOD10_CHECKPOINT_KEFF_MIN = 1e-6
 STEMS = {"spot": "spot", "seurat_k150": "seurat150", "seurat_k40": "seurat"}
 REPO = Path(__file__).resolve().parents[3]
 
@@ -42,7 +43,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--alpha", type=float, default=0.20)
     p.add_argument("--figure-pair", choices=("11.5->12.5", "12.5->13.5", "11.5->13.5"), default="12.5->13.5")
     p.add_argument("--dry-run", action="store_true", help="Read-only checks and full command plan; exit nonzero if prerequisites missing")
-    p.add_argument("--resume", action="store_true", help="Reuse valid completed runs; never overwrite incomplete runs")
+    p.add_argument("--resume", action="store_true", help="Reuse valid completed runs")
+    p.add_argument("--resume-incomplete", action="store_true",
+                   help="With --resume, back up and rerun only incomplete/invalid run directories; valid completed runs are reused")
     p.add_argument("--skip-render", action="store_true", help="Only train models; do not run final paper table/figure collector")
     return p
 
@@ -135,6 +138,43 @@ def _check_sensitivity_source_hashes(a: argparse.Namespace, manifest: dict) -> t
     return checked, errors
 
 
+
+def _missing_natural_k150_k40_js(path: Path) -> list[str]:
+    """Require the three measured alpha=.20 K150->K40 direct-JS cells before training."""
+    path = Path(path)
+    if not path.is_file():
+        return [f"Missing natural CQ source for K150->K40 direct JS: {path}"]
+    with path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    required = {"grn_feature", "transition", "alpha", "time_pair", "hierarchy",
+                "mapping_method", "closure_JS_direct_bits"}
+    if not rows or not required <= set(rows[0]):
+        missing_columns = required - set(rows[0]) if rows else required
+        return [f"Natural CQ source lacks K150->K40 direct-JS fields: {sorted(missing_columns)}"]
+    issues = []
+    for pair in ("11.5->12.5", "12.5->13.5", "11.5->13.5"):
+        selected = []
+        for row in rows:
+            try:
+                alpha = float(row["alpha"])
+                value = float(row["closure_JS_direct_bits"])
+            except (TypeError, ValueError):
+                continue
+            if (row["grn_feature"] == "legacy_nmf" and row["transition"] == "KL+OT"
+                    and abs(alpha - 0.20) < 1e-9
+                    and row["time_pair"] == pair
+                    and row["hierarchy"] == "seurat_k150->seurat_k40"):
+                selected.append((row, value))
+        if len(selected) != 1:
+            issues.append(f"Natural K150->K40 direct JS requires exactly one alpha=.20 row for {pair}; found {len(selected)}")
+            continue
+        row, value = selected[0]
+        if row.get("mapping_method") != "spot_overlap_soft_contingency":
+            issues.append(f"Natural K150->K40 direct JS has invalid mapping provenance for {pair}")
+        if not (0.0 <= value <= 1.0):
+            issues.append(f"Natural K150->K40 direct JS is outside [0,1] for {pair}: {value}")
+    return issues
+
 def inspect_inputs(a: argparse.Namespace) -> dict:
     missing: list[str] = []
     for t in TIMES:
@@ -171,6 +211,9 @@ def inspect_inputs(a: argparse.Namespace) -> dict:
                 missing.extend(stale_errors)
             except (OSError, ValueError, TypeError) as exc:
                 missing.append(f"Unreadable sensitivity manifest: {exc}")
+        natural_cq_csv = a.sensitivity_root / "alpha_natural_cq.csv"
+        if natural_cq_csv.is_file():
+            missing.extend(_missing_natural_k150_k40_js(natural_cq_csv))
         ei_csv = a.sensitivity_root / "alpha_layer_ei.csv"
         if ei_csv.is_file():
             try:
@@ -191,6 +234,7 @@ def inspect_inputs(a: argparse.Namespace) -> dict:
         "missing_input_count": len(missing),
         "sensitivity_input_hashes_compared": hashes_checked,
         "missing_inputs": missing,
+        "natural_k150_k40_js_ready": not any("K150->K40 direct JS" in x for x in missing),
         "maturity_to_generate": to_generate,
         "native_maturity_builder_command": builder,
         "maturity_mode": a.maturity_mode,
@@ -224,6 +268,8 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
         ]
         if a.resume:
             command.append("--resume")
+        if a.resume_incomplete:
+            command.append("--resume-incomplete")
         command.extend([
             "--runner-extra-args",
             "--grn-feature-method", "legacy_nmf",
@@ -231,6 +277,10 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
             "--alpha-cci", "0.20",
             "--epochs", str(a.epochs), "--device", a.device,
         ])
+        if method == "shr_method_10":
+            # Match the verified SHR_new protocol. The training-time Keff floor
+            # remains the native 0.30*K (12 for K=40; 3 for K=10).
+            command.extend(["--checkpoint-keff-min", "1e-6"])
         jobs.append({"stage": "train_" + method, "expected_runs": 9, "command": command})
     if not a.skip_render:
         jobs.append({
@@ -264,13 +314,22 @@ def audit_finished_method(output_root: Path, method: str) -> list[dict]:
                 raise RuntimeError(f"Trained-PIJ verification failed for {run_dir}: {exc}") from exc
             if (item["method"], item["input_scale"], item["time_pair"]) != (method, scale, f"{source}->{target}"):
                 raise RuntimeError(f"Recorded scientific condition does not match {run_dir}: {item}")
+            if method == "shr_method_10":
+                if not abs(float(item["checkpoint_keff_min"]) - METHOD10_CHECKPOINT_KEFF_MIN) <= 1e-12:
+                    raise RuntimeError(f"Method 10 checkpoint policy mismatch at {run_dir}: expected {METHOD10_CHECKPOINT_KEFF_MIN}, got {item['checkpoint_keff_min']}")
+                expected_training_floor = 0.30 * int(item["K"])
+                if not abs(float(item["keff_min_resolved"]) - expected_training_floor) <= 1e-12:
+                    raise RuntimeError(f"Method 10 training Keff floor mismatch at {run_dir}: expected {expected_training_floor}, got {item['keff_min_resolved']}")
             rows.append({"run_dir": str(run_dir), "trained_deltaEI_bits": item["trained_delta_EI"],
-                         "CQ_signal_status": item["signal_status"]})
+                         "checkpoint_keff_min": item.get("checkpoint_keff_min"),
+                         "keff_min_resolved": item.get("keff_min_resolved")})
     return rows
 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_argparser().parse_args(argv)
+    if a.resume_incomplete and not a.resume:
+        raise SystemExit("--resume-incomplete requires --resume")
     if a.epochs <= 0:
         raise SystemExit("--epochs must be >= 1")
     if abs(a.alpha - 0.20) > 1e-12:
@@ -287,6 +346,9 @@ def main(argv: list[str] | None = None) -> int:
         "grn_feature": "legacy_nmf", "cci_feature": "laplacian_hks",
         "transition": "KL+OT", "alpha_cci": 0.20,
         "epochs": a.epochs, "seed": a.seed, "resume": a.resume,
+        "resume_incomplete": a.resume_incomplete,
+        "method10_checkpoint_keff_min": METHOD10_CHECKPOINT_KEFF_MIN,
+        "method10_training_keff_floor_policy": "0.30*K (12 for K=40; 3 for K=10)",
         "provenance_note": "Training K150/K40 uses native per-layer CSV paths. No bespoke maturity aggregator.",
         **report,
         "commands": jobs,
