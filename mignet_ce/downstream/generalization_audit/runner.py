@@ -369,3 +369,241 @@ def run(cfg: GeneralizationConfig, *, mode: str = "run", dry_run: bool = False) 
     finally:
         _save(cfg, state)
     return {"status": state["status"], "table_root": str(root / "tables")}
+
+
+SPOT40_PROTOCOL = "spot40_reconcile_train_and_report_v1"
+
+
+def expected_trainer_config(cfg: GeneralizationConfig, job: dict) -> dict:
+    """Materialize the actual existing CLI defaults, including explicit overrides."""
+    from dataclasses import asdict, fields
+    from scripts.run_wyt_deltaei_coarse_grain import build_argparser
+    from wyt_deltaei_coarse_grain import WYTTwoStageDeltaEIConfig, SHRMethod10Config
+    config_type = WYTTwoStageDeltaEIConfig if cfg.method_tag == "two_stage" else SHRMethod10Config
+    args = build_argparser().parse_args(training_command(cfg, job, cfg.method_root / "unused")[4:])
+    values = {field.name: getattr(args, field.name) for field in fields(config_type)
+              if hasattr(args, field.name) and getattr(args, field.name) is not None}
+    result = asdict(config_type(**values))
+    result["out_dir"] = str(result["out_dir"])
+    return result
+
+
+def verify_trainer_config(run_dir: Path, expected: dict) -> None:
+    """Compare scientific settings, independent of cohort/grid/output-folder differences."""
+    actual = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    for key, wanted in expected.items():
+        if key in {"out_dir", "device", "log_every"}:
+            continue
+        if key not in actual:
+            raise ValueError(f"Saved trainer configuration is missing {key}")
+        observed = actual[key]
+        if key in {"keff_min", "checkpoint_keff_min"}:
+            default = (.30 if key == "keff_min" else .25) * expected["k"]
+            observed = default if observed is None else observed
+            wanted = default if wanted is None else wanted
+        if isinstance(wanted, (int, float)) and isinstance(observed, (int, float)):
+            matches = math.isclose(float(wanted), float(observed), abs_tol=1e-12, rel_tol=1e-12)
+        else:
+            matches = observed == wanted
+        if not matches:
+            raise ValueError(f"Saved trainer {key}={observed!r}; requested {wanted!r}")
+
+
+def _source_index(cfg: GeneralizationConfig, jobs: list[dict], roots: list[Path]) -> dict:
+    """Find complete and partially recorded results without trusting manifest status labels."""
+    index = {job["job_id"]: [] for job in jobs}
+    # Basenames identify a candidate condition only. The auditor still checks exact full paths.
+    wanted = {(Path(j["inputs"]["h5ad_t"]).name, Path(j["inputs"]["h5ad_tp"]).name): j["job_id"] for j in jobs}
+    seen = set()
+    for origin in roots:
+        if not origin.is_dir():
+            print(f"[spot40] source directory absent: {origin}", flush=True)
+            continue
+        paths = sorted(origin.rglob("summary.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+        count = 0
+        for path in paths:
+            path = path.resolve()
+            try:
+                path.relative_to(origin)
+                if path in seen:
+                    continue
+                seen.add(path)
+                summary = json.loads(path.read_text(encoding="utf-8"))
+                if summary.get("method") != cfg.canonical_method or summary.get("K") != 40:
+                    continue
+                feature = json.loads(path.with_name("feature_manifest.json").read_text(encoding="utf-8"))
+                provenance = feature.get("provenance", {})
+                key = (Path(provenance.get("h5ad_t", "")).name, Path(provenance.get("h5ad_tp", "")).name)
+                job_id = wanted.get(key)
+                if job_id is not None:
+                    index[job_id].append({"run_dir": str(path.parent), "source_root": str(origin)})
+                    count += 1
+            except (OSError, ValueError, TypeError) as exc:
+                print(f"[spot40] cannot inspect source {path}: {exc}", flush=True)
+        print(f"[spot40] scanned {origin}: {count} candidate Spot/K40 runs", flush=True)
+    return index
+
+
+def _save_spot40(cfg: GeneralizationConfig, state: dict) -> dict:
+    from .tables import export_spot40_tables
+    state["updated_at"] = _utc()
+    # Keep numerical/source state even if rendering is interrupted or fails.
+    write_json(cfg.method_root / "spot40_manifest.json", state)
+    state["value_counts"] = export_spot40_tables(cfg.method_root, state, dpi=cfg.dpi)
+    write_json(cfg.method_root / "spot40_manifest.json", state)
+    return state["value_counts"]
+
+
+def _spot40_status(jobs: list[dict]) -> str:
+    return "complete" if all(j["status"] == "success" and j.get("CQ_induced") is not None for j in jobs) else "partial"
+
+
+def run_spot40(cfg: GeneralizationConfig, *, reuse_roots: Sequence[Path] = (), mode: str = "auto",
+               retrain_all: bool = False, dry_run: bool = False) -> dict:
+    """Reconcile existing runs, train missing cells, and export both organ/time tables.
+
+The original hierarchy manifest and training outputs are preserved. The separate
+spot40_manifest.json records exactly which run supplies each cell. Rendering never
+requires a training-wide fingerprint/cohort match: each chosen run is individually
+audited for method, K, seed, epochs, feature protocol, trainer settings, saved PIJ/S.
+"""
+    from .tables import inspect_spot40_run
+    cfg.validate()
+    if cfg.hierarchies != ("spot_to_k40",):
+        raise ValueError("The integrated spot40 task requires hierarchies=('spot_to_k40',)")
+    if mode not in {"auto", "run", "resume", "render"} or (mode == "render" and retrain_all):
+        raise ValueError("Invalid Spot40 mode/retrain combination")
+    root = cfg.method_root
+    manifest = root / "spot40_manifest.json"
+    previous = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else None
+    if mode == "render" and previous is not None:
+        if previous.get("protocol") != SPOT40_PROTOCOL or previous["method"] != cfg.canonical_method:
+            raise ValueError("Spot40 manifest method/protocol mismatch")
+        # Minimal render commands use the saved experiment contract and source paths.
+        state = previous
+        c = state["contract"]
+        saved_cfg = GeneralizationConfig(
+            method=c["method"], data_root=Path(c["data_root"]), developmental_root=Path(c["developmental_root"]),
+            output_root=cfg.output_root, organs=tuple(c["organs"]), pairs=tuple(":".join(p) for p in c["pairs"]),
+            hierarchies=("spot_to_k40",), epochs=c["epochs"], nmf_max_iter=c["nmf_max_iter"], seed=c["seed"],
+            device=c["device"], runner_extra_args=tuple(c["runner_extra_args"]))
+        expected = expected_trainer_config(saved_cfg, state["jobs"][0])
+        for job in state["jobs"]:
+            if job.get("run_dir") and job["status"] == "success":
+                try:
+                    origin = Path(job["source_root"])
+                    verify_trainer_config(Path(job["run_dir"]), expected)
+                    job.update(inspect_spot40_run(job, state["contract"], root, origin))
+                    job["error"] = ""
+                except Exception as exc:
+                    job.update(status="invalid_output", error=str(exc), trained_delta_EI=None, CQ_induced=None)
+                    print(f"[spot40] INVALID {job['job_id']}: {exc}", flush=True)
+        state["status"] = _spot40_status(state["jobs"])
+        counts = _save_spot40(cfg, state)
+        _print_spot40_result(root, state, counts)
+        return {"status": state["status"], "table_root": str(root / "tables")}
+
+    jobs = planned_jobs(cfg)
+    contract = cfg.contract()
+    if previous is not None and previous.get("contract") != contract and not dry_run:
+        version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+        write_json(root / "audit" / "spot40_manifests" / f"{version}.json", previous)
+    state = {"protocol": SPOT40_PROTOCOL, "method": cfg.canonical_method, "contract": contract,
+             "created_at": _utc(), "status": "planning", "jobs": jobs}
+    roots = list(dict.fromkeys([cfg.output_root.resolve(), *[Path(p).resolve() for p in reuse_roots]]))
+    # Include persisted external sources on repeated commands, even if --reuse-root is omitted later.
+    if previous is not None:
+        roots = list(dict.fromkeys([*roots, *[Path(j["source_root"]).resolve() for j in previous.get("jobs", [])
+                                             if j.get("source_root")]]))
+    state["reuse_roots"] = [str(p) for p in roots]
+    candidates = _source_index(cfg, jobs, roots)
+    expected = expected_trainer_config(cfg, jobs[0])
+
+    for job in jobs:
+        job["rejected_sources"] = []
+        job["action"] = "needs_training"
+        if retrain_all:
+            job["error"] = "Explicit --retrain-all: previous results retained; new attempt requested."
+            continue
+        for candidate in candidates[job["job_id"]]:
+            trial = {**job, **candidate}
+            try:
+                verify_trainer_config(Path(trial["run_dir"]), expected)
+                metrics = inspect_spot40_run(trial, contract, root, Path(trial["source_root"]))
+                job.update(candidate, **metrics, status="success", action="reuse", error="")
+                print(f"[spot40] REUSE {job['job_id']} <- {job['run_dir']}", flush=True)
+                break
+            except Exception as exc:
+                job["rejected_sources"].append({"run_dir": trial["run_dir"], "reason": str(exc)})
+                print(f"[spot40] REJECT {job['job_id']} <- {trial['run_dir']}: {exc}", flush=True)
+        if job["status"] != "success":
+            try:
+                input_signature(job)
+                job["error"] = "No matching audited result; training required."
+                print(f"[spot40] TRAIN NEEDED {job['job_id']}", flush=True)
+            except FileNotFoundError as exc:
+                job.update(status="missing_input", error=str(exc), trained_delta_EI=None, CQ_induced=None)
+                print(f"[spot40] MISSING {job['job_id']}: {exc}", flush=True)
+
+    if dry_run:
+        return {"status": "partial" if any(j["status"] == "missing_input" for j in jobs) else "ready",
+                "table_root": "", "jobs": jobs}
+    state["status"] = "running" if mode != "render" else _spot40_status(jobs)
+    _save_spot40(cfg, state)
+    try:
+        for job in jobs:
+            if job["status"] in {"success", "missing_input"} or mode == "render":
+                continue
+            run_dir = _next_attempt(root, job)
+            log_path = root / "logs" / job["job_id"] / f"{run_dir.name}.log"
+            command = training_command(cfg, job, run_dir)
+            attempt = {"run_dir": str(run_dir), "command": command, "started_at": _utc(), "log_path": str(log_path)}
+            job["attempts"].append(attempt)
+            job.update(run_dir=str(run_dir), source_root=str(root), log_path=str(log_path),
+                       action="train", status="running", error="", trained_delta_EI=None, CQ_induced=None)
+            _save_spot40(cfg, state)
+            print(f"[spot40] RUN {job['job_id']} -> {log_path}", flush=True)
+            try:
+                code = execute_job(command, log_path)
+                attempt["returncode"] = code
+                if code:
+                    status, error = classify_failure(code, log_path)
+                    job.update(status=status, error=error)
+                else:
+                    verify_trainer_config(run_dir, expected)
+                    job.update(inspect_spot40_run(job, contract, root, root), status="success", error="")
+            except KeyboardInterrupt:
+                job.update(status="interrupted", error="User interrupted this training attempt.")
+                raise
+            except Exception as exc:
+                job.update(status="oom" if isinstance(exc, MemoryError) else "invalid_output", error=str(exc),
+                           trained_delta_EI=None, CQ_induced=None)
+            finally:
+                attempt.update(status=job["status"], error=job["error"], finished_at=_utc())
+                _save_spot40(cfg, state)
+            if job["status"] == "success":
+                print(f"[spot40] VERIFIED {job['job_id']}: DeltaEI={job['trained_delta_EI']:+.6f}, CQ={job['CQ_induced']}", flush=True)
+            else:
+                print(f"[spot40] {job['status'].upper()} {job['job_id']}: {job['error']}", flush=True)
+    except KeyboardInterrupt:
+        state["status"] = "interrupted"
+    else:
+        state["status"] = _spot40_status(jobs)
+    finally:
+        counts = _save_spot40(cfg, state)
+    _print_spot40_result(root, state, counts)
+    return {"status": state["status"], "table_root": str(root / "tables")}
+
+
+def _print_spot40_result(root: Path, state: dict, counts: dict) -> None:
+    n = len(state["jobs"])
+    print(f"[spot40] FINAL {state['status']}: DeltaEI {counts['trained_delta_EI']}/{n}; CQ {counts['CQ_induced']}/{n}", flush=True)
+    if counts["trained_delta_EI"] == 0:
+        print("[spot40] NO VERIFIED VALUES. This is an incomplete diagnostic figure, not a successful scientific result.", flush=True)
+    for job in state["jobs"]:
+        if job["status"] != "success":
+            print(f"[spot40] UNRESOLVED {job['job_id']} [{job['status']}]: {job.get('error', '')}", flush=True)
+        elif job.get("CQ_induced") is None:
+            print(f"[spot40] CQ UNDEFINED {job['job_id']}: {job.get('cq_status')}; I_available={job.get('I_available_bits')}", flush=True)
+    print(f"[spot40] FIGURE {root / 'tables' / 'figure_spot40_deltaei_cq.png'}", flush=True)
+    print(f"[spot40] SOURCE AUDIT {root / 'spot40_sources.csv'}", flush=True)

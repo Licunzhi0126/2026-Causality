@@ -29,11 +29,14 @@ def materialize_inputs(cfg):
             path.write_bytes(b"fixture-input-not-real-h5ad")
 
 
-def saved_run(cfg, job, run_dir):
+def saved_run(cfg, job, run_dir, *, informative=False, full_config=False):
     """A mathematically consistent persisted-result fixture, not a trained model."""
     run_dir.mkdir(parents=True)
     k = job["K"]
     micro = np.full((k + 3, k + 5), 1 / (k + 5), dtype=np.float32)
+    if informative:
+        micro *= .3
+        micro[np.arange(k + 3), np.arange(k + 3) % k] += .7
     macro = (np.eye(k) * .8 + .2 / k).astype(np.float32)
     st = np.eye(k, dtype=np.float32)[np.arange(k + 3) % k]
     sp = np.eye(k, dtype=np.float32)[np.arange(k + 5) % k]
@@ -49,9 +52,20 @@ def saved_run(cfg, job, run_dir):
         usage /= usage.sum()
         summary[f"Keff_{label}"] = float(np.exp(-np.sum(usage * np.log(usage))))
     trainer = {"k": k, "epochs": cfg.epochs, "seed": cfg.seed, "checkpoint_keff_min": 1e-6}
+    if full_config:
+        trainer = runner.expected_trainer_config(cfg, job)
+        trainer["out_dir"] = str(run_dir)
     provenance = {"h5ad_t": job["inputs"]["h5ad_t"], "h5ad_tp": job["inputs"]["h5ad_tp"],
                   "grn_feature_method": "legacy_nmf", "cci_feature_method": "laplacian_hks",
                   "alpha_cci": .20, "nmf_components": 5, "nmf_max_iter_used": cfg.nmf_max_iter}
+    for side in ("t", "tp"):
+        for key in ("cci", "cci_index"):
+            provenance[f"{key}_{side}"] = job["inputs"][f"{key}_{side}"]
+        provenance[f"stage_{side}"] = {"grn_path": job["inputs"][f"grn_{side}"]}
+    input_manifest = {"maturity_provenance": {
+        side: {"path": job["inputs"][f"maturity_{side}"], "id_column": "unit_id", "maturity_column": "pseudotime",
+               "normalization": "minmax", "direction": "higher_is_more_mature"} for side in ("t", "tp")}}
+    (run_dir / "input_manifest.json").write_text(json.dumps(input_manifest), encoding="utf-8")
     for name, obj in (("summary", summary), ("config", trainer),
                       ("feature_manifest", {"method": cfg.canonical_method, "provenance": provenance})):
         (run_dir / f"{name}.json").write_text(json.dumps(obj), encoding="utf-8")
@@ -64,6 +78,12 @@ def saved_run(cfg, job, run_dir):
             writer = csv.DictWriter(handle, fieldnames=list(row))
             writer.writeheader()
             writer.writerow(row)
+
+    if informative:
+        budget = tables.induced_cq_from_saved(run_dir)
+        summary.update(I_available=budget["I_available_bits"], I_retained=budget["I_retained_bits"],
+                       closure_quality=budget["CQ_induced"])
+        (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
 
 
 @pytest.fixture
@@ -238,3 +258,167 @@ def test_real_child_memoryerror_does_not_abort_controller(tmp_path, monkeypatch,
     assert state["jobs"][0]["status"] == "oom"
     assert state["jobs"][0]["attempts"][0]["returncode"] != 0
     assert (cfg.method_root / "tables/table_generalization_train_deltaei.csv").exists()
+
+
+@pytest.fixture
+def fast_spot40_reports(monkeypatch):
+    monkeypatch.setattr(tables, "_render_spot40", lambda *args, **kwargs: None)
+
+
+def spot_config(tmp_path, **kwargs):
+    return config(tmp_path, hierarchies=("spot_to_k40",), **kwargs)
+
+
+def test_streamed_induced_cq_matches_existing_budget(tmp_path):
+    from mignet_ce.downstream.analysis.dynamic_closure.analysis import information_closure_budget
+    rng = np.random.default_rng(6)
+    p, source, target = rng.random((75, 81)), rng.random((75, 4)), rng.random((81, 4))
+    for arr in (p, source, target):
+        arr /= arr.sum(axis=1, keepdims=True)
+    for name, arr in (("PIJ_micro_train", p), ("S_t", source), ("S_tp", target)):
+        np.save(tmp_path / f"{name}.npy", arr)
+    expected = information_closure_budget(p, source, target)
+    actual = tables.induced_cq_from_saved(tmp_path)
+    assert actual["I_available_bits"] == pytest.approx(expected["I_available_bits"], abs=1e-10)
+    assert actual["I_retained_bits"] == pytest.approx(expected["I_macro_retained_bits"], abs=1e-10)
+    assert actual["CQ_induced"] == pytest.approx(expected["closure_quality"], abs=1e-8)
+
+
+def test_spot40_reuses_original_grid_and_other_folder_without_touching_legacy_manifest(tmp_path, monkeypatch, fast_spot40_reports):
+    cfg = spot_config(tmp_path)
+    jobs = runner.planned_jobs(cfg)
+    old = cfg.method_root / "manifest.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"legacy_grid":18}', encoding="utf-8")
+    lung = cfg.method_root / "runs" / jobs[0]["job_id"] / "attempt_0001"
+    saved_run(cfg, jobs[0], lung, informative=True, full_config=True)
+    external = tmp_path / "other_output"
+    brain = external / "two_stage" / "old_brain_run"
+    saved_run(cfg, jobs[1], brain, informative=True, full_config=True)
+    monkeypatch.setattr(runner, "execute_job", lambda *a: pytest.fail("Both runs should be reused"))
+    assert runner.run_spot40(cfg, reuse_roots=(external,))["status"] == "complete"
+    state = json.loads((cfg.method_root / "spot40_manifest.json").read_text(encoding="utf-8"))
+    assert [j["action"] for j in state["jobs"]] == ["reuse", "reuse"]
+    assert old.read_text(encoding="utf-8") == '{"legacy_grid":18}'
+    assert [Path(j["run_dir"]) for j in state["jobs"]] == [lung, brain]
+    assert runner.run_spot40(cfg)["status"] == "complete"  # remembers the external source root
+
+
+def test_spot40_rejects_wrong_settings_and_trains_only_missing_cell(tmp_path, monkeypatch, fast_spot40_reports):
+    cfg = spot_config(tmp_path)
+    materialize_inputs(cfg)
+    jobs = runner.planned_jobs(cfg)
+    old = cfg.method_root / "runs" / jobs[0]["job_id"] / "attempt_0001"
+    saved_run(cfg, jobs[0], old, informative=True, full_config=True)
+    bad = cfg.method_root / "runs" / jobs[1]["job_id"] / "attempt_0001"
+    saved_run(cfg, jobs[1], bad, informative=True, full_config=True)
+    trainer = json.loads((bad / "config.json").read_text())
+    trainer["lr"] = .25
+    (bad / "config.json").write_text(json.dumps(trainer))
+    calls = []
+
+    def execute(command, log):
+        path = Path(command[command.index("--out-dir") + 1])
+        calls.append(path)
+        saved_run(cfg, jobs[1], path, informative=True, full_config=True)
+        return 0
+
+    monkeypatch.setattr(runner, "execute_job", execute)
+    assert runner.run_spot40(cfg)["status"] == "complete"
+    assert len(calls) == 1 and calls[0].name == "attempt_0002"
+    assert (bad / "config.json").is_file()
+    state = json.loads((cfg.method_root / "spot40_manifest.json").read_text(encoding="utf-8"))
+    assert state["jobs"][0]["action"] == "reuse"
+    assert state["jobs"][1]["action"] == "train"
+    assert "lr" in state["jobs"][1]["rejected_sources"][0]["reason"]
+
+
+def test_spot40_zero_results_are_partial_and_explain_every_dash(tmp_path, fast_spot40_reports, capsys):
+    cfg = spot_config(tmp_path)
+    assert runner.run_spot40(cfg)["status"] == "partial"
+    stdout = capsys.readouterr().out
+    assert "NO VERIFIED VALUES" in stdout and "MISSING" in stdout
+    assert "DeltaEI 0/2; CQ 0/2" in stdout
+    assert (cfg.method_root / "spot40_failures.csv").exists()
+
+
+def test_spot40_dry_run_does_not_create_outputs(tmp_path):
+    cfg = spot_config(tmp_path)
+    assert runner.run_spot40(cfg, dry_run=True)["status"] == "partial"
+    assert not cfg.output_root.exists()
+
+
+def test_spot40_retrain_all_preserves_previous_arrays(tmp_path, monkeypatch, fast_spot40_reports):
+    cfg = spot_config(tmp_path, organs=("lung",))
+    materialize_inputs(cfg)
+    job = runner.planned_jobs(cfg)[0]
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, informative=True, full_config=True)
+    original = (path / "PIJ_macro_train.npy").read_bytes()
+
+    def execute(command, log):
+        new = Path(command[command.index("--out-dir") + 1])
+        assert new.name == "attempt_0002"
+        saved_run(cfg, job, new, informative=True, full_config=True)
+        return 0
+
+    monkeypatch.setattr(runner, "execute_job", execute)
+    assert runner.run_spot40(cfg, retrain_all=True)["status"] == "complete"
+    assert (path / "PIJ_macro_train.npy").read_bytes() == original
+
+
+def test_spot40_real_tables_and_render_use_verified_metrics(tmp_path, monkeypatch):
+    cfg = spot_config(tmp_path, organs=("lung",), method="shr_method_10")
+    job = runner.planned_jobs(cfg)[0]
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, informative=True, full_config=True)
+    monkeypatch.setattr(runner, "execute_job", lambda *a: pytest.fail("No training should occur"))
+    assert runner.run_spot40(cfg)["status"] == "complete"
+    assert runner.run_spot40(cfg, mode="render")["status"] == "complete"
+    for name in ("table_spot40_train_deltaei", "table_spot40_induced_cq", "figure_spot40_deltaei_cq"):
+        for suffix in ("png", "pdf"):
+            assert (cfg.method_root / "tables" / f"{name}.{suffix}").stat().st_size > 0
+    with (cfg.method_root / "tables/table_spot40_induced_cq.csv").open(encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["11.5->12.5"] != "—"
+
+
+def test_spot40_cli_selection():
+    args = build_parser().parse_args(["--task", "spot40", "--method", "two_stage", "--output-root", "unused",
+                                      "--reuse-root", "original", "--reuse-root", "another"])
+    assert args.reuse_root == [Path("original"), Path("another")]
+
+
+def test_spot40_undefined_cq_keeps_valid_delta_and_reports_reason(tmp_path, fast_spot40_reports, capsys):
+    cfg = spot_config(tmp_path, organs=("lung",))
+    job = runner.planned_jobs(cfg)[0]
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, full_config=True)  # uniform micro PIJ => zero available information
+    assert runner.run_spot40(cfg)["status"] == "partial"
+    text = capsys.readouterr().out
+    assert "DeltaEI 1/1; CQ 0/1" in text and "CQ UNDEFINED" in text
+    assert "undefined_zero_available_information" in (cfg.method_root / "spot40_failures.csv").read_text(encoding="utf-8-sig")
+
+
+def test_spot40_new_cohort_keeps_prior_state_and_reuses_results(tmp_path, monkeypatch, fast_spot40_reports):
+    cfg = spot_config(tmp_path)
+    for job in runner.planned_jobs(cfg):
+        saved_run(cfg, job, cfg.method_root / "runs" / job["job_id"] / "attempt_0001",
+                  informative=True, full_config=True)
+    monkeypatch.setattr(runner, "execute_job", lambda *a: pytest.fail("Existing runs must be reused"))
+    assert runner.run_spot40(cfg)["status"] == "complete"
+    assert runner.run_spot40(replace(cfg, organs=("lung",)))["status"] == "complete"
+    assert len(list((cfg.method_root / "audit/spot40_manifests").glob("*.json"))) == 1
+
+
+def test_spot40_render_detects_changed_scientific_config(tmp_path, fast_spot40_reports, capsys):
+    cfg = spot_config(tmp_path, organs=("lung",))
+    job = runner.planned_jobs(cfg)[0]
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, informative=True, full_config=True)
+    assert runner.run_spot40(cfg)["status"] == "complete"
+    actual = json.loads((path / "config.json").read_text())
+    actual["lr"] = .2
+    (path / "config.json").write_text(json.dumps(actual))
+    assert runner.run_spot40(cfg, mode="render")["status"] == "partial"
+    assert "Saved trainer lr" in capsys.readouterr().out

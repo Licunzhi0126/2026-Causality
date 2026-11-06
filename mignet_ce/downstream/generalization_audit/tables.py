@@ -49,10 +49,11 @@ def _matrix_stats(matrix) -> tuple[float, object]:
     return ei, effect
 
 
-def inspect_training_run(job: dict, contract: dict, method_root: Path) -> dict:
+def inspect_training_run(job: dict, contract: dict, method_root: Path, *, allowed_root: Path | None = None) -> dict:
     import numpy as np
     root = Path(job["run_dir"]).resolve()
-    root.relative_to((method_root / "runs" / job["job_id"]).resolve())
+    boundary = allowed_root if allowed_root is not None else method_root / "runs" / job["job_id"]
+    root.relative_to(boundary.resolve())
     summary, config = _read_json(root / "summary.json"), _read_json(root / "config.json")
     feature = _read_json(root / "feature_manifest.json")
     if summary.get("method") != contract["method"] or feature.get("method") != contract["method"]:
@@ -229,3 +230,200 @@ def _render(rows: list[dict], stem: Path, state: dict, *, dpi: int) -> None:
                 temporary.replace(target)
         finally:
             plt.close(fig)
+
+
+def induced_cq_from_saved(run_dir: Path) -> dict:
+    """Induced information retention from saved P/S, without an N x K x K tensor.
+
+This is the same uniform-Spot information budget used by dynamic_closure.analysis.
+Only the N x K observed distributions and target assignments are held in RAM;
+the potentially large N x M micro kernel is accessed through bounded mmap blocks.
+"""
+    import numpy as np
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    p = _checked_matrix(run_dir / "PIJ_micro_train.npy")
+    source = _checked_matrix(run_dir / "S_t.npy")
+    target = _checked_matrix(run_dir / "S_tp.npy")
+    if p.shape != (source.shape[0], target.shape[0]) or source.shape[1] != target.shape[1]:
+        raise ValueError("CQ micro PIJ and soft assignment dimensions disagree")
+    k = source.shape[1]
+    t = np.array(target, dtype=np.float64, copy=True)
+    t /= t.sum(axis=1, keepdims=True)
+    observed = np.empty((p.shape[0], k), dtype=np.float64)
+    source_mass = np.zeros(k, dtype=np.float64)
+    joint = np.zeros((k, k), dtype=np.float64)
+    step = max(1, min(256, 1_000_000 // p.shape[1]))
+    for start in range(0, p.shape[0], step):
+        block = np.array(p[start:start + step], dtype=np.float64, copy=True)
+        block /= block.sum(axis=1, keepdims=True)
+        future = block @ t
+        future /= future.sum(axis=1, keepdims=True)
+        membership = np.array(source[start:start + step], dtype=np.float64, copy=True)
+        membership /= membership.sum(axis=1, keepdims=True)
+        observed[start:start + step] = future
+        source_mass += membership.sum(axis=0)
+        joint += membership.T @ future
+    source_mass /= p.shape[0]
+    joint /= p.shape[0]
+    induced = np.divide(joint, source_mass[:, None], out=np.full_like(joint, 1.0 / k),
+                        where=source_mass[:, None] > 1e-12)
+    induced /= induced.sum(axis=1, keepdims=True)
+    available, _ = _matrix_stats(observed)
+    effect = source_mass @ induced
+    entropy = lambda x: -np.sum(x * np.log2(np.maximum(x, 1e-12)), axis=-1)
+    retained = float(entropy(effect) - np.sum(source_mass * entropy(induced)))
+    if retained < -1e-8 or retained > available + 1e-7:
+        raise ValueError(f"Induced information budget failed: retained={retained}, available={available}")
+    retained = max(0.0, retained)
+    quality = retained / available if available > 1e-12 else None
+    if quality is not None and not -1e-7 <= quality <= 1.000001:
+        raise ValueError(f"CQ outside [0,1]: {quality}")
+    threshold = closure_signal_threshold_bits(k)
+    return {"CQ_induced": quality, "I_available_bits": available, "I_retained_bits": retained,
+            "signal_status": "informative" if available >= threshold else "low-signal",
+            "cq_status": "defined" if quality is not None else "undefined_zero_available_information"}
+
+
+def inspect_spot40_run(job: dict, contract: dict, method_root: Path, allowed_root: Path) -> dict:
+    import numpy as np
+    checked = inspect_training_run(job, contract, method_root, allowed_root=allowed_root)
+    run_dir = Path(job["run_dir"])
+    inputs = _read_json(run_dir / "input_manifest.json")
+    provenance = _read_json(run_dir / "feature_manifest.json")["provenance"]
+    for side in ("t", "tp"):
+        for key in ("cci", "cci_index"):
+            raw = provenance.get(f"{key}_{side}")
+            if raw is None or Path(raw).resolve() != Path(job["inputs"][f"{key}_{side}"]).resolve():
+                raise ValueError(f"Saved {key}_{side} source path differs from the requested input")
+        raw = provenance.get(f"stage_{side}", {}).get("grn_path")
+        if raw is None or Path(raw).resolve() != Path(job["inputs"][f"grn_{side}"]).resolve():
+            raise ValueError(f"Saved grn_{side} source path differs from the requested input")
+        maturity = inputs.get("maturity_provenance", {}).get(side, {})
+        raw = maturity.get("path")
+        if raw is None or Path(raw).resolve() != Path(job["inputs"][f"maturity_{side}"]).resolve():
+            raise ValueError(f"Saved maturity_{side} source differs from the requested developmental CSV")
+        for key, expected in (("id_column", "unit_id"), ("maturity_column", "pseudotime"),
+                              ("normalization", "minmax"), ("direction", "higher_is_more_mature")):
+            if maturity.get(key) != expected:
+                raise ValueError(f"Saved maturity {key} differs from the requested protocol")
+    budget = induced_cq_from_saved(run_dir)
+    summary = _read_json(run_dir / "summary.json")
+    for key, measured in (("I_available", budget["I_available_bits"]), ("I_retained", budget["I_retained_bits"])):
+        if key in summary and not np.isclose(float(summary[key]), measured, atol=2e-4, rtol=0):
+            raise ValueError(f"Selected checkpoint {key} disagrees with the saved P/S information budget")
+    if budget["I_available_bits"] > 1e-6 and "closure_quality" in summary:
+        if not np.isclose(float(summary["closure_quality"]), budget["CQ_induced"], atol=2e-3, rtol=0):
+            raise ValueError("Selected checkpoint CQ disagrees with independently recomputed induced CQ")
+    return {**checked, **budget}
+
+
+def spot40_wide_rows(state: dict, metric: str) -> list[dict]:
+    import math
+    expected = {(organ, "->".join(pair)) for organ in state["contract"]["organs"]
+                for pair in state["contract"]["pairs"]}
+    indexed = {}
+    for job in state["jobs"]:
+        key = (job["organ"], job["time_pair"])
+        if key in indexed or job["hierarchy"] != "spot_to_k40" or job["K"] != 40:
+            raise ValueError(f"Duplicate or non-Spot/K40 cell in Spot40 report: {key}")
+        indexed[key] = job
+    if set(indexed) != expected:
+        raise ValueError("Spot40 report grid differs from the declared organs/time pairs")
+    rows = []
+    for organ in state["contract"]["organs"]:
+        row = {"Organ": organ.title()}
+        for pair in state["contract"]["pairs"]:
+            label = "->".join(pair)
+            job = indexed[organ, label]
+            value = job.get(metric) if job["status"] == "success" else None
+            if value is not None and not math.isfinite(float(value)):
+                raise ValueError(f"Nonfinite {metric}: {job['job_id']}")
+            row[label] = "—" if value is None else (f"{value:+.4f}" if metric == "trained_delta_EI" else f"{value:.4f}")
+        rows.append(row)
+    return rows
+
+
+def export_spot40_tables(root: Path, state: dict, *, dpi: int = 300) -> dict:
+    """One authoritative output directory for both tables, their figure and source audit."""
+    table_dir = root / "tables"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    pairs = ["->".join(pair) for pair in state["contract"]["pairs"]]
+    specs = (("train_deltaei", "trained_delta_EI", "Train ΔEI (bits)"),
+             ("induced_cq", "CQ_induced", "Induced information-retention CQ"))
+    rows_by_metric = {}
+    counts = {}
+    for name, metric, _ in specs:
+        rows = spot40_wide_rows(state, metric)
+        rows_by_metric[metric] = rows
+        counts[metric] = sum(row[pair] != "—" for row in rows for pair in pairs)
+        _write_csv(table_dir / f"table_spot40_{name}.csv", rows, ["Organ", *pairs])
+    fields = ["job_id", "organ", "method", "time_pair", "status", "trained_delta_EI", "CQ_induced",
+              "I_available_bits", "I_retained_bits", "signal_status", "cq_status", "best_epoch", "Keff_t", "Keff_tp",
+              "action", "run_dir", "source_root", "log_path", "error"]
+    _write_csv(root / "spot40_sources.csv", state["jobs"], fields)
+    failures = [{**j, "error": j.get("error") or j.get("cq_status", "")}
+                for j in state["jobs"] if j["status"] != "success" or j.get("CQ_induced") is None]
+    _write_csv(root / "spot40_failures.csv", failures, fields)
+    rejected = [dict(job_id=j["job_id"], **item) for j in state["jobs"] for item in j.get("rejected_sources", [])]
+    _write_csv(root / "spot40_rejected_sources.csv", rejected, ["job_id", "run_dir", "reason"])
+    _render_spot40(rows_by_metric, table_dir, state, counts, dpi=dpi)
+    return counts
+
+
+def _render_spot40(rows_by_metric: dict, table_dir: Path, state: dict, counts: dict, *, dpi: int) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import rc_context
+    label = "Two-stage" if state["method"] == "maturity_cci_grn_two_stage" else "SHR Method 10"
+    n = len(state["jobs"])
+    base_title = f"{label} | Spot input | K=40"
+    if not state["contract"].get("formal_profile", False):
+        base_title += " | SHORT-RUN VALIDATION"
+    if counts["trained_delta_EI"] == 0:
+        base_title += " | NO VERIFIED RESULTS"
+    elif min(counts.values()) < n:
+        base_title += " | PARTIAL"
+    pairs = ["->".join(p) for p in state["contract"]["pairs"]]
+    specs = (("train_deltaei", "trained_delta_EI", "Train ΔEI (bits)"),
+             ("induced_cq", "CQ_induced", "Induced information-retention CQ"))
+
+    def draw(ax, metric, title):
+        ax.axis("off")
+        ax.set_title(f"{title} | {counts[metric]}/{n} values", loc="left", fontsize=12, pad=8)
+        body = [[row["Organ"], *[row[p] for p in pairs]] for row in rows_by_metric[metric]]
+        widths = [.18, *([.82 / len(pairs)] * len(pairs))]
+        table = ax.table(cellText=body, colLabels=["Organ", *[p.replace("->", "→") for p in pairs]],
+                         cellLoc="center", colLoc="center", colWidths=widths, bbox=[0, .08, 1, .80])
+        table.auto_set_font_size(False)
+        table.set_fontsize(13)
+        for (r, c), cell in table.get_celld().items():
+            cell.set_facecolor("white")
+            cell.set_edgecolor("#CCCCCC")
+            cell.set_linewidth(.6)
+            cell.get_text().set_fontweight("bold" if r == 0 else "normal")
+
+    def save(fig, stem):
+        try:
+            for suffix in ("png", "pdf"):
+                path = table_dir / f"{stem}.{suffix}"
+                temporary = table_dir / f"{stem}.tmp.{suffix}"
+                fig.savefig(temporary, dpi=dpi, bbox_inches="tight", facecolor="white")
+                temporary.replace(path)
+        finally:
+            plt.close(fig)
+
+    with rc_context({"font.family": "serif", "font.serif": ["DejaVu Serif"], "pdf.fonttype": 42}):
+        for name, metric, title in specs:
+            fig, ax = plt.subplots(figsize=(12, 2.8))
+            fig.suptitle(base_title, fontsize=12)
+            draw(ax, metric, title)
+            fig.subplots_adjust(top=.77, bottom=.12, left=.04, right=.96)
+            save(fig, f"table_spot40_{name}")
+        fig, axes = plt.subplots(2, 1, figsize=(12, 5.5))
+        fig.suptitle(base_title, fontsize=13)
+        for ax, (_, metric, title) in zip(axes, specs):
+            draw(ax, metric, title)
+        fig.text(.04, .018, "— = unavailable/failed/undefined CQ. Finite low-signal CQ values are retained. See spot40_sources.csv.", fontsize=8)
+        fig.subplots_adjust(top=.88, bottom=.08, hspace=.40, left=.04, right=.96)
+        save(fig, "figure_spot40_deltaei_cq")
