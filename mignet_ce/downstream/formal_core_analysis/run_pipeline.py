@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Native maturity -> two-stage and single-stage control -> formal Core output")
+    p = argparse.ArgumentParser(description="Native maturity -> five coarse-graining methods -> formal Core output")
     p.add_argument("--data-root", type=Path, required=True, help="Factory root with spot/seurat_k150/seurat_k40")
     p.add_argument("--grn-root", type=Path, required=True)
     p.add_argument("--cci-root", type=Path, required=True, help="True CCI matrices AND corresponding *_index.tsv")

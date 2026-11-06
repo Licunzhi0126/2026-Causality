@@ -111,7 +111,9 @@ def test_joint_checkpoint_requires_ei_retention_and_both_keff_floors() -> None:
     assert joint_checkpoint_eligible(keff_t=2.1, keff_tp=2.1, **common)
 
 
-def test_two_stage_smoke_writes_independent_checkpoints_and_stochastic_outputs(tmp_path) -> None:
+@pytest.mark.parametrize("method,policy", [("maturity_cci_grn_two_stage", "legacy_floor"),
+    ("two_stage_noKeff", "iterative_no_floor"), ("two_stage_noKeff_HardEI", "iterative_no_floor")])
+def test_two_stage_smoke_writes_independent_checkpoints_and_stochastic_outputs(tmp_path, method, policy) -> None:
     from wyt_deltaei_coarse_grain.trainer import train_deltaei
     from mignet_ce.metrics import effective_information
 
@@ -121,7 +123,7 @@ def test_two_stage_smoke_writes_independent_checkpoints_and_stochastic_outputs(t
         logits = inputs.z_macro_t @ inputs.z_macro_tp.T
         return torch.softmax(logits + 4.0 * torch.eye(logits.shape[0], device=logits.device), dim=1)
 
-    prepared = _prepared()
+    prepared = _prepared(method)
     micro = .05 * prepared.micro_pij + .95 / prepared.micro_pij.shape[1]
     prepared = replace(prepared, micro_pij=micro, micro_ei=effective_information(micro.copy()),
                        macro_pij_builder=synthetic_macro)
@@ -138,11 +140,14 @@ def test_two_stage_smoke_writes_independent_checkpoints_and_stochastic_outputs(t
             knn_k=2,
             log_every=1,
             lambda_dev=0.05,
-            ei_retain_ratio=0.01,
+            ei_retain_ratio=1.0 if method == "two_stage_noKeff_HardEI" else .85,
             retain_floor_ratio=0.01,
             checkpoint_retain_ratio=0.01,
-            keff_min=1.0,
-            checkpoint_keff_min=1.0,
+            keff_policy=policy,
+            lambda_keff=1.0 if policy == "legacy_floor" else 0.0,
+            lambda_dead_usage=.02 if policy == "legacy_floor" else 0.0,
+            keff_min=1.0 if policy == "legacy_floor" else None,
+            checkpoint_keff_min=1.0 if policy == "legacy_floor" else None,
         ),
     )
     assert (tmp_path / "best_ei.pt").exists()
@@ -150,6 +155,11 @@ def test_two_stage_smoke_writes_independent_checkpoints_and_stochastic_outputs(t
     assert (tmp_path / "best_joint.pt").exists()
     assert not (tmp_path / "best_model.pt").exists()
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["method"] == method
+    assert summary["keff_policy"] == policy
+    if policy == "iterative_no_floor":
+        assert summary["resolved_keff_min"] is None and summary["resolved_checkpoint_keff_min"] is None
+        assert all(row["weighted_keff"] == row["weighted_dead_usage"] == 0 for row in result.metrics)
     assert summary["best_joint_fallback_used"] is False
     assert summary["best_joint_selection"] == "strict_retained_first"
     assert summary["delta_EI_best_checkpoint"] > 0
@@ -213,7 +223,7 @@ def test_real_file_formats_share_input_protocol_and_differentiable_macro_builder
         mid_dim=8, nmf_max_iter=3,
     )
     original = prepare_original(request)
-    for method in ("maturity_cci_grn_two_stage",):
+    for method in ("maturity_cci_grn_two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"):
         prepared = prepare_coarse_input(method, request)
         assert prepared.method == method
         for key in ("encoder_features_t", "encoder_features_tp", "micro_features_t", "micro_pij", "maturity_t"):
@@ -265,6 +275,58 @@ def test_cli_selects_two_stage_config_and_preserves_its_options(tmp_path, monkey
     assert isinstance(config, WYTTwoStageDeltaEIConfig)
     assert config.lambda_retain_norm == .3 and config.lambda_retain_floor == 1.5
     assert config.stage1_ratio == .4 and config.lambda_dev == .05
+
+
+def test_no_keff_variants_share_configuration_except_ei_target(tmp_path):
+    from dataclasses import asdict
+    from scripts.run_wyt_deltaei_coarse_grain import build_argparser
+    from wyt_deltaei_coarse_grain.training_config import build_training_config
+    configs = [build_training_config(build_argparser().parse_args(_cli_args(method, tmp_path)))
+               for method in ("two_stage_noKeff", "two_stage_noKeff_HardEI")]
+    assert [cfg.ei_retain_ratio for cfg in configs] == [.85, 1.0]
+    values = [asdict(cfg) for cfg in configs]
+    for value in values:
+        value.pop("ei_retain_ratio")
+        assert value["lambda_keff"] == value["lambda_dead_usage"] == 0
+        assert value["keff_min"] is value["checkpoint_keff_min"] is None
+    assert values[0] == values[1]
+
+
+def test_no_keff_selection_keeps_ei_target_and_native_relaxed_fallback():
+    from wyt_deltaei_coarse_grain.two_stage_trainer import relaxed_stage2_checkpoint_eligible
+    common = dict(delta_ei=.9, available_information=.1, retained_information=.08,
+                  keff_t=1., keff_tp=1., ei_reference=1., retained_reference=.1,
+                  retained_ratio=.5, signal_threshold_bits=.01, checkpoint_keff_min=None)
+    assert joint_checkpoint_eligible(**common, ei_retain_ratio=.85)
+    assert not joint_checkpoint_eligible(**common, ei_retain_ratio=1.)
+    assert relaxed_stage2_checkpoint_eligible(delta_ei=.9, available_information=.1,
+        keff_t=1., keff_tp=1., signal_threshold_bits=.01, checkpoint_keff_min=None)
+    assert not joint_checkpoint_eligible(**{**common, "keff_t": float("nan")}, ei_retain_ratio=.85)
+
+
+@pytest.mark.parametrize("method", ["two_stage_noKeff", "two_stage_noKeff_HardEI"])
+def test_no_keff_native_fallback_is_exported_and_labeled(tmp_path, monkeypatch, method):
+    import wyt_deltaei_coarse_grain.two_stage_trainer as trainer
+    from scripts.run_wyt_deltaei_coarse_grain import build_argparser
+    from wyt_deltaei_coarse_grain.training_config import build_training_config
+    from mignet_ce.metrics import effective_information
+    from wyt_deltaei_coarse_grain import train_deltaei
+    def macro(inputs):
+        logits = inputs.z_macro_t @ inputs.z_macro_tp.T
+        return torch.softmax(logits + 4 * torch.eye(2), dim=1)
+    prepared = _prepared(method)
+    micro = .05 * prepared.micro_pij + .95 / prepared.micro_pij.shape[1]
+    prepared = replace(prepared, micro_pij=micro, micro_ei=effective_information(micro.copy()), macro_pij_builder=macro)
+    args = build_argparser().parse_args(_cli_args(method, tmp_path / "run") + [
+        "--epochs", "4", "--stage1-ratio", ".5", "--hidden-dim", "8", "--mid-dim", "4", "--knn-k", "2"])
+    cfg = build_training_config(args)
+    monkeypatch.setattr(trainer, "joint_checkpoint_eligible", lambda **_: False)
+    result = train_deltaei(prepared, cfg)
+    summary = json.loads((result.out_dir / "summary.json").read_text())
+    assert summary["best_joint_fallback_used"] is True and summary["strict_checkpoint_found"] is False
+    assert summary["ei_retain_ratio"] == (.85 if method == "two_stage_noKeff" else 1.)
+    assert summary["selected_checkpoint"] == "best_joint.pt"
+    assert summary["trained_delta_EI"] > 0 and summary["checkpoint_metric_state_consistent"] is True
 
 
 @pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])

@@ -23,6 +23,15 @@ PROTOCOL = "organ_independent_trained_deltaei_v1"
 METHOD_ALIASES = {
     "two_stage": "maturity_cci_grn_two_stage",
     "maturity_cci_grn_two_stage": "maturity_cci_grn_two_stage",
+    "two_stage_noKeff": "two_stage_noKeff",
+    "two_stage_noKeff_HardEI": "two_stage_noKeff_HardEI",
+    "single_stage_cq_only": "single_stage_cq_only",
+}
+METHOD_LABELS = {
+    "maturity_cci_grn_two_stage": "Two-stage",
+    "two_stage_noKeff": "two_stage_noKeff",
+    "two_stage_noKeff_HardEI": "two_stage_noKeff_HardEI",
+    "single_stage_cq_only": "single_stage_cq_only",
 }
 HIERARCHIES = {
     "spot_to_k150": ("Spot -> K150", "spot", 150),
@@ -69,9 +78,7 @@ class GeneralizationConfig:
 
     @property
     def method_tag(self) -> str:
-        if self.canonical_method != "maturity_cci_grn_two_stage":
-            raise ValueError(f"Unsupported method: {self.method}")
-        return "two_stage"
+        return "two_stage" if self.canonical_method == "maturity_cci_grn_two_stage" else self.canonical_method
 
     @property
     def method_root(self) -> Path:
@@ -99,8 +106,9 @@ class GeneralizationConfig:
             if not values or len(set(values)) != len(values) or not set(values) <= allowed:
                 raise ValueError(f"Invalid or duplicate experiment selection: {values}")
         self.time_pairs()
-        if self.epochs < 2 or self.nmf_max_iter < 1 or self.dpi < 1 or self.seed < 0:
-            raise ValueError("epochs >= 2, positive NMF iterations/DPI, and nonnegative seed are required.")
+        minimum_epochs = 1 if self.canonical_method == "single_stage_cq_only" else 2
+        if self.epochs < minimum_epochs or self.nmf_max_iter < 1 or self.dpi < 1 or self.seed < 0:
+            raise ValueError("Positive epochs (>=2 for two-stage), NMF iterations/DPI, and nonnegative seed are required.")
         if self.device not in {"cpu", "cuda", "auto"}:
             raise ValueError("Invalid device")
         protected = {
@@ -117,6 +125,7 @@ class GeneralizationConfig:
             "--retain-floor-ratio", "--lambda-retain-floor", "--inter-margin", "--active-usage-threshold",
             "--keff-min", "--checkpoint-keff-min", "--lambda-keff", "--lambda-dead-usage", "--min-usage",
             "--low-signal-pair-weight", "--low-signal-threshold-bits", "--checkpoint-retain-ratio",
+            "--lambda-cq", "--lambda-available-floor", "--lambda-retained-floor-abs", "--retained-floor-abs",
         }
         for value in self.runner_extra_args:
             name = value.split("=", 1)[0]
@@ -135,7 +144,8 @@ class GeneralizationConfig:
             "nmf_max_iter": self.nmf_max_iter, "seed": self.seed, "device": self.device,
             "runner_extra_args": list(self.runner_extra_args),
             "features": {"grn": "legacy_nmf", "cci": "laplacian_hks", "alpha_cci": .20},
-            "checkpoint_policy": "native two-stage checkpoint selection",
+            "checkpoint_policy": ("native CQ-only checkpoint selection" if self.canonical_method == "single_stage_cq_only"
+                                  else "native two-stage checkpoint selection"),
             "experiment": "independent within-organ retraining, independent hierarchy columns",
             "formal_profile": self.epochs == 1500 and self.nmf_max_iter == 300 and not self.runner_extra_args,
         }
@@ -375,16 +385,14 @@ SPOT40_PROTOCOL = "spot40_reconcile_train_and_report_v1"
 
 def expected_trainer_config(cfg: GeneralizationConfig, job: dict) -> dict:
     """Materialize the actual existing CLI defaults, including explicit overrides."""
-    from dataclasses import asdict, fields
+    from dataclasses import asdict
     from scripts.run_wyt_deltaei_coarse_grain import build_argparser
-    from wyt_deltaei_coarse_grain import WYTTwoStageDeltaEIConfig
-    config_type = WYTTwoStageDeltaEIConfig
+    from wyt_deltaei_coarse_grain.training_config import build_training_config
     args = build_argparser().parse_args(training_command(cfg, job, cfg.method_root / "unused")[4:])
-    values = {field.name: getattr(args, field.name) for field in fields(config_type)
-              if hasattr(args, field.name) and getattr(args, field.name) is not None}
-    result = asdict(config_type(**values))
+    result = asdict(build_training_config(args))
     result["out_dir"] = str(result["out_dir"])
     return result
+
 
 
 def verify_trainer_config(run_dir: Path, expected: dict) -> None:
@@ -393,10 +401,13 @@ def verify_trainer_config(run_dir: Path, expected: dict) -> None:
     for key, wanted in expected.items():
         if key in {"out_dir", "device", "log_every"}:
             continue
+        if key == "keff_policy" and key not in actual and wanted == "legacy_floor":
+            # Historical native two-stage configs predate the explicit policy field.
+            continue
         if key not in actual:
             raise ValueError(f"Saved trainer configuration is missing {key}")
         observed = actual[key]
-        if key in {"keff_min", "checkpoint_keff_min"}:
+        if key in {"keff_min", "checkpoint_keff_min"} and expected.get("keff_policy", "legacy_floor") == "legacy_floor":
             default = (.30 if key == "keff_min" else .25) * expected["k"]
             observed = default if observed is None else observed
             wanted = default if wanted is None else wanted

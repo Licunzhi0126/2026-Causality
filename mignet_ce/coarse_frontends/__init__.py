@@ -2,6 +2,7 @@
 
 from mignet_ce.coarse_frontends.method_specs import (
     COARSE_METHOD_SPECS,
+    CQ_ONLY,
     DYNAMIC_CLOSURE_TWO_STAGE,
     LEGACY_SINGLE_STAGE,
     CoarseMethodSpec,
@@ -12,6 +13,7 @@ from mignet_ce.coarse_frontends.method_specs import (
 __all__ = [
     "COARSE_FRONTEND_REGISTRY",
     "COARSE_METHOD_SPECS",
+    "CQ_ONLY",
     "CoarseMethodSpec",
     "CoarseFrontendRequest",
     "DYNAMIC_CLOSURE_TWO_STAGE",

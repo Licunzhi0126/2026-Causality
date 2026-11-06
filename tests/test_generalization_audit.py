@@ -69,7 +69,7 @@ def saved_run(cfg, job, run_dir, *, informative=False, full_config=False):
     for name, obj in (("summary", summary), ("config", trainer),
                       ("feature_manifest", {"method": cfg.canonical_method, "provenance": provenance})):
         (run_dir / f"{name}.json").write_text(json.dumps(obj), encoding="utf-8")
-    checkpoint = "best_joint.pt"
+    checkpoint = "best_cq.pt" if cfg.canonical_method == "single_stage_cq_only" else "best_joint.pt"
     (run_dir / checkpoint).touch()
 
     if informative:
@@ -130,7 +130,7 @@ def test_streamed_ei_matches_existing_formula_and_rejects_bad_arrays():
         tables._matrix_stats(np.array([[float("nan"), 0.], [.5, .5]]))
 
 
-@pytest.mark.parametrize("method", ["two_stage", "maturity_cci_grn_two_stage"])
+@pytest.mark.parametrize("method", list(runner.METHOD_ALIASES))
 def test_independent_saved_kernel_and_keff_audit(tmp_path, method):
     cfg = config(tmp_path, method=method)
     job = runner.planned_jobs(cfg)[0]
@@ -276,8 +276,9 @@ def test_streamed_induced_cq_matches_existing_budget(tmp_path):
     assert actual["CQ_induced"] == pytest.approx(expected["closure_quality"], abs=1e-8)
 
 
-def test_spot40_reuses_original_grid_and_other_folder_without_touching_legacy_manifest(tmp_path, monkeypatch, fast_spot40_reports):
-    cfg = spot_config(tmp_path)
+@pytest.mark.parametrize("method", ["two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"])
+def test_spot40_reuses_original_grid_and_other_folder_without_touching_legacy_manifest(tmp_path, monkeypatch, fast_spot40_reports, method):
+    cfg = spot_config(tmp_path, method=method)
     jobs = runner.planned_jobs(cfg)
     old = cfg.method_root / "manifest.json"
     old.parent.mkdir(parents=True)
@@ -285,7 +286,7 @@ def test_spot40_reuses_original_grid_and_other_folder_without_touching_legacy_ma
     lung = cfg.method_root / "runs" / jobs[0]["job_id"] / "attempt_0001"
     saved_run(cfg, jobs[0], lung, informative=True, full_config=True)
     external = tmp_path / "other_output"
-    brain = external / "two_stage" / "old_brain_run"
+    brain = external / cfg.method_tag / "old_brain_run"
     saved_run(cfg, jobs[1], brain, informative=True, full_config=True)
     monkeypatch.setattr(runner, "execute_job", lambda *a: pytest.fail("Both runs should be reused"))
     assert runner.run_spot40(cfg, reuse_roots=(external,))["status"] == "complete"
@@ -359,8 +360,9 @@ def test_spot40_retrain_all_preserves_previous_arrays(tmp_path, monkeypatch, fas
     assert (path / "PIJ_macro_train.npy").read_bytes() == original
 
 
-def test_spot40_real_tables_and_render_use_verified_metrics(tmp_path, monkeypatch):
-    cfg = spot_config(tmp_path, organs=("lung",))
+@pytest.mark.parametrize("method", ["two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"])
+def test_spot40_real_tables_and_render_use_verified_metrics(tmp_path, monkeypatch, method):
+    cfg = spot_config(tmp_path, organs=("lung",), method=method)
     job = runner.planned_jobs(cfg)[0]
     path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
     saved_run(cfg, job, path, informative=True, full_config=True)
@@ -379,6 +381,26 @@ def test_spot40_cli_selection():
     args = build_parser().parse_args(["--task", "spot40", "--method", "two_stage", "--output-root", "unused",
                                       "--reuse-root", "original", "--reuse-root", "another"])
     assert args.reuse_root == [Path("original"), Path("another")]
+
+
+@pytest.mark.parametrize("method", ["two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"])
+def test_new_methods_preserve_disabled_floors_and_reject_mismatched_reuse(tmp_path, method):
+    cfg = spot_config(tmp_path, method=method, organs=("lung",))
+    job = runner.planned_jobs(cfg)[0]
+    expected = runner.expected_trainer_config(cfg, job)
+    assert expected["keff_policy"] == "iterative_no_floor"
+    assert expected["lambda_keff"] == expected["lambda_dead_usage"] == 0
+    assert expected["keff_min"] is expected["checkpoint_keff_min"] is None
+    if method != "single_stage_cq_only":
+        assert expected["ei_retain_ratio"] == (.85 if method == "two_stage_noKeff" else 1.)
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, informative=True, full_config=True)
+    runner.verify_trainer_config(path, expected)
+    altered = json.loads((path / "config.json").read_text())
+    altered["checkpoint_keff_min"] = .25 * job["K"]
+    (path / "config.json").write_text(json.dumps(altered))
+    with pytest.raises(ValueError, match="checkpoint_keff_min"):
+        runner.verify_trainer_config(path, expected)
 
 
 def test_spot40_undefined_cq_keeps_valid_delta_and_reports_reason(tmp_path, fast_spot40_reports, capsys):

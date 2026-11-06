@@ -26,14 +26,14 @@ def _measurements():
     ])
 
 
-def test_both_methods_appear_in_all_three_grids():
+def test_all_five_methods_appear_in_all_three_grids():
     assert [METHOD_LABELS[method] for method in METHODS] == [
-        "Single-stage", "Two-stage"]
+        "Single-stage", "Two-stage", "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"]
     frame = _measurements()
-    assert len(frame) == expected_conditions(SCALES, PAIRS) == 18
+    assert len(frame) == expected_conditions(SCALES, PAIRS) == 45
     for grid in (build_optimal_triplet_grid(frame), build_optimal_grid(frame, "CQ_display"),
                  build_optimal_grid(frame, "closure_JS_direct_bits")):
-        assert len(grid) == 6
+        assert len(grid) == 15
         assert list(zip(grid["Method"], grid["Input scale"])) == list(product(METHODS, SCALES))
 
 
@@ -46,7 +46,7 @@ def test_missing_or_duplicate_conditions_are_not_silently_accepted():
             builder(pd.concat([frame, frame.iloc[[-1]]], ignore_index=True))
 
 
-def test_pipeline_generates_two_method_jobs_without_running_them(tmp_path):
+def test_pipeline_generates_five_method_jobs_without_running_them(tmp_path):
     args = run_pipeline.build_argparser().parse_args([
         "--data-root", str(tmp_path / "data"), "--grn-root", str(tmp_path / "grn"),
         "--cci-root", str(tmp_path / "cci"), "--developmental-root", str(tmp_path / "dev"),
@@ -55,7 +55,7 @@ def test_pipeline_generates_two_method_jobs_without_running_them(tmp_path):
     ])
     jobs = run_pipeline.make_commands(args, None)
     train_jobs = [job for job in jobs if job["stage"].startswith("train_")]
-    assert len(train_jobs) == 2 and sum(job["expected_runs"] for job in train_jobs) == 18
+    assert len(train_jobs) == 5 and sum(job["expected_runs"] for job in train_jobs) == 45
     assert [job["command"][job["command"].index("--method") + 1] for job in train_jobs] == list(METHODS)
     assert all("--resume" in job["command"] for job in train_jobs)
     assert not (tmp_path / "out").exists()
@@ -64,8 +64,8 @@ def test_pipeline_generates_two_method_jobs_without_running_them(tmp_path):
 def test_preview_has_no_scientific_values_and_preserves_existing_outputs(tmp_path):
     out = tmp_path / "preview"
     manifest = generate_preview(out)
-    assert manifest["rows_per_table"] == 6
-    assert manifest["expected_formal_conditions"] == 18
+    assert manifest["rows_per_table"] == 15
+    assert manifest["expected_formal_conditions"] == 45
     assert manifest["models_trained"] is False
     assert manifest["contains_experimental_measurements"] is False
     assert not list(out.glob("*.csv")) and not list(out.glob("*.npy"))
@@ -113,10 +113,10 @@ def _write_synthetic_checkpoints(root):
         }}), encoding="utf-8")
 
 
-def test_checkpoint_audit_accepts_both_methods_and_rejects_mismatched_metrics(tmp_path):
+def test_checkpoint_audit_accepts_all_methods_and_rejects_mismatched_metrics(tmp_path):
     _write_synthetic_checkpoints(tmp_path / "runs")
     runs, rejected = collect_optimal_runs(tmp_path / "runs")
-    assert len(runs) == 18 and rejected == []
+    assert len(runs) == 45 and rejected == []
     for method in METHODS:
         run = Path(runs[runs.method.eq(method)].iloc[0].run_dir)
         np.save(run / "PIJ_macro_train.npy", np.full((2, 2), .5))
@@ -124,7 +124,7 @@ def test_checkpoint_audit_accepts_both_methods_and_rejects_mismatched_metrics(tm
             inspect_optimal_run(run)
 
 
-def test_formal_collector_reports_complete_only_with_all_18_conditions(tmp_path, monkeypatch):
+def test_formal_collector_reports_complete_only_with_all_45_conditions(tmp_path, monkeypatch):
     from mignet_ce.downstream.formal_core_analysis.__main__ import main
     import sys
     _write_synthetic_checkpoints(tmp_path / "runs")
@@ -149,10 +149,10 @@ def test_formal_collector_reports_complete_only_with_all_18_conditions(tmp_path,
     main()
     manifest = json.loads((tmp_path / "out" / "output_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
-    assert manifest["optimal_trained_runs_verified"] == manifest["expected_optimal_runs"] == 18
+    assert manifest["optimal_trained_runs_verified"] == manifest["expected_optimal_runs"] == 45
     assert manifest["methods"] == list(METHODS)
     for name in ("table_optimal_trained_deltaei_keff", "table_optimal_induced_cq", "table_optimal_closure_js_direct_bits"):
-        assert len(pd.read_csv(tmp_path / "out" / "tables" / (name + ".csv"))) == 6
+        assert len(pd.read_csv(tmp_path / "out" / "tables" / (name + ".csv"))) == 15
 
 
 @pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])
@@ -164,6 +164,6 @@ def test_retired_results_are_preserved_and_excluded_from_active_collection(tmp_p
     payload = json.dumps({"method": method})
     summary.write_text(payload, encoding="utf-8")
     runs, rejected = collect_optimal_runs(tmp_path / "runs")
-    assert len(runs) == 18 and rejected == []
+    assert len(runs) == 45 and rejected == []
     assert set(runs.method) == set(METHODS)
     assert summary.read_text(encoding="utf-8") == payload

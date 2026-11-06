@@ -87,12 +87,18 @@ def test_wrapper_command_passes_explicit_maturity_contract_and_extra_args(tmp_pa
     assert command[-4:] == ["--epochs", "2", "--device", "cpu"]
 
 
-def test_two_stage_command_uses_registered_method_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize("method,mode", [
+    ("maturity_cci_grn_two_stage", "dynamic_closure_two_stage"),
+    ("two_stage_noKeff", "dynamic_closure_two_stage"),
+    ("two_stage_noKeff_HardEI", "dynamic_closure_two_stage"),
+    ("single_stage_cq_only", "cq_only"),
+])
+def test_two_stage_command_uses_registered_method_contract(tmp_path: Path, method, mode) -> None:
     source = _prepared(tmp_path, "spot", "11.5", 60)
     target = _prepared(tmp_path, "spot", "12.5", 70)
     spec = orchestrator.build_run_specs(
         [source, target],
-        method="maturity_cci_grn_two_stage",
+        method=method,
         out_root=tmp_path / "runs",
         scales=["spot"],
         pairs=[("11.5", "12.5")],
@@ -101,8 +107,8 @@ def test_two_stage_command_uses_registered_method_contract(tmp_path: Path) -> No
     )[0]
     command = orchestrator.runner_command(spec, [])
     assert command.count("--method") == 1
-    assert command[command.index("--method") + 1] == "maturity_cci_grn_two_stage"
-    assert spec.training_mode == "dynamic_closure_two_stage"
+    assert command[command.index("--method") + 1] == method
+    assert spec.training_mode == mode
     assert spec.frontend == "complete_combined_coarse_maturity_cci_grn"
 
 
@@ -239,6 +245,7 @@ def test_default_method_is_two_stage_and_legacy_control_stays_available():
     assert orchestrator.DEFAULT_METHOD == "maturity_cci_grn_two_stage"
     assert set(orchestrator.SUPPORTED_METHODS) == {
         "maturity_cci_grn_two_stage", "complete_combined_coarse_maturity_cci_grn",
+        "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",
     }
 
 

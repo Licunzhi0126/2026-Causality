@@ -7,7 +7,7 @@ import scipy.sparse as sp
 from mignet_ce.coarse_frontends.registry import COARSE_FRONTEND_REGISTRY
 from mignet_ce.coarse_frontends.method_specs import (
     DYNAMIC_CLOSURE_TWO_STAGE,
-    LEGACY_SINGLE_STAGE,
+    LEGACY_SINGLE_STAGE, CQ_ONLY,
     training_mode_for_method,
 )
 from mignet_ce.representations.coarse_input import PreparedCoarseInput
@@ -18,6 +18,7 @@ def test_coarse_frontend_registry_has_exact_planned_methods() -> None:
         "complete_combined_coarse",
         "complete_combined_coarse_maturity_cci_grn",
         "maturity_cci_grn_two_stage",
+        "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",
     }
 
 
@@ -47,6 +48,9 @@ def test_training_modes_are_method_isolated() -> None:
         == LEGACY_SINGLE_STAGE
     )
     assert training_mode_for_method("maturity_cci_grn_two_stage") == DYNAMIC_CLOSURE_TWO_STAGE
+    for method in ("two_stage_noKeff", "two_stage_noKeff_HardEI"):
+        assert training_mode_for_method(method) == DYNAMIC_CLOSURE_TWO_STAGE
+    assert training_mode_for_method("single_stage_cq_only") == CQ_ONLY
 
 
 @pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])

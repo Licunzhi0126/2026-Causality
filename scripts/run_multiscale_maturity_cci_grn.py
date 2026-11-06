@@ -32,6 +32,7 @@ DEFAULT_METHOD = "maturity_cci_grn_two_stage"
 SUPPORTED_METHODS = (
     DEFAULT_METHOD,
     "complete_combined_coarse_maturity_cci_grn",
+    "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",
 )
 DEFAULT_K_BY_SCALE = {"spot": [40], "seurat_k150": [40], "seurat_k40": [10]}
 SUMMARY_REQUIRED_KEYS = {

@@ -201,13 +201,28 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     if budget["information_identity_error"] > 1e-5:
         raise ValueError(f"Information budget identity failed: {p}")
     k_value = int(summary.get("K", config.get("k", 0)))
+    from mignet_ce.coarse_frontends.method_specs import NO_KEFF_EI_RETAIN_RATIOS
+    no_floor = desc["method"] in {*NO_KEFF_EI_RETAIN_RATIOS, "single_stage_cq_only"}
+    expected_policy = "iterative_no_floor" if no_floor else "legacy_floor"
+    for saved in (config, summary):
+        if saved.get("keff_policy", expected_policy) != expected_policy:
+            raise ValueError(f"Saved Keff policy disagrees with method identity: {p}")
     configured_keff_min = config.get("keff_min")
     configured_checkpoint_min = config.get("checkpoint_keff_min")
-    keff_min_resolved = float(configured_keff_min) if configured_keff_min is not None else 0.30 * k_value
-    checkpoint_keff_min_resolved = float(configured_checkpoint_min) if configured_checkpoint_min is not None else 0.25 * k_value
+    if no_floor and (configured_keff_min is not None or configured_checkpoint_min is not None
+                     or config.get("lambda_keff", 0) != 0 or config.get("lambda_dead_usage", 0) != 0):
+        raise ValueError(f"No-Keff method has Keff/dead-usage constraints: {p}")
+    keff_min_resolved = None if no_floor else (float(configured_keff_min) if configured_keff_min is not None else 0.30 * k_value)
+    checkpoint_keff_min_resolved = None if no_floor else (float(configured_checkpoint_min) if configured_checkpoint_min is not None else 0.25 * k_value)
     return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
             "K": summary.get("K"), "trained_delta_EI": float(raw),
+            "keff_policy": expected_policy,
+            "ei_retain_ratio": config.get("ei_retain_ratio", NO_KEFF_EI_RETAIN_RATIOS.get(desc["method"],
+                                               0.85 if desc["method"] == "maturity_cci_grn_two_stage" else None)),
+            "strict_checkpoint_found": summary.get("strict_checkpoint_found"),
+            "best_joint_fallback_used": summary.get("best_joint_fallback_used"),
+            "selected_checkpoint": summary.get("selected_checkpoint"),
             "keff_min_resolved": keff_min_resolved,
             "checkpoint_keff_min": checkpoint_keff_min_resolved,
             "Keff_t": float(summary["Keff_t"]), "Keff_tp": float(summary["Keff_tp"]),

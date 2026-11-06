@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 LEGACY_SINGLE_STAGE = "legacy_single_stage"
 DYNAMIC_CLOSURE_TWO_STAGE = "dynamic_closure_two_stage"
+CQ_ONLY = "cq_only"
+NO_KEFF_EI_RETAIN_RATIOS = {
+    "two_stage_noKeff": 0.85,
+    "two_stage_noKeff_HardEI": 1.0,
+}
 RETIRED_COARSE_METHODS = frozenset({"shr_method_8", "shr_method_10"})
 
 
@@ -54,6 +59,20 @@ COARSE_METHOD_SPECS.update(
             objective_version="wyt_dynamic_closure_two_stage_v2",
         ),
     }
+)
+
+for _name in NO_KEFF_EI_RETAIN_RATIOS:
+    COARSE_METHOD_SPECS[_name] = CoarseMethodSpec(
+        name=_name, training_mode=DYNAMIC_CLOSURE_TWO_STAGE,
+        frontend="complete_combined_coarse_maturity_cci_grn",
+        requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
+        objective_version="wyt_dynamic_closure_two_stage_v2",
+    )
+COARSE_METHOD_SPECS["single_stage_cq_only"] = CoarseMethodSpec(
+    name="single_stage_cq_only", training_mode=CQ_ONLY,
+    frontend="complete_combined_coarse_maturity_cci_grn",
+    requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
+    objective_version="wyt_cq_only_v1",
 )
 
 

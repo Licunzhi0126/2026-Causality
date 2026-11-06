@@ -654,11 +654,17 @@ def train_deltaei(prepared: PreparedCoarseInput, config):
     """Dispatch without changing the historical single-stage training loop."""
 
     from mignet_ce.coarse_frontends.method_specs import (
+        CQ_ONLY,
         DYNAMIC_CLOSURE_TWO_STAGE,
         training_mode_for_method,
     )
 
     training_mode = training_mode_for_method(prepared.method)
+    if training_mode == CQ_ONLY:
+        from wyt_deltaei_coarse_grain.cq_only_trainer import WYTCQOnlyConfig, train_deltaei_cq_only
+        if not isinstance(config, WYTCQOnlyConfig):
+            raise TypeError("CQ-only requires WYTCQOnlyConfig.")
+        return train_deltaei_cq_only(prepared, config)
     if training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
         from wyt_deltaei_coarse_grain.two_stage_trainer import (
             WYTTwoStageDeltaEIConfig,

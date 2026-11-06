@@ -88,6 +88,10 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-proto", type=float, default=0.2)
     parser.add_argument("--lambda-min-usage", type=float, default=10.0)
     parser.add_argument("--lambda-max-usage", type=float, default=10.0)
+    parser.add_argument("--lambda-cq", type=float, default=None)
+    parser.add_argument("--lambda-available-floor", type=float, default=None)
+    parser.add_argument("--lambda-retained-floor-abs", type=float, default=None)
+    parser.add_argument("--retained-floor-abs", type=float, default=None)
     parser.add_argument("--stage1-ratio", type=float, default=None)
     parser.add_argument("--ei-retain-ratio", type=float, default=None)
     parser.add_argument("--lambda-ei-constraint", type=float, default=None)
@@ -131,7 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_argparser().parse_args(argv)
     from mignet_ce.coarse_frontends import (
         CoarseFrontendRequest,
-        DYNAMIC_CLOSURE_TWO_STAGE,
+        CQ_ONLY, DYNAMIC_CLOSURE_TWO_STAGE,
         get_coarse_method_spec,
         prepare_coarse_input,
     )
@@ -197,79 +201,11 @@ def main(argv: list[str] | None = None) -> None:
         maturity_direction=args.maturity_direction,
     )
     prepared = prepare_coarse_input(args.method, frontend_request)
-    common_config = dict(
-        hidden_dim=args.hidden_dim,
-        mid_dim=args.mid_dim,
-        gnn_layers=args.gnn_layers,
-        macro_layers=args.macro_layers,
-        knn_k=args.knn_k,
-        local_dims=args.local_dims,
-        local_graph_mode=args.local_graph_mode,
-        temperature=args.temperature,
-        align_temperature=args.align_temperature,
-        epochs=args.epochs,
-        lr=args.lr,
-        lambda_align=args.lambda_align,
-        lambda_ei=args.lambda_ei,
-        lambda_var=args.lambda_var,
-        lambda_local=args.lambda_local,
-        lambda_sharp=args.lambda_sharp,
-        lambda_proto=args.lambda_proto,
-        lambda_dev=lambda_dev,
-        development_min_state_mass=args.development_min_state_mass,
-        embedding_target_std=args.embedding_target_std,
-        prototype_max_cosine=args.prototype_max_cosine,
-        seed=args.seed,
-        device=args.device,
-        log_every=args.log_every,
-    )
-    if method_spec.training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
+    from wyt_deltaei_coarse_grain.training_config import build_training_config
+    if method_spec.training_mode in {DYNAMIC_CLOSURE_TWO_STAGE, CQ_ONLY}:
         if args.out_dir.exists() and any(args.out_dir.iterdir()):
-            raise SystemExit(
-                f"Two-stage output directory is not empty and will not be overwritten: {args.out_dir}"
-            )
-        two_stage_names = (
-            "stage1_ratio",
-            "ei_retain_ratio",
-            "lambda_ei_constraint",
-            "lambda_closure",
-            "lambda_within",
-            "lambda_inter",
-            "lambda_retain_norm",
-            "retain_floor_ratio",
-            "lambda_retain_floor",
-            "inter_margin",
-            "active_usage_threshold",
-            "keff_min",
-            "checkpoint_keff_min",
-            "lambda_keff",
-            "lambda_dead_usage",
-            "min_usage",
-            "low_signal_pair_weight",
-            "low_signal_threshold_bits",
-            "checkpoint_retain_ratio",
-        )
-        overrides = {
-            name: getattr(args, name)
-            for name in two_stage_names
-            if getattr(args, name) is not None
-        }
-        config = WYTTwoStageDeltaEIConfig(
-            k=args.k,
-            out_dir=args.out_dir,
-            **common_config,
-            **overrides,
-        )
-    else:
-        config = WYTDeltaEIConfig(
-            k=args.k,
-            out_dir=args.out_dir,
-            lambda_min_usage=args.lambda_min_usage,
-            lambda_max_usage=args.lambda_max_usage,
-            min_usage_frac=args.min_usage_frac,
-            max_usage_frac=args.max_usage_frac,
-            **common_config,
-        )
+            raise SystemExit(f"Output directory is not empty and will not be overwritten: {args.out_dir}")
+    config = build_training_config(args)
     result = train_deltaei(prepared, config)
     print(
         f"completed method={args.method} K={args.k} "

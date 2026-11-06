@@ -100,7 +100,9 @@ def inspect_training_run(job: dict, contract: dict, method_root: Path, *, allowe
     epoch = int(summary.get("best_epoch", 0))
     if not 1 <= epoch <= contract["epochs"]:
         raise ValueError("Saved best_epoch is outside this training run.")
-    checkpoint = "best_joint.pt"
+    checkpoint = "best_cq.pt" if contract["method"] == "single_stage_cq_only" else "best_joint.pt"
+    if summary.get("selected_checkpoint", checkpoint) != checkpoint:
+        raise ValueError("Selected checkpoint disagrees with the method training protocol.")
     if not (root / checkpoint).is_file():
         raise FileNotFoundError(f"Missing selected checkpoint: {root / checkpoint}")
     return {"trained_delta_EI": float(reported), "EI_micro_recomputed": ei_micro,
@@ -167,7 +169,8 @@ def _render(rows: list[dict], stem: Path, state: dict, *, dpi: int) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib import rc_context
-    method_label = "Two-stage"
+    from .runner import METHOD_LABELS
+    method_label = METHOD_LABELS[state["method"]]
     done = sum(j["status"] == "success" for j in state["jobs"])
     footnote = ("Independent within-organ training; K150/K40 denote learned target prototype counts.\n"
                 "— = not selected/pending/unavailable/failed; see generalization_long.csv and failures.csv for reasons.")
@@ -356,7 +359,8 @@ def _render_spot40(rows_by_metric: dict, table_dir: Path, state: dict, counts: d
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib import rc_context
-    label = "Two-stage"
+    from .runner import METHOD_LABELS
+    label = METHOD_LABELS[state["method"]]
     n = len(state["jobs"])
     base_title = f"{label} | Spot input | K=40"
     if not state["contract"].get("formal_profile", False):

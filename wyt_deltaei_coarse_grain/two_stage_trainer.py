@@ -62,6 +62,7 @@ class WYTTwoStageDeltaEIConfig:
     out_dir: Path
     training_mode: str = "dynamic_closure_two_stage"
     objective_version: str = "wyt_dynamic_closure_two_stage_v2"
+    keff_policy: str = "legacy_floor"
     hidden_dim: int = 64
     mid_dim: int = 32
     gnn_layers: int = 2
@@ -106,10 +107,14 @@ class WYTTwoStageDeltaEIConfig:
     device: str = "cpu"
     log_every: int = 50
 
-    def resolved_keff_min(self) -> float:
+    def resolved_keff_min(self) -> float | None:
+        if self.keff_policy == "iterative_no_floor":
+            return None
         return float(self.keff_min) if self.keff_min is not None else 0.30 * float(self.k)
 
-    def resolved_checkpoint_keff_min(self) -> float:
+    def resolved_checkpoint_keff_min(self) -> float | None:
+        if self.keff_policy == "iterative_no_floor":
+            return None
         return (
             float(self.checkpoint_keff_min)
             if self.checkpoint_keff_min is not None
@@ -130,6 +135,17 @@ class WYTTwoStageDeltaEIConfig:
             raise ValueError("Two-stage config requires training_mode=dynamic_closure_two_stage.")
         if self.objective_version != "wyt_dynamic_closure_two_stage_v2":
             raise ValueError("Unsupported two-stage objective_version.")
+        if self.keff_policy not in {"legacy_floor", "iterative_no_floor"}:
+            raise ValueError("Unknown Keff policy.")
+        from mignet_ce.coarse_frontends.method_specs import NO_KEFF_EI_RETAIN_RATIOS
+        expected_policy = "iterative_no_floor" if prepared.method in NO_KEFF_EI_RETAIN_RATIOS else "legacy_floor"
+        if self.keff_policy != expected_policy:
+            raise ValueError("Method identity and Keff policy disagree.")
+        if self.keff_policy == "iterative_no_floor" and (
+            self.lambda_keff != 0 or self.lambda_dead_usage != 0
+            or self.keff_min is not None or self.checkpoint_keff_min is not None
+        ):
+            raise ValueError("No-Keff methods require zero Keff/dead-usage weights and no Keff floors.")
         if self.k > min(len(prepared.unit_ids_t), len(prepared.unit_ids_tp)):
             raise ValueError("k cannot exceed the smaller time-point unit count.")
         if self.hidden_dim <= 0 or self.mid_dim <= 0:
@@ -180,23 +196,24 @@ class WYTTwoStageDeltaEIConfig:
             raise ValueError("inter_margin and usage thresholds must be non-negative.")
         resolved_keff_min = self.resolved_keff_min()
         resolved_checkpoint_keff_min = self.resolved_checkpoint_keff_min()
-        if resolved_keff_min <= 0.0 or resolved_checkpoint_keff_min <= 0.0:
-            raise ValueError("Keff floors must be positive.")
-        if resolved_keff_min > self.k:
-            raise ValueError(
-                f"keff_min={resolved_keff_min:g} exceeds K={self.k}; "
-                "use a feasible explicit value or the K-relative default."
-            )
-        if resolved_checkpoint_keff_min > self.k:
-            raise ValueError(
-                f"checkpoint_keff_min={resolved_checkpoint_keff_min:g} exceeds K={self.k}; "
-                "use a feasible explicit value or the K-relative default."
-            )
-        if resolved_checkpoint_keff_min > resolved_keff_min:
-            raise ValueError(
-                "checkpoint_keff_min cannot exceed keff_min; checkpoint eligibility "
-                "must not be stricter than the anti-collapse training floor."
-            )
+        if self.keff_policy == "legacy_floor":
+            if resolved_keff_min <= 0.0 or resolved_checkpoint_keff_min <= 0.0:
+                raise ValueError("Keff floors must be positive.")
+            if resolved_keff_min > self.k:
+                raise ValueError(
+                    f"keff_min={resolved_keff_min:g} exceeds K={self.k}; "
+                    "use a feasible explicit value or the K-relative default."
+                )
+            if resolved_checkpoint_keff_min > self.k:
+                raise ValueError(
+                    f"checkpoint_keff_min={resolved_checkpoint_keff_min:g} exceeds K={self.k}; "
+                    "use a feasible explicit value or the K-relative default."
+                )
+            if resolved_checkpoint_keff_min > resolved_keff_min:
+                raise ValueError(
+                    "checkpoint_keff_min cannot exceed keff_min; checkpoint eligibility "
+                    "must not be stricter than the anti-collapse training floor."
+                )
         if not 0.0 <= self.low_signal_pair_weight <= 1.0 or self.resolved_low_signal_threshold_bits() < 0.0:
             raise ValueError("low-signal settings are invalid.")
         if self.development_min_state_mass <= 0.0:
@@ -211,6 +228,7 @@ class WYTTwoStageDeltaEIConfig:
             "complete_combined_coarse_maturity_cci",
             "complete_combined_coarse_maturity_cci_grn",
             "maturity_cci_grn_two_stage",
+            "two_stage_noKeff", "two_stage_noKeff_HardEI",
         } and self.lambda_dev <= 0.0:
             raise ValueError(
                 f"{prepared.method} requires lambda_dev > 0; use the non-maturity "
@@ -233,7 +251,7 @@ def stage1_checkpoint_eligible(
     available_information: float,
     keff_t: float,
     keff_tp: float,
-    checkpoint_keff_min: float,
+    checkpoint_keff_min: float | None,
 ) -> bool:
     tolerance = 1e-8
 
@@ -242,8 +260,8 @@ def stage1_checkpoint_eligible(
         and available_information > tolerance
         and np.isfinite(keff_t)
         and np.isfinite(keff_tp)
-        and keff_t >= checkpoint_keff_min - tolerance
-        and keff_tp >= checkpoint_keff_min - tolerance
+        and (checkpoint_keff_min is None or keff_t >= checkpoint_keff_min - tolerance)
+        and (checkpoint_keff_min is None or keff_tp >= checkpoint_keff_min - tolerance)
     )
 
 def joint_checkpoint_eligible(
@@ -258,7 +276,7 @@ def joint_checkpoint_eligible(
     ei_retain_ratio: float,
     retained_ratio: float,
     signal_threshold_bits: float,
-    checkpoint_keff_min: float,
+    checkpoint_keff_min: float | None,
 ) -> bool:
     """Return whether a Stage 2 state satisfies the structural checkpoint floors.
 
@@ -275,8 +293,9 @@ def joint_checkpoint_eligible(
         and np.isfinite(available_information)
         and available_information > tolerance
         and retained_information >= retained_reference * retained_ratio - tolerance
-        and keff_t >= checkpoint_keff_min - tolerance
-        and keff_tp >= checkpoint_keff_min - tolerance
+        and np.isfinite(keff_t) and np.isfinite(keff_tp)
+        and (checkpoint_keff_min is None or keff_t >= checkpoint_keff_min - tolerance)
+        and (checkpoint_keff_min is None or keff_tp >= checkpoint_keff_min - tolerance)
     )
 
 
@@ -287,7 +306,7 @@ def relaxed_stage2_checkpoint_eligible(
     keff_t: float,
     keff_tp: float,
     signal_threshold_bits: float,
-    checkpoint_keff_min: float,
+    checkpoint_keff_min: float | None,
 ) -> bool:
     """Allow low-signal fallback candidates, but never zero-signal or collapsed ones."""
 
@@ -297,8 +316,9 @@ def relaxed_stage2_checkpoint_eligible(
         delta_ei > tolerance
         and np.isfinite(available_information)
         and available_information > tolerance
-        and keff_t >= checkpoint_keff_min - tolerance
-        and keff_tp >= checkpoint_keff_min - tolerance
+        and np.isfinite(keff_t) and np.isfinite(keff_tp)
+        and (checkpoint_keff_min is None or keff_t >= checkpoint_keff_min - tolerance)
+        and (checkpoint_keff_min is None or keff_tp >= checkpoint_keff_min - tolerance)
     )
 
 
@@ -411,7 +431,7 @@ def train_deltaei_two_stage(
     prepared: PreparedCoarseInput,
     config: WYTTwoStageDeltaEIConfig,
 ) -> WYTTwoStageDeltaEIResult:
-    if prepared.method != "maturity_cci_grn_two_stage":
+    if prepared.method not in {"maturity_cci_grn_two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI"}:
         raise ValueError(
             "dynamic-closure two-stage training is reserved for "
             "maturity_cci_grn_two_stage."
@@ -568,8 +588,8 @@ def train_deltaei_two_stage(
         _log(
             log_handle,
             "resolved anti-collapse floors: "
-            f"keff_min={resolved_keff_min:.6f}, "
-            f"checkpoint_keff_min={resolved_checkpoint_keff_min:.6f}",
+            f"keff_min={resolved_keff_min}, "
+            f"checkpoint_keff_min={resolved_checkpoint_keff_min}",
         )
         _log(
             log_handle,
@@ -577,7 +597,9 @@ def train_deltaei_two_stage(
             "(diagnostic label only; not a Stage 2 checkpoint hard gate)",
         )
         _log(log_handle, "Stage 2: normalized retained information and closure refinement under EI floor")
-        _log(log_handle, "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
+        _log(log_handle, "Prototype usage: Keff/dead-usage penalties disabled; Keff is diagnostic only"
+             if config.keff_policy == "iterative_no_floor" else
+             "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
         _log(log_handle, "================================================")
 
         for epoch in range(1, config.epochs + 1):
@@ -713,7 +735,7 @@ def train_deltaei_two_stage(
                 micro_pij, assignment_t, assignment_tp, future=future
             )
             keff, keff_t, keff_tp = keff_floor_loss(
-                assignment_t, assignment_tp, resolved_keff_min
+                assignment_t, assignment_tp, resolved_keff_min if resolved_keff_min is not None else 0.0
             )
             dynamic_pair_weight = 1.0
             if stage == "stage1":
@@ -809,8 +831,8 @@ def train_deltaei_two_stage(
                 ),
                 "signal_threshold_bits": float(signal_threshold_bits),
                 "signal_threshold_policy": "diagnostic_only_not_checkpoint_gate",
-                "resolved_keff_min": float(resolved_keff_min),
-                "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
+                "resolved_keff_min": resolved_keff_min,
+                "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                 "pair_weight": dynamic_pair_weight,
                 "closure_quality": float(information["closure_quality"].detach().cpu()),
                 "closure_leakage": float(information["closure_leakage"].detach().cpu()),
@@ -1075,7 +1097,7 @@ def train_deltaei_two_stage(
                 micro_pij, assignment_t, assignment_tp, future=final_future
             )
             final_keff, final_keff_t, final_keff_tp = keff_floor_loss(
-                assignment_t, assignment_tp, resolved_keff_min
+                assignment_t, assignment_tp, resolved_keff_min if resolved_keff_min is not None else 0.0
             )
             final_closure_rows = row_js_divergence(
                 final_future,
@@ -1124,6 +1146,12 @@ def train_deltaei_two_stage(
         summary = {
             "method": prepared.method,
             "method_version": "wyt_dynamic_closure_two_stage_v2",
+            "training_protocol": config.training_mode,
+            "keff_policy": config.keff_policy,
+            "ei_retain_ratio": config.ei_retain_ratio,
+            "lambda_keff": config.lambda_keff,
+            "lambda_dead_usage": config.lambda_dead_usage,
+            "selected_checkpoint": "best_joint.pt",
             "best_epoch": best_epoch,
             "best_joint_epoch": best_epoch,
             "best_joint_score_recorded": list(best_joint_score) if best_joint_score is not None else None,
@@ -1164,8 +1192,8 @@ def train_deltaei_two_stage(
             "stage1_reference_Keff_tp": stage1_reference_keff_tp,
             "signal_threshold_bits": float(signal_threshold_bits),
             "signal_threshold_policy": "diagnostic_only_not_checkpoint_gate",
-            "resolved_keff_min": float(resolved_keff_min),
-            "resolved_checkpoint_keff_min": float(resolved_checkpoint_keff_min),
+            "resolved_keff_min": resolved_keff_min,
+            "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
             "final_signal_status": (
                 "informative" if final_available_value >= signal_threshold_bits else "low-signal"
             ),
