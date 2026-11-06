@@ -100,28 +100,9 @@ def inspect_training_run(job: dict, contract: dict, method_root: Path, *, allowe
     epoch = int(summary.get("best_epoch", 0))
     if not 1 <= epoch <= contract["epochs"]:
         raise ValueError("Saved best_epoch is outside this training run.")
-    checkpoint = "best_joint.pt" if contract["method"] == "maturity_cci_grn_two_stage" else "best_model.pt"
+    checkpoint = "best_joint.pt"
     if not (root / checkpoint).is_file():
         raise FileNotFoundError(f"Missing selected checkpoint: {root / checkpoint}")
-    if contract["method"] == "shr_method_10":
-        floor = config.get("checkpoint_keff_min")
-        overrides = contract.get("runner_extra_args", [])
-        # Explicit test overrides are recorded; formal runs use the approved 1e-6 floor.
-        if "--checkpoint-keff-min" not in overrides and not any(x.startswith("--checkpoint-keff-min=") for x in overrides):
-            if floor != 1e-6:
-                raise ValueError("Method 10 formal checkpoint_keff_min must be 1e-6.")
-        with (root / "training_history.csv").open(encoding="utf-8-sig", newline="") as handle:
-            matches = [row for row in csv.DictReader(handle) if int(row["epoch"]) == epoch]
-        if len(matches) != 1:
-            raise ValueError("Method 10 selected epoch is not unique in training history.")
-        row = matches[0]
-        if row["checkpoint_eligible"].lower() not in {"true", "1"} or float(reported) <= 0:
-            raise ValueError("Method 10 selected checkpoint violates its native positive-DeltaEI eligibility rule.")
-        if not np.isclose(float(row["delta_EI"]), float(reported), atol=2e-4, rtol=0):
-            raise ValueError("Method 10 selected history DeltaEI disagrees with final checkpoint.")
-        for label in ("t", "tp"):
-            if not (float(row[f"Keff_{label}"]) >= float(floor) - 1e-8):
-                raise ValueError("Method 10 selected history violates checkpoint Keff floor.")
     return {"trained_delta_EI": float(reported), "EI_micro_recomputed": ei_micro,
             "EI_macro_recomputed": ei_macro, "Keff_t": float(summary["Keff_t"]),
             "Keff_tp": float(summary["Keff_tp"]), "best_epoch": epoch}
@@ -186,7 +167,7 @@ def _render(rows: list[dict], stem: Path, state: dict, *, dpi: int) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib import rc_context
-    method_label = "Two-stage" if state["method"] == "maturity_cci_grn_two_stage" else "SHR Method 10"
+    method_label = "Two-stage"
     done = sum(j["status"] == "success" for j in state["jobs"])
     footnote = ("Independent within-organ training; K150/K40 denote learned target prototype counts.\n"
                 "— = not selected/pending/unavailable/failed; see generalization_long.csv and failures.csv for reasons.")
@@ -375,7 +356,7 @@ def _render_spot40(rows_by_metric: dict, table_dir: Path, state: dict, counts: d
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib import rc_context
-    label = "Two-stage" if state["method"] == "maturity_cci_grn_two_stage" else "SHR Method 10"
+    label = "Two-stage"
     n = len(state["jobs"])
     base_title = f"{label} | Spot input | K=40"
     if not state["contract"].get("formal_profile", False):

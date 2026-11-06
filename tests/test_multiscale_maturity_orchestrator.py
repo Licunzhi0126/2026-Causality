@@ -124,7 +124,7 @@ def test_runner_extra_args_cannot_override_run_identity(tmp_path: Path) -> None:
 
 def test_force_cleanup_cannot_cross_method_root(tmp_path: Path) -> None:
     other = (
-        tmp_path / "runs" / "maturity_cci_grn_two_stage" / "spot" / "K40" / "11.5_to_12.5"
+        tmp_path / "runs" / "complete_combined_coarse_maturity_cci_grn" / "spot" / "K40" / "11.5_to_12.5"
     )
     other.mkdir(parents=True)
     with pytest.raises(ValueError, match="outside"):
@@ -139,7 +139,7 @@ def test_force_cleanup_cannot_cross_method_root(tmp_path: Path) -> None:
 def test_resume_summary_must_match_requested_method(tmp_path: Path) -> None:
     summary_path = tmp_path / "summary.json"
     payload = {key: 1 for key in orchestrator.SUMMARY_REQUIRED_KEYS}
-    payload["method"] = "maturity_cci_grn_two_stage"
+    payload["method"] = "complete_combined_coarse_maturity_cci_grn"
     summary_path.write_text(json.dumps(payload), encoding="utf-8")
     assert not orchestrator._valid_summary(
         summary_path,
@@ -147,7 +147,7 @@ def test_resume_summary_must_match_requested_method(tmp_path: Path) -> None:
     )
     assert orchestrator._valid_summary(
         summary_path,
-        expected_method="maturity_cci_grn_two_stage",
+        expected_method="complete_combined_coarse_maturity_cci_grn",
     )
 
 
@@ -180,7 +180,7 @@ def test_wrapper_runs_existing_runner_and_aggregates_summary(tmp_path: Path, mon
             "Keff_t": 38.5,
             "Keff_tp": 39.2,
             "L_dev_best_checkpoint": 0.01,
-            "deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G": 0.25,
+            "trained_delta_EI": 0.3,
         }
         (spec.run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
         (spec.run_dir / "input_manifest.json").write_text(
@@ -195,6 +195,7 @@ def test_wrapper_runs_existing_runner_and_aggregates_summary(tmp_path: Path, mon
         runner_extra_args=["--epochs", "2"],
         resume=False,
         force=False,
+        resume_incomplete=False,
         continue_on_error=False,
     )
     csv_path, manifest_path = orchestrator.write_aggregate_outputs(
@@ -206,7 +207,7 @@ def test_wrapper_runs_existing_runner_and_aggregates_summary(tmp_path: Path, mon
     assert rows[0]["status"] == "success"
     assert rows[0]["n_micro_t"] == 60
     assert rows[0]["delta_EI_best_checkpoint"] == pytest.approx(0.3)
-    assert "deltaEI_strict_raw_projected_CCI_reextract_N_recompute_G" in rows[0]
+    assert rows[0]["trained_delta_EI"] == pytest.approx(0.3)
     assert csv_path.exists() and manifest_path.exists()
     context = json.loads((spec.run_dir / "experiment_context.json").read_text(encoding="utf-8"))
     audit_context = json.loads(
@@ -232,3 +233,18 @@ def test_wrapper_enforces_genuine_coarse_graining(tmp_path: Path) -> None:
             k_by_scale={"seurat_k40": [40]},
             seeds=[42],
         )
+
+
+def test_default_method_is_two_stage_and_legacy_control_stays_available():
+    assert orchestrator.DEFAULT_METHOD == "maturity_cci_grn_two_stage"
+    assert set(orchestrator.SUPPORTED_METHODS) == {
+        "maturity_cci_grn_two_stage", "complete_combined_coarse_maturity_cci_grn",
+    }
+
+
+@pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])
+def test_retired_multiscale_methods_fail_before_creating_outputs(tmp_path, method):
+    with pytest.raises(ValueError, match="Unsupported multiscale method"):
+        orchestrator.build_run_specs([], method=method, out_root=tmp_path / "runs",
+                                     scales=[], pairs=[], k_by_scale={}, seeds=[42])
+    assert not (tmp_path / "runs").exists()

@@ -23,7 +23,6 @@ PROTOCOL = "organ_independent_trained_deltaei_v1"
 METHOD_ALIASES = {
     "two_stage": "maturity_cci_grn_two_stage",
     "maturity_cci_grn_two_stage": "maturity_cci_grn_two_stage",
-    "shr_method_10": "shr_method_10",
 }
 HIERARCHIES = {
     "spot_to_k150": ("Spot -> K150", "spot", 150),
@@ -70,7 +69,9 @@ class GeneralizationConfig:
 
     @property
     def method_tag(self) -> str:
-        return "two_stage" if self.canonical_method == "maturity_cci_grn_two_stage" else "shr_method_10"
+        if self.canonical_method != "maturity_cci_grn_two_stage":
+            raise ValueError(f"Unsupported method: {self.method}")
+        return "two_stage"
 
     @property
     def method_root(self) -> Path:
@@ -111,13 +112,11 @@ class GeneralizationConfig:
             "--hidden-dim", "--mid-dim", "--gnn-layers", "--macro-layers", "--knn-k", "--local-dims",
             "--local-graph-mode", "--temperature", "--align-temperature", "--lr", "--log-every",
             "--lambda-align", "--lambda-ei", "--lambda-var", "--lambda-local", "--lambda-sharp",
-            "--lambda-proto", "--lambda-closure", "--lambda-within", "--lambda-inter", "--lambda-retain",
+            "--lambda-proto", "--lambda-closure", "--lambda-within", "--lambda-inter",
             "--stage1-ratio", "--ei-retain-ratio", "--lambda-ei-constraint", "--lambda-retain-norm",
             "--retain-floor-ratio", "--lambda-retain-floor", "--inter-margin", "--active-usage-threshold",
             "--keff-min", "--checkpoint-keff-min", "--lambda-keff", "--lambda-dead-usage", "--min-usage",
             "--low-signal-pair-weight", "--low-signal-threshold-bits", "--checkpoint-retain-ratio",
-            "--attention-heads", "--attention-ffn-dim", "--attention-dropout", "--attention-beta-init",
-            "--cross-time-beta-init", "--cross-time-gate-bias-init", "--cosine-eta-min",
         }
         for value in self.runner_extra_args:
             name = value.split("=", 1)[0]
@@ -136,7 +135,7 @@ class GeneralizationConfig:
             "nmf_max_iter": self.nmf_max_iter, "seed": self.seed, "device": self.device,
             "runner_extra_args": list(self.runner_extra_args),
             "features": {"grn": "legacy_nmf", "cci": "laplacian_hks", "alpha_cci": .20},
-            "checkpoint_policy": "native; Method 10 checkpoint_keff_min=1e-6; training floor=0.30*K",
+            "checkpoint_policy": "native two-stage checkpoint selection",
             "experiment": "independent within-organ retraining, independent hierarchy columns",
             "formal_profile": self.epochs == 1500 and self.nmf_max_iter == 300 and not self.runner_extra_args,
         }
@@ -179,8 +178,6 @@ def training_command(cfg: GeneralizationConfig, job: dict, run_dir: Path) -> lis
         "--alpha-cci", "0.20", "--lambda-dev", "0.05",
         "--maturity-id-column", "unit_id", "--maturity-column", "pseudotime",
     ])
-    if cfg.canonical_method == "shr_method_10":
-        command.extend(["--checkpoint-keff-min", "1e-6", "--keff-min", f"{.30 * job['K']:g}"])
     return [*command, *cfg.runner_extra_args]
 
 
@@ -290,7 +287,9 @@ def run(cfg: GeneralizationConfig, *, mode: str = "run", dry_run: bool = False) 
         state = json.loads(manifest.read_text(encoding="utf-8"))
         if state.get("protocol") != PROTOCOL or state.get("method") != cfg.canonical_method:
             raise ValueError("Saved manifest protocol/method does not match this command.")
-        if mode == "resume" and state["contract"] != cfg.contract():
+        # This description is metadata; older wording must not invalidate identical runs.
+        saved_contract = {**state["contract"], "checkpoint_policy": cfg.contract()["checkpoint_policy"]}
+        if mode == "resume" and saved_contract != cfg.contract():
             raise ValueError("Resume contract mismatch; use identical settings or a new output root.")
         jobs = state["jobs"]
         if mode == "render":
@@ -378,8 +377,8 @@ def expected_trainer_config(cfg: GeneralizationConfig, job: dict) -> dict:
     """Materialize the actual existing CLI defaults, including explicit overrides."""
     from dataclasses import asdict, fields
     from scripts.run_wyt_deltaei_coarse_grain import build_argparser
-    from wyt_deltaei_coarse_grain import WYTTwoStageDeltaEIConfig, SHRMethod10Config
-    config_type = WYTTwoStageDeltaEIConfig if cfg.method_tag == "two_stage" else SHRMethod10Config
+    from wyt_deltaei_coarse_grain import WYTTwoStageDeltaEIConfig
+    config_type = WYTTwoStageDeltaEIConfig
     args = build_argparser().parse_args(training_command(cfg, job, cfg.method_root / "unused")[4:])
     values = {field.name: getattr(args, field.name) for field in fields(config_type)
               if hasattr(args, field.name) and getattr(args, field.name) is not None}

@@ -13,12 +13,9 @@ from mignet_ce.coarse_frontends.maturity_cci_grn_two_stage import (
     prepare as prepare_maturity_cci_grn_two_stage,
 )
 from mignet_ce.representations.coarse_input import PreparedCoarseInput
-from mignet_ce.coarse_frontends.shr_method_8 import prepare as prepare_shr_method_8
-from mignet_ce.coarse_frontends.shr_method_10 import prepare as prepare_shr_method_10
 
 MATURITY_GRN_METHODS = frozenset({
     "complete_combined_coarse_maturity_cci_grn", "maturity_cci_grn_two_stage",
-    "shr_method_8", "shr_method_10",
 })
 
 
@@ -29,8 +26,6 @@ COARSE_FRONTEND_REGISTRY: dict[
     "complete_combined_coarse": prepare_complete_combined_coarse,
     "complete_combined_coarse_maturity_cci_grn": prepare_complete_combined_coarse_maturity_cci_grn,
     "maturity_cci_grn_two_stage": prepare_maturity_cci_grn_two_stage,
-    "shr_method_8": prepare_shr_method_8,
-    "shr_method_10": prepare_shr_method_10,
 }
 
 

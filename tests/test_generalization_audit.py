@@ -69,15 +69,8 @@ def saved_run(cfg, job, run_dir, *, informative=False, full_config=False):
     for name, obj in (("summary", summary), ("config", trainer),
                       ("feature_manifest", {"method": cfg.canonical_method, "provenance": provenance})):
         (run_dir / f"{name}.json").write_text(json.dumps(obj), encoding="utf-8")
-    checkpoint = "best_joint.pt" if cfg.method_tag == "two_stage" else "best_model.pt"
+    checkpoint = "best_joint.pt"
     (run_dir / checkpoint).touch()
-    if cfg.method_tag == "shr_method_10":
-        row = {"epoch": 2, "delta_EI": summary["delta_EI_best_checkpoint"], "checkpoint_eligible": "True",
-               "Keff_t": summary["Keff_t"], "Keff_tp": summary["Keff_tp"]}
-        with (run_dir / "training_history.csv").open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(row))
-            writer.writeheader()
-            writer.writerow(row)
 
     if informative:
         budget = tables.induced_cq_from_saved(run_dir)
@@ -100,15 +93,14 @@ def test_explicit_hierarchy_and_method_commands(tmp_path):
     assert {j["organ"] for j in jobs} == {"lung", "brain"}
     assert {j["column"]: (j["input_scale"], j["K"]) for j in jobs} == {
         "Spot -> K150": ("spot", 150), "K150 -> K40": ("seurat_k150", 40), "Spot -> K40": ("spot", 40)}
-    method10 = replace(cfg, method="shr_method_10")
-    command = runner.training_command(method10, jobs[0], tmp_path / "attempt")
-    assert command[command.index("--method") + 1] == "shr_method_10"
-    assert command[command.index("--checkpoint-keff-min") + 1] == "1e-6"
-    assert command[command.index("--keff-min") + 1] == "45"
-    assert cfg.method_root != method10.method_root
+    command = runner.training_command(cfg, jobs[0], tmp_path / "attempt")
+    assert command[command.index("--method") + 1] == "maturity_cci_grn_two_stage"
+    assert "--checkpoint-keff-min" not in command
+    assert "--keff-min" not in command
+    assert cfg.method_root.name == "two_stage"
 
 
-@pytest.mark.parametrize("extra", [("--method=shr_method_10",), ("--k", "2"), ("--alpha-cci", ".8"), ("--h5ad-t", "x")])
+@pytest.mark.parametrize("extra", [("--method=two_stage",), ("--k", "2"), ("--alpha-cci", ".8"), ("--h5ad-t", "x")])
 def test_extra_args_cannot_override_identity(tmp_path, extra):
     with pytest.raises(ValueError, match="cannot override"):
         config(tmp_path, runner_extra_args=extra).validate()
@@ -116,7 +108,7 @@ def test_extra_args_cannot_override_identity(tmp_path, extra):
 
 def test_abbreviated_override_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="abbreviated"):
-        config(tmp_path, runner_extra_args=("--meth", "shr_method_10")).validate()
+        config(tmp_path, runner_extra_args=("--meth", "two_stage")).validate()
 
 
 def test_cli_defaults_and_dry_run_write_nothing(tmp_path):
@@ -138,7 +130,7 @@ def test_streamed_ei_matches_existing_formula_and_rejects_bad_arrays():
         tables._matrix_stats(np.array([[float("nan"), 0.], [.5, .5]]))
 
 
-@pytest.mark.parametrize("method", ["two_stage", "shr_method_10"])
+@pytest.mark.parametrize("method", ["two_stage", "maturity_cci_grn_two_stage"])
 def test_independent_saved_kernel_and_keff_audit(tmp_path, method):
     cfg = config(tmp_path, method=method)
     job = runner.planned_jobs(cfg)[0]
@@ -368,7 +360,7 @@ def test_spot40_retrain_all_preserves_previous_arrays(tmp_path, monkeypatch, fas
 
 
 def test_spot40_real_tables_and_render_use_verified_metrics(tmp_path, monkeypatch):
-    cfg = spot_config(tmp_path, organs=("lung",), method="shr_method_10")
+    cfg = spot_config(tmp_path, organs=("lung",))
     job = runner.planned_jobs(cfg)[0]
     path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
     saved_run(cfg, job, path, informative=True, full_config=True)
@@ -422,3 +414,23 @@ def test_spot40_render_detects_changed_scientific_config(tmp_path, fast_spot40_r
     (path / "config.json").write_text(json.dumps(actual))
     assert runner.run_spot40(cfg, mode="render")["status"] == "partial"
     assert "Saved trainer lr" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])
+def test_retired_generalization_methods_are_rejected(tmp_path, method):
+    with pytest.raises(ValueError, match="Unsupported method"):
+        config(tmp_path, method=method).validate()
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--method", method, "--output-root", str(tmp_path)])
+
+
+def test_resume_accepts_historical_checkpoint_description(tmp_path, fast_reports):
+    cfg = config(tmp_path)
+    assert runner.run(cfg)["status"] == "partial"
+    manifest = cfg.method_root / "manifest.json"
+    state = json.loads(manifest.read_text(encoding="utf-8"))
+    state["contract"]["checkpoint_policy"] = "historical explanatory text"
+    manifest.write_text(json.dumps(state), encoding="utf-8")
+    assert runner.run(cfg, mode="resume")["status"] == "partial"
+    with pytest.raises(ValueError, match="contract mismatch"):
+        runner.run(replace(cfg, seed=43), mode="resume")

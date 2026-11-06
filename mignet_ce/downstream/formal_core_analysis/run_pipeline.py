@@ -21,13 +21,12 @@ SCALES = ("spot", "seurat_k150", "seurat_k40")
 TIMES = ("11.5", "12.5", "13.5")
 PAIRS = ("11.5:12.5", "12.5:13.5", "11.5:13.5")
 K_BY_SCALE = ("spot=40", "seurat_k150=40", "seurat_k40=10")
-METHOD10_CHECKPOINT_KEFF_MIN = 1e-6
 STEMS = {"spot": "spot", "seurat_k150": "seurat150", "seurat_k40": "seurat"}
 REPO = Path(__file__).resolve().parents[3]
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Native maturity -> four coarse methods -> formal Core output")
+    p = argparse.ArgumentParser(description="Native maturity -> two-stage and single-stage control -> formal Core output")
     p.add_argument("--data-root", type=Path, required=True, help="Factory root with spot/seurat_k150/seurat_k40")
     p.add_argument("--grn-root", type=Path, required=True)
     p.add_argument("--cci-root", type=Path, required=True, help="True CCI matrices AND corresponding *_index.tsv")
@@ -277,10 +276,6 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
             "--alpha-cci", "0.20",
             "--epochs", str(a.epochs), "--device", a.device,
         ])
-        if method == "shr_method_10":
-            # Match the verified SHR_new protocol. The training-time Keff floor
-            # remains the native 0.30*K (12 for K=40; 3 for K=10).
-            command.extend(["--checkpoint-keff-min", "1e-6"])
         jobs.append({"stage": "train_" + method, "expected_runs": 9, "command": command})
     if not a.skip_render:
         jobs.append({
@@ -314,12 +309,6 @@ def audit_finished_method(output_root: Path, method: str) -> list[dict]:
                 raise RuntimeError(f"Trained-PIJ verification failed for {run_dir}: {exc}") from exc
             if (item["method"], item["input_scale"], item["time_pair"]) != (method, scale, f"{source}->{target}"):
                 raise RuntimeError(f"Recorded scientific condition does not match {run_dir}: {item}")
-            if method == "shr_method_10":
-                if not abs(float(item["checkpoint_keff_min"]) - METHOD10_CHECKPOINT_KEFF_MIN) <= 1e-12:
-                    raise RuntimeError(f"Method 10 checkpoint policy mismatch at {run_dir}: expected {METHOD10_CHECKPOINT_KEFF_MIN}, got {item['checkpoint_keff_min']}")
-                expected_training_floor = 0.30 * int(item["K"])
-                if not abs(float(item["keff_min_resolved"]) - expected_training_floor) <= 1e-12:
-                    raise RuntimeError(f"Method 10 training Keff floor mismatch at {run_dir}: expected {expected_training_floor}, got {item['keff_min_resolved']}")
             rows.append({"run_dir": str(run_dir), "trained_deltaEI_bits": item["trained_delta_EI"],
                          "checkpoint_keff_min": item.get("checkpoint_keff_min"),
                          "keff_min_resolved": item.get("keff_min_resolved")})
@@ -347,8 +336,6 @@ def main(argv: list[str] | None = None) -> int:
         "transition": "KL+OT", "alpha_cci": 0.20,
         "epochs": a.epochs, "seed": a.seed, "resume": a.resume,
         "resume_incomplete": a.resume_incomplete,
-        "method10_checkpoint_keff_min": METHOD10_CHECKPOINT_KEFF_MIN,
-        "method10_training_keff_floor_policy": "0.30*K (12 for K=40; 3 for K=10)",
         "provenance_note": "Training K150/K40 uses native per-layer CSV paths. No bespoke maturity aggregator.",
         **report,
         "commands": jobs,

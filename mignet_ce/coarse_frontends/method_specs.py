@@ -7,8 +7,7 @@ from dataclasses import dataclass
 
 LEGACY_SINGLE_STAGE = "legacy_single_stage"
 DYNAMIC_CLOSURE_TWO_STAGE = "dynamic_closure_two_stage"
-SHR_METHOD_8 = "shr_method_8"
-SHR_METHOD_10 = "shr_method_10"
+RETIRED_COARSE_METHODS = frozenset({"shr_method_8", "shr_method_10"})
 
 
 @dataclass(frozen=True)
@@ -54,16 +53,6 @@ COARSE_METHOD_SPECS.update(
             default_lambda_dev=0.05,
             objective_version="wyt_dynamic_closure_two_stage_v2",
         ),
-        SHR_METHOD_8: CoarseMethodSpec(
-            name=SHR_METHOD_8, training_mode=SHR_METHOD_8, frontend=SHR_METHOD_8,
-            requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
-            objective_version="shr_method_8_v1",
-        ),
-        SHR_METHOD_10: CoarseMethodSpec(
-            name=SHR_METHOD_10, training_mode=SHR_METHOD_10, frontend=SHR_METHOD_10,
-            requires_maturity=True, requires_grn=True, default_lambda_dev=0.05,
-            objective_version="shr_method_10_v1",
-        ),
     }
 )
 
@@ -71,6 +60,10 @@ COARSE_METHOD_SPECS.update(
 def get_coarse_method_spec(method: str) -> CoarseMethodSpec:
     """Return a known method spec, defaulting unknown programmatic fixtures to legacy."""
 
+    if method in RETIRED_COARSE_METHODS:
+        raise ValueError(
+            f"Coarse method {method!r} has been retired; use 'maturity_cci_grn_two_stage'."
+        )
     return COARSE_METHOD_SPECS.get(method, CoarseMethodSpec(name=method))
 
 

@@ -57,7 +57,7 @@ def generate_preview(output_root: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", type=Path, default=(
-        Path(__file__).resolve().parents[3] / "output" / "formal_core_analysis_shr_preview"))
+        Path(__file__).resolve().parents[3] / "output" / "formal_core_analysis_preview"))
     args = parser.parse_args()
     print(json.dumps(generate_preview(args.output_root), ensure_ascii=False, indent=2))
 

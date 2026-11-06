@@ -10,6 +10,7 @@ import re
 import pandas as pd
 import numpy as np
 from .methods import METHODS
+from mignet_ce.coarse_frontends.method_specs import RETIRED_COARSE_METHODS
 
 LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
           ("K150 -> K40", "seurat_k150", "seurat_k40"),
@@ -159,33 +160,6 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             raise ValueError(f"Missing finite {field} in summary.json: {p}")
     if not np.isclose(float(raw), float(summary["EI_macro_best_checkpoint"])-float(summary["EI_micro_fixed"]), atol=1e-4, rtol=0):
         raise ValueError(f"Saved trained Delta EI disagrees with EI_macro - EI_micro: {p}")
-    if desc["method"] == "shr_method_10":
-        if float(raw) <= 0.0:
-            raise ValueError(f"Method 10 checkpoint must have positive trained Delta EI: {p}")
-        history_path = p / "training_history.csv"
-        if not history_path.is_file():
-            raise FileNotFoundError(f"Method 10 checkpoint audit requires training_history.csv: {history_path}")
-        history = pd.read_csv(history_path)
-        required_history = {"epoch", "delta_EI", "Keff_t", "Keff_tp", "checkpoint_eligible"}
-        if not required_history <= set(history.columns):
-            raise ValueError(f"Method 10 training history missing {sorted(required_history-set(history.columns))}: {history_path}")
-        best_epoch = int(summary.get("best_epoch", -1))
-        selected = history.loc[pd.to_numeric(history["epoch"], errors="coerce").eq(best_epoch)]
-        if len(selected) != 1:
-            raise ValueError(f"Method 10 best_epoch={best_epoch} is not uniquely present in training history: {history_path}")
-        selected_row = selected.iloc[0]
-        if not bool(selected_row["checkpoint_eligible"]):
-            raise ValueError(f"Method 10 saved checkpoint was not marked eligible at epoch {best_epoch}: {p}")
-        if float(selected_row["delta_EI"]) <= 0.0:
-            raise ValueError(f"Method 10 selected checkpoint has non-positive Delta EI at epoch {best_epoch}: {p}")
-        k_for_floor = int(summary.get("K", config.get("k", 0)))
-        configured_floor = config.get("checkpoint_keff_min")
-        resolved_checkpoint_floor = float(configured_floor) if configured_floor is not None else 0.25 * k_for_floor
-        if (float(selected_row["Keff_t"]) < resolved_checkpoint_floor - 1e-8
-                or float(selected_row["Keff_tp"]) < resolved_checkpoint_floor - 1e-8):
-            raise ValueError(f"Method 10 selected checkpoint violates its recorded Keff floor at epoch {best_epoch}: {p}")
-        if not np.isclose(float(selected_row["delta_EI"]), float(raw), atol=2e-4, rtol=0):
-            raise ValueError(f"Method 10 history/checkpoint Delta EI mismatch at epoch {best_epoch}: {p}")
     # Independently check the persisted training transition matrix against summary.
     from mignet_ce.downstream.analysis.dynamic_closure.analysis import effective_information
     macro_path = p / "PIJ_macro_train.npy"
@@ -264,6 +238,9 @@ def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
     good, errors = [], []
     for run in runs:
         try:
+            # Historical retired results remain on disk but do not enter active tables.
+            if _json(run / "summary.json").get("method") in RETIRED_COARSE_METHODS:
+                continue
             good.append(inspect_optimal_run(run))
         except (ValueError, FileNotFoundError) as exc:
             errors.append(f"{run}: {exc}")

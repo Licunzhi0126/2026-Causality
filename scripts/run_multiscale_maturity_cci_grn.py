@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
-import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,12 +28,10 @@ from mignet_ce.coarse_frontends.method_specs import (  # noqa: E402
 )
 
 
-DEFAULT_METHOD = "complete_combined_coarse_maturity_cci_grn"
+DEFAULT_METHOD = "maturity_cci_grn_two_stage"
 SUPPORTED_METHODS = (
     DEFAULT_METHOD,
-    "maturity_cci_grn_two_stage",
-    "shr_method_8",
-    "shr_method_10",
+    "complete_combined_coarse_maturity_cci_grn",
 )
 DEFAULT_K_BY_SCALE = {"spot": [40], "seurat_k150": [40], "seurat_k40": [10]}
 SUMMARY_REQUIRED_KEYS = {
@@ -68,7 +65,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--method",
         choices=SUPPORTED_METHODS,
         default=DEFAULT_METHOD,
-        help="Registered maturity+CCI+GRN method to run; defaults to the legacy single-stage method.",
+        help="Registered maturity+CCI+GRN method to run; defaults to the final two-stage method.",
     )
     parser.add_argument("--spot-root", type=Path, required=True)
     parser.add_argument("--seurat-k40-root", type=Path, required=True)
@@ -244,10 +241,6 @@ def runner_command(spec: RunSpec, runner_extra_args: Sequence[str]) -> list[str]
         str(spec.run_dir),
     ]
     extra = list(map(str, runner_extra_args))
-    if spec.method == "shr_method_10" and _runner_float_option(extra, "--keff-min") is None:
-        # Materialize the native 0.30*K floor in config.json for each K.
-        # This is 12 for K=40 and 3 for K=10; it does not change the default objective.
-        extra.extend(["--keff-min", f"{0.30 * spec.k:g}"])
     return [*command, *extra]
 
 
@@ -262,21 +255,11 @@ def run_experiments(
     continue_on_error: bool,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    expected_checkpoint_floor = _runner_float_option(runner_extra_args, "--checkpoint-keff-min")
     for spec in specs:
         summary_path = spec.run_dir / "summary.json"
         command = runner_command(spec, runner_extra_args)
-        method_checkpoint_floor = expected_checkpoint_floor if spec.method == "shr_method_10" else None
-        method_training_floor = (
-            _runner_float_option(runner_extra_args, "--keff-min")
-            if spec.method == "shr_method_10" else None
-        )
-        if spec.method == "shr_method_10" and method_training_floor is None:
-            method_training_floor = 0.30 * spec.k
         if resume and _valid_summary(
             summary_path, expected_method=spec.method,
-            expected_checkpoint_keff_min=method_checkpoint_floor,
-            expected_keff_min=method_training_floor,
         ):
             rows.append(aggregate_run(spec, status="resumed"))
             continue
@@ -334,8 +317,6 @@ def run_experiments(
             subprocess.run(command, check=True, cwd=REPO_ROOT)
             if not _valid_summary(
                 summary_path, expected_method=spec.method,
-                expected_checkpoint_keff_min=method_checkpoint_floor,
-                expected_keff_min=method_training_floor,
             ):
                 raise RuntimeError(f"Runner completed without a valid summary/protocol match: {summary_path}")
             context["status"] = "success"
@@ -443,8 +424,6 @@ def _valid_summary(
     path: Path,
     *,
     expected_method: str | None = None,
-    expected_checkpoint_keff_min: float | None = None,
-    expected_keff_min: float | None = None,
 ) -> bool:
     try:
         payload = _read_json(path)
@@ -454,60 +433,7 @@ def _valid_summary(
         return False
     if expected_method is not None and payload.get("method") != expected_method:
         return False
-    if (expected_checkpoint_keff_min is not None or expected_keff_min is not None) and expected_method == "shr_method_10":
-        try:
-            config = _read_json(Path(path).parent / "config.json")
-            if expected_checkpoint_keff_min is not None:
-                actual_checkpoint = config.get("checkpoint_keff_min")
-                if actual_checkpoint is None or not math.isclose(
-                    float(actual_checkpoint), float(expected_checkpoint_keff_min), rel_tol=0.0, abs_tol=1e-12
-                ):
-                    return False
-            if expected_keff_min is not None:
-                actual_keff = config.get("keff_min")
-                if actual_keff is None:
-                    actual_keff = 0.30 * int(config.get("k", payload.get("K", 0)))
-                if not math.isclose(
-                    float(actual_keff), float(expected_keff_min), rel_tol=0.0, abs_tol=1e-12
-                ):
-                    return False
-            # A summary is reusable only when the exact selected epoch is
-            # independently represented as an eligible positive-Delta-EI row.
-            history_path = Path(path).parent / "training_history.csv"
-            history = pd.read_csv(history_path)
-            required_history = {"epoch", "delta_EI", "Keff_t", "Keff_tp", "checkpoint_eligible"}
-            if not required_history <= set(history.columns):
-                return False
-            best_epoch = int(payload.get("best_epoch", -1))
-            selected = history.loc[pd.to_numeric(history["epoch"], errors="coerce").eq(best_epoch)]
-            if len(selected) != 1:
-                return False
-            selected_row = selected.iloc[0]
-            selected_delta = float(selected_row["delta_EI"])
-            summary_delta = float(payload.get("trained_delta_EI", payload["delta_EI_best_checkpoint"]))
-            if (not bool(selected_row["checkpoint_eligible"]) or selected_delta <= 0.0
-                    or not math.isclose(selected_delta, summary_delta, rel_tol=0.0, abs_tol=2e-4)):
-                return False
-            if expected_checkpoint_keff_min is not None and (
-                float(selected_row["Keff_t"]) < float(expected_checkpoint_keff_min) - 1e-8
-                or float(selected_row["Keff_tp"]) < float(expected_checkpoint_keff_min) - 1e-8
-            ):
-                return False
-        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError, KeyError):
-            return False
     return True
-
-
-def _runner_float_option(values: Sequence[str], option: str) -> float | None:
-    values = list(map(str, values))
-    for index, value in enumerate(values):
-        if value == option:
-            if index + 1 >= len(values):
-                raise ValueError(f"Missing value after {option}")
-            return float(values[index + 1])
-        if value.startswith(option + "="):
-            return float(value.split("=", 1)[1])
-    return None
 
 
 def _remove_run_dir(run_dir: Path, *, out_root: Path, method: str) -> None:

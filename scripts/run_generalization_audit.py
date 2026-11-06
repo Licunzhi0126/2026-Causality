@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--developmental-root", type=Path,
                    default=Path("/home/jovyan/work/2026 Causality/output/developmental_features"))
     p.add_argument("--output-root", type=Path, required=True,
-                   help="Parent directory; two_stage/ or shr_method_10/ is appended automatically.")
+                   help="Parent directory; two_stage/ is appended automatically.")
     p.add_argument("--organs", nargs="+", choices=("lung", "brain", "heart"), default=["lung", "brain"])
     p.add_argument("--pairs", nargs="+", default=["11.5:12.5", "12.5:13.5", "11.5:13.5"])
     p.add_argument("--hierarchies", nargs="+", choices=tuple(HIERARCHIES), default=None)

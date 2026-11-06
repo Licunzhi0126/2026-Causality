@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import fields
 import sys
 from pathlib import Path
 
@@ -17,6 +16,7 @@ METHOD_CHOICES = tuple(sorted(COARSE_METHOD_SPECS))
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description="Run WYT FeatureAlign-DeltaEI coarse graining from spot H5AD and CCI inputs."
     )
     parser.add_argument("--method", choices=METHOD_CHOICES, required=True)
@@ -95,15 +95,6 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-within", type=float, default=None)
     parser.add_argument("--lambda-inter", type=float, default=None)
     parser.add_argument("--lambda-retain-norm", type=float, default=None)
-    parser.add_argument("--lambda-retain", type=float, default=None, help="SHR retained-information weight.")
-    parser.add_argument("--graph-projection-dim", type=int, default=None, help="SHR Method 8 PCA dimension (default 32).")
-    parser.add_argument("--attention-heads", type=int, default=None)
-    parser.add_argument("--attention-ffn-dim", type=int, default=None)
-    parser.add_argument("--attention-dropout", type=float, default=None)
-    parser.add_argument("--attention-beta-init", type=float, default=None)
-    parser.add_argument("--cross-time-beta-init", type=float, default=None)
-    parser.add_argument("--cross-time-gate-bias-init", type=float, default=None)
-    parser.add_argument("--cosine-eta-min", type=float, default=None)
     parser.add_argument("--retain-floor-ratio", type=float, default=None)
     parser.add_argument("--lambda-retain-floor", type=float, default=None)
     parser.add_argument("--inter-margin", type=float, default=None)
@@ -134,17 +125,6 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--log-every", type=int, default=50)
     return parser
-
-
-def build_shr_config(args: argparse.Namespace, lambda_dev: float):
-    """Pass only parameters supported by the selected SHR configuration."""
-    from wyt_deltaei_coarse_grain import SHRMethod8Config, SHRMethod10Config
-
-    config_type = {"shr_method_8": SHRMethod8Config, "shr_method_10": SHRMethod10Config}[args.method]
-    values = {field.name: getattr(args, field.name) for field in fields(config_type)
-              if hasattr(args, field.name) and getattr(args, field.name) is not None}
-    values["lambda_dev"] = lambda_dev
-    return config_type(**values)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -243,9 +223,7 @@ def main(argv: list[str] | None = None) -> None:
         device=args.device,
         log_every=args.log_every,
     )
-    if method_spec.training_mode in {"shr_method_8", "shr_method_10"}:
-        config = build_shr_config(args, lambda_dev)
-    elif method_spec.training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
+    if method_spec.training_mode == DYNAMIC_CLOSURE_TWO_STAGE:
         if args.out_dir.exists() and any(args.out_dir.iterdir()):
             raise SystemExit(
                 f"Two-stage output directory is not empty and will not be overwritten: {args.out_dir}"

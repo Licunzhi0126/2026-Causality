@@ -18,8 +18,6 @@ def test_coarse_frontend_registry_has_exact_planned_methods() -> None:
         "complete_combined_coarse",
         "complete_combined_coarse_maturity_cci_grn",
         "maturity_cci_grn_two_stage",
-        "shr_method_8",
-        "shr_method_10",
     }
 
 
@@ -49,3 +47,19 @@ def test_training_modes_are_method_isolated() -> None:
         == LEGACY_SINGLE_STAGE
     )
     assert training_mode_for_method("maturity_cci_grn_two_stage") == DYNAMIC_CLOSURE_TWO_STAGE
+
+
+@pytest.mark.parametrize("method", ["shr_method_8", "shr_method_10"])
+def test_retired_methods_are_rejected_by_metadata_frontend_and_dispatch(tmp_path, method):
+    from types import SimpleNamespace
+    from mignet_ce.coarse_frontends import get_coarse_method_spec, prepare_coarse_input
+    from wyt_deltaei_coarse_grain import WYTDeltaEIConfig, train_deltaei
+
+    with pytest.raises(ValueError, match="retired"):
+        get_coarse_method_spec(method)
+    with pytest.raises(ValueError, match="Unknown coarse frontend"):
+        prepare_coarse_input(method, SimpleNamespace(grn_feature_method="legacy",
+                                                    cci_feature_method="shared_nmf", alpha_cci=.01))
+    with pytest.raises(ValueError, match="retired"):
+        train_deltaei(SimpleNamespace(method=method), WYTDeltaEIConfig(k=2, out_dir=tmp_path / "run"))
+    assert not (tmp_path / "run").exists()
