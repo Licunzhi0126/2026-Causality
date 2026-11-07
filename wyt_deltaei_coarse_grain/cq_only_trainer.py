@@ -12,7 +12,9 @@ import torch
 
 from mignet_ce.information_thresholds import closure_signal_threshold_bits
 from mignet_ce.representations.coarse_input import MacroPijInputs, PreparedCoarseInput
-from wyt_deltaei_coarse_grain.cq_only_objective import cq_checkpoint_eligible, cq_only_loss
+from wyt_deltaei_coarse_grain.cq_only_objective import (
+    cq_checkpoint_eligible, cq_low_signal_checkpoint_eligible, cq_only_loss,
+)
 from wyt_deltaei_coarse_grain.development import developmental_loss
 from wyt_deltaei_coarse_grain.macro_builder import macro_matrix, pool_feature_blocks, pool_to_macro
 from wyt_deltaei_coarse_grain.model import MacroFeatureNet, PrototypeEncoder
@@ -145,6 +147,8 @@ def train_deltaei_cq_only(prepared: PreparedCoarseInput, config: WYTCQOnlyConfig
     signal_threshold = closure_signal_threshold_bits(config.k)
     metrics = []
     best_cq, best_epoch = -float("inf"), 0
+    best_low_signal_cq, best_low_signal_epoch = -float("inf"), 0
+    checkpoint_policy = "strict_then_low_signal_cq_v1"
 
     def forward():
         s_t, h_t = encoder(features_t, adjacency_t, config.temperature, return_embed=True)
@@ -203,11 +207,22 @@ def train_deltaei_cq_only(prepared: PreparedCoarseInput, config: WYTCQOnlyConfig
                 available=row["I_available"], retained=row["I_retained"], cq=row["CQ"],
                 signal_threshold=signal_threshold, keff_t=row["Keff_t"], keff_tp=row["Keff_tp"],
             )
+            row["low_signal_checkpoint_eligible"] = cq_low_signal_checkpoint_eligible(
+                available=row["I_available"], retained=row["I_retained"], cq=row["CQ"],
+                signal_threshold=signal_threshold, keff_t=row["Keff_t"], keff_tp=row["Keff_tp"],
+            ) and math.isfinite(row["delta_EI"])
             if row["checkpoint_eligible"] and row["CQ"] > best_cq:
                 best_cq, best_epoch = row["CQ"], epoch
                 # Save before optimizer.step so parameters and recorded metrics agree.
                 torch.save({"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
-                            "optimizer": optimizer.state_dict(), "method": prepared.method, **row}, out_dir / "best_cq.pt")
+                            "optimizer": optimizer.state_dict(), "method": prepared.method,
+                            "checkpoint_policy": checkpoint_policy, "selection": "strict_cq", **row}, out_dir / "best_cq.pt")
+            if row["low_signal_checkpoint_eligible"] and row["CQ"] > best_low_signal_cq:
+                best_low_signal_cq, best_low_signal_epoch = row["CQ"], epoch
+                torch.save({"encoder": encoder.state_dict(), "macro_net": macro_net.state_dict(),
+                            "optimizer": optimizer.state_dict(), "method": prepared.method,
+                            "checkpoint_policy": checkpoint_policy, "selection": "low_signal_cq", **row},
+                           out_dir / "best_low_signal_cq.pt")
             metrics.append(row)
             optimizer.step()
             if epoch == 1 or epoch % config.log_every == 0 or epoch == config.epochs:
@@ -216,9 +231,25 @@ def train_deltaei_cq_only(prepared: PreparedCoarseInput, config: WYTCQOnlyConfig
                 log.write(message + "\n")
                 log.flush()
         write_csv(out_dir / "metrics.csv", metrics)
-        if not best_epoch:
-            raise RuntimeError("CQ-only training produced no checkpoint satisfying the effective-signal criterion; inspect metrics.csv.")
-        checkpoint = torch.load(out_dir / "best_cq.pt", map_location=device)
+        strict_checkpoint_found = best_epoch > 0
+        fallback_used = not strict_checkpoint_found and best_low_signal_epoch > 0
+        if not strict_checkpoint_found and not fallback_used:
+            raise RuntimeError(
+                "CQ-only training produced no checkpoint satisfying the effective-signal criterion "
+                "or finite positive-information fallback; inspect metrics.csv."
+            )
+        checkpoint_source = "best_low_signal_cq.pt" if fallback_used else "best_cq.pt"
+        checkpoint = torch.load(out_dir / checkpoint_source, map_location=device)
+        if fallback_used:
+            best_epoch = best_low_signal_epoch
+            # Keep the canonical CQ artifact, preserving the fallback label inside it.
+            torch.save(checkpoint, out_dir / "best_cq.pt")
+        message = (f"[wyt/cq] selected epoch={best_epoch} source={checkpoint_source} "
+                   f"strict_checkpoint_found={strict_checkpoint_found} "
+                   f"I_available={checkpoint['I_available']:.8g} signal_threshold={signal_threshold:.8g}")
+        print(message, flush=True)
+        log.write(message + "\n")
+        log.flush()
         encoder.load_state_dict(checkpoint["encoder"])
         macro_net.load_state_dict(checkpoint["macro_net"])
         encoder.eval()
@@ -236,7 +267,15 @@ def train_deltaei_cq_only(prepared: PreparedCoarseInput, config: WYTCQOnlyConfig
             "method": prepared.method, "method_version": config.objective_version,
             "training_protocol": config.training_mode, "stage1_epochs": config.epochs, "stage2_epochs": 0,
             "best_epoch": best_epoch, "selected_checkpoint": "best_cq.pt", "best_checkpoint_selection": "best_cq.pt",
-            "strict_checkpoint_found": True, "delta_ei_optimized": False,
+            "checkpoint_policy": checkpoint_policy, "checkpoint_source": checkpoint_source,
+            "strict_checkpoint_found": strict_checkpoint_found,
+            "checkpoint_fallback_used": fallback_used,
+            "fallback_type": "low_signal_cq" if fallback_used else None,
+            "fallback_reason": "no_strict_cq_checkpoint" if fallback_used else None,
+            "checkpoint_signal_status": "low-signal" if fallback_used else "informative",
+            "CQ_training_score": float(checkpoint["CQ"]),
+            "max_I_available_observed": max(row["I_available"] for row in metrics),
+            "delta_ei_optimized": False,
             "EI_micro_fixed": number(fixed_micro_ei), "EI_macro_best_checkpoint": number(values["delta"] + fixed_micro_ei),
             "delta_EI_best_checkpoint": number(values["delta"]), "trained_delta_EI": number(values["delta"]),
             **{key: number(values[key]) for key in ("I_available", "I_retained", "closure_quality", "closure_leakage")},

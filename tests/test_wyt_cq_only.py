@@ -8,7 +8,9 @@ import torch
 
 from test_wyt_two_stage import _prepared, _cli_args
 from wyt_deltaei_coarse_grain import WYTCQOnlyConfig, train_deltaei
-from wyt_deltaei_coarse_grain.cq_only_objective import cq_only_loss
+from wyt_deltaei_coarse_grain.cq_only_objective import (
+    cq_checkpoint_eligible, cq_low_signal_checkpoint_eligible, cq_only_loss,
+)
 
 
 def test_cq_loss_has_no_delta_or_keff_gradient(tmp_path):
@@ -21,7 +23,13 @@ def test_cq_loss_has_no_delta_or_keff_gradient(tmp_path):
     assert values["I_retained"].grad < 0
 
 
-def test_cq_only_trains_one_stage_and_exports_negative_delta(tmp_path):
+@pytest.mark.parametrize("competing_fallback", [False, True])
+def test_cq_only_trains_one_stage_and_exports_negative_delta(tmp_path, monkeypatch, competing_fallback):
+    if competing_fallback:
+        # Simulate an additional saved fallback candidate. A strict checkpoint
+        # must retain priority, including when its measured DeltaEI is negative.
+        import wyt_deltaei_coarse_grain.cq_only_trainer as trainer
+        monkeypatch.setattr(trainer, "cq_low_signal_checkpoint_eligible", lambda **_: True)
     prepared = _prepared("single_stage_cq_only")
     # Uniform macro PIJ guarantees non-positive DeltaEI; selection must still use CQ.
     def uniform_macro(inputs):
@@ -38,6 +46,12 @@ def test_cq_only_trains_one_stage_and_exports_negative_delta(tmp_path):
     assert summary["trained_delta_EI"] < 0
     assert {row["stage"] for row in result.metrics} == {"cq"}
     assert summary["selected_checkpoint"] == "best_cq.pt"
+    assert summary["strict_checkpoint_found"] is True
+    assert summary["checkpoint_fallback_used"] is False
+    assert summary["checkpoint_source"] == "best_cq.pt"
+    assert summary["fallback_type"] is None and summary["fallback_reason"] is None
+    if competing_fallback:
+        assert (result.out_dir / "best_low_signal_cq.pt").is_file()
     assert (result.out_dir / "best_cq.pt").is_file() and (result.out_dir / "best_model.pt").is_file()
     assert not (result.out_dir / "best_joint.pt").exists()
     eligible = [row for row in result.metrics if row["checkpoint_eligible"]]
@@ -47,6 +61,56 @@ def test_cq_only_trains_one_stage_and_exports_negative_delta(tmp_path):
         assert np.isfinite(matrix).all() and np.allclose(matrix.sum(1), 1, atol=1e-5)
     with pytest.raises(FileExistsError):
         train_deltaei(prepared, cfg)
+
+
+def test_cq_low_signal_fallback_saves_and_restores_best_training_score(tmp_path):
+    from mignet_ce.metrics import effective_information
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    from mignet_ce.downstream.generalization_audit.tables import induced_cq_from_saved, inspect_cq_checkpoint_selection
+    prepared = _prepared("single_stage_cq_only")
+    micro = .05 * prepared.micro_pij + .95 / prepared.micro_pij.shape[1]
+    prepared = replace(prepared, micro_pij=micro, micro_ei=effective_information(micro.copy()))
+    assert prepared.micro_ei < closure_signal_threshold_bits(2)
+    result = train_deltaei(prepared, WYTCQOnlyConfig(
+        2, tmp_path / "cq", hidden_dim=8, mid_dim=4, epochs=4, knn_k=2, temperature=.03,
+    ))
+    summary = json.loads((result.out_dir / "summary.json").read_text())
+    assert not any(row["checkpoint_eligible"] for row in result.metrics)
+    candidates = [row for row in result.metrics if row["low_signal_checkpoint_eligible"]]
+    best = max(candidates, key=lambda row: row["CQ"])
+    assert result.best_epoch == best["epoch"]
+    assert summary["CQ_training_score"] == pytest.approx(best["CQ"])
+    assert summary["strict_checkpoint_found"] is False and summary["checkpoint_fallback_used"] is True
+    assert summary["fallback_type"] == "low_signal_cq"
+    assert summary["checkpoint_source"] == "best_low_signal_cq.pt"
+    assert summary["checkpoint_signal_status"] == "low-signal"
+    assert summary["checkpoint_metric_state_consistent"] is True
+    assert 0 < summary["I_available"] < summary["signal_threshold_bits"]
+    assert summary["closure_quality"] > summary["CQ_training_score"]
+    checkpoints = [torch.load(result.out_dir / name, map_location="cpu")
+                   for name in ("best_cq.pt", "best_low_signal_cq.pt", "best_model.pt")]
+    for checkpoint in checkpoints:
+        assert checkpoint["epoch"] == best["epoch"] and checkpoint["selection"] == "low_signal_cq"
+        for key, value in checkpoints[0]["encoder"].items():
+            torch.testing.assert_close(checkpoint["encoder"][key], value)
+    budget = induced_cq_from_saved(result.out_dir)
+    audited = inspect_cq_checkpoint_selection(summary, available=budget["I_available_bits"],
+        retained=budget["I_retained_bits"], k=2, run_dir=result.out_dir)
+    assert audited["checkpoint_fallback_used"] is True
+
+
+def test_cq_signal_predicates_cover_reported_k40_failure():
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    values = dict(available=.048295, retained=.035565, cq=.668274,
+                  signal_threshold=closure_signal_threshold_bits(40), keff_t=13.324259, keff_tp=27.326002)
+    assert not cq_checkpoint_eligible(**values)
+    assert cq_low_signal_checkpoint_eligible(**values)
+    for key, value in (("available", 0.), ("available", float("nan")), ("retained", float("inf")),
+                       ("cq", -.1), ("keff_tp", float("nan"))):
+        assert not cq_low_signal_checkpoint_eligible(**{**values, key: value})
+    informative = {**values, "available": .06}
+    assert cq_checkpoint_eligible(**informative)
+    assert not cq_low_signal_checkpoint_eligible(**informative)
 
 
 def test_cq_only_failure_retains_diagnostics_without_summary(tmp_path):

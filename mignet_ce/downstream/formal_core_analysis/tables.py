@@ -214,6 +214,15 @@ def inspect_optimal_run(run_dir: Path) -> dict:
         raise ValueError(f"No-Keff method has Keff/dead-usage constraints: {p}")
     keff_min_resolved = None if no_floor else (float(configured_keff_min) if configured_keff_min is not None else 0.30 * k_value)
     checkpoint_keff_min_resolved = None if no_floor else (float(configured_checkpoint_min) if configured_checkpoint_min is not None else 0.25 * k_value)
+    from mignet_ce.downstream.generalization_audit.tables import (
+        CHECKPOINT_AUDIT_FIELDS, inspect_cq_checkpoint_selection,
+    )
+    selection_audit = {key: summary.get(key) for key in CHECKPOINT_AUDIT_FIELDS}
+    if desc["method"] == "single_stage_cq_only":
+        selection_audit = inspect_cq_checkpoint_selection(
+            summary, available=float(budget["I_available_bits"]),
+            retained=float(budget["I_macro_retained_bits"]), k=k_value, run_dir=p,
+        )
     return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
             "K": summary.get("K"), "trained_delta_EI": float(raw),
@@ -223,6 +232,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             "strict_checkpoint_found": summary.get("strict_checkpoint_found"),
             "best_joint_fallback_used": summary.get("best_joint_fallback_used"),
             "selected_checkpoint": summary.get("selected_checkpoint"),
+            **selection_audit,
             "keff_min_resolved": keff_min_resolved,
             "checkpoint_keff_min": checkpoint_keff_min_resolved,
             "Keff_t": float(summary["Keff_t"]), "Keff_tp": float(summary["Keff_tp"]),

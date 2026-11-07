@@ -383,6 +383,52 @@ def test_spot40_cli_selection():
     assert args.reuse_root == [Path("original"), Path("another")]
 
 
+def test_spot40_reuses_cq_fallback_and_exports_selection_audit(tmp_path, monkeypatch, fast_spot40_reports):
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    cfg = spot_config(tmp_path, method="single_stage_cq_only", organs=("lung",))
+    job = runner.planned_jobs(cfg)[0]
+    path = cfg.method_root / "runs" / job["job_id"] / "attempt_0001"
+    saved_run(cfg, job, path, informative=True, full_config=True)
+    micro = np.load(path / "PIJ_micro_train.npy")
+    micro = .01 * micro + .99 / micro.shape[1]
+    np.save(path / "PIJ_micro_train.npy", micro)
+    budget = tables.induced_cq_from_saved(path)
+    available, retained = budget["I_available_bits"], budget["I_retained_bits"]
+    threshold = closure_signal_threshold_bits(job["K"])
+    assert 1e-8 < available < threshold
+    summary = json.loads((path / "summary.json").read_text())
+    ei_micro, _ = tables._matrix_stats(micro)
+    summary.update(
+        EI_micro_fixed=ei_micro, delta_EI_best_checkpoint=summary["EI_macro_best_checkpoint"] - ei_micro,
+        I_available=available, I_retained=retained, closure_quality=budget["CQ_induced"],
+        signal_threshold_bits=threshold, checkpoint_policy="strict_then_low_signal_cq_v1",
+        selected_checkpoint="best_cq.pt", checkpoint_source="best_low_signal_cq.pt",
+        strict_checkpoint_found=False, checkpoint_fallback_used=True, fallback_type="low_signal_cq",
+        fallback_reason="no_strict_cq_checkpoint", checkpoint_signal_status="low-signal",
+        CQ_training_score=retained / threshold,
+    )
+    (path / "summary.json").write_text(json.dumps(summary))
+    (path / "best_low_signal_cq.pt").write_bytes(b"synthetic-checkpoint-placeholder")
+    monkeypatch.setattr(runner, "execute_job", lambda *_: pytest.fail("Valid CQ fallback should be reused"))
+    assert runner.run_spot40(cfg)["status"] == "complete"
+    assert runner.run_spot40(cfg, mode="render")["status"] == "complete"
+    with (cfg.method_root / "spot40_sources.csv").open(encoding="utf-8-sig") as handle:
+        source, = list(csv.DictReader(handle))
+    assert source["checkpoint_fallback_used"] == "True" and source["strict_checkpoint_found"] == "False"
+    assert source["fallback_type"] == "low_signal_cq" and source["checkpoint_signal_status"] == "low-signal"
+    assert float(source["CQ_induced"]) == pytest.approx(retained / available)
+    assert float(source["CQ_training_score"]) == pytest.approx(retained / threshold)
+    with (cfg.method_root / "tables/table_spot40_induced_cq.csv").open(encoding="utf-8-sig") as handle:
+        row, = list(csv.DictReader(handle))
+    assert row["11.5->12.5"] == f"{retained / available:.4f}"
+    (path / "summary.json").write_text(json.dumps({**summary, "strict_checkpoint_found": True}))
+    with pytest.raises(ValueError, match="strict/fallback"):
+        tables.inspect_spot40_run({**job, "run_dir": str(path)}, cfg.contract(), cfg.method_root, cfg.method_root)
+    (path / "summary.json").write_text(json.dumps({**summary, "checkpoint_policy": None}))
+    with pytest.raises(ValueError, match="missing its checkpoint policy"):
+        tables.inspect_spot40_run({**job, "run_dir": str(path)}, cfg.contract(), cfg.method_root, cfg.method_root)
+
+
 @pytest.mark.parametrize("method", ["two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only"])
 def test_new_methods_preserve_disabled_floors_and_reject_mismatched_reuse(tmp_path, method):
     cfg = spot_config(tmp_path, method=method, organs=("lung",))

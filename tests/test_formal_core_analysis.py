@@ -124,6 +124,47 @@ def test_checkpoint_audit_accepts_all_methods_and_rejects_mismatched_metrics(tmp
             inspect_optimal_run(run)
 
 
+def test_formal_audits_low_signal_cq_fallback_and_rejects_false_labels(tmp_path):
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    from mignet_ce.downstream.analysis.dynamic_closure.analysis import information_closure_budget
+    _write_synthetic_checkpoints(tmp_path / "runs")
+    run = tmp_path / "runs" / "single_stage_cq_only" / "spot" / PAIRS[0].replace("->", "_to_")
+    micro = np.load(run / "PIJ_micro_train.npy")
+    micro = .05 * micro + .95 / micro.shape[1]
+    np.save(run / "PIJ_micro_train.npy", micro)
+    budget = information_closure_budget(micro, np.load(run / "S_t.npy"), np.load(run / "S_tp.npy"))
+    available, retained = float(budget["I_available_bits"]), float(budget["I_macro_retained_bits"])
+    threshold = closure_signal_threshold_bits(2)
+    assert 1e-8 < available < threshold
+    summary = json.loads((run / "summary.json").read_text())
+    summary.update(
+        EI_micro_fixed=effective_information(micro.copy()),
+        delta_EI_best_checkpoint=summary["EI_macro_best_checkpoint"] - effective_information(micro.copy()),
+        I_available=available, I_retained=retained, signal_threshold_bits=threshold,
+        checkpoint_policy="strict_then_low_signal_cq_v1", selected_checkpoint="best_cq.pt",
+        checkpoint_source="best_low_signal_cq.pt", strict_checkpoint_found=False,
+        checkpoint_fallback_used=True, fallback_type="low_signal_cq",
+        fallback_reason="no_strict_cq_checkpoint", checkpoint_signal_status="low-signal",
+        CQ_training_score=retained / threshold,
+    )
+    for name in ("best_cq.pt", "best_low_signal_cq.pt"):
+        (run / name).write_bytes(b"synthetic-checkpoint-placeholder")
+    (run / "summary.json").write_text(json.dumps(summary))
+    row = inspect_optimal_run(run)
+    assert row["checkpoint_fallback_used"] is True and row["strict_checkpoint_found"] is False
+    assert row["checkpoint_source"] == "best_low_signal_cq.pt"
+    assert row["CQ_raw"] == pytest.approx(retained / available)
+    runs, rejected = collect_optimal_runs(tmp_path / "runs")
+    assert len(runs) == 45 and not rejected
+    fallback = runs[runs.run_dir.eq(str(run.resolve()))].iloc[0]
+    assert bool(fallback.checkpoint_fallback_used) and fallback.fallback_reason == "no_strict_cq_checkpoint"
+    for changed in ({"strict_checkpoint_found": True}, {"fallback_reason": None},
+                    {"checkpoint_source": "../other.pt"}, {"checkpoint_signal_status": "informative"}):
+        (run / "summary.json").write_text(json.dumps({**summary, **changed}))
+        with pytest.raises(ValueError, match="CQ checkpoint"):
+            inspect_optimal_run(run)
+
+
 def test_formal_collector_reports_complete_only_with_all_45_conditions(tmp_path, monkeypatch):
     from mignet_ce.downstream.formal_core_analysis.__main__ import main
     import sys

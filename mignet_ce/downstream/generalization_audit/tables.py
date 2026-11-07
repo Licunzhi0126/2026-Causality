@@ -11,6 +11,66 @@ from pathlib import Path
 
 TABLE_COLUMNS = ("Spot -> K150", "K150 -> K40", "Spot -> K40")
 SUCCESS_METRICS = ("trained_delta_EI", "EI_micro_recomputed", "EI_macro_recomputed", "Keff_t", "Keff_tp", "best_epoch")
+CHECKPOINT_AUDIT_FIELDS = (
+    "checkpoint_policy", "strict_checkpoint_found", "checkpoint_fallback_used",
+    "fallback_type", "fallback_reason", "checkpoint_signal_status", "signal_threshold_bits",
+    "checkpoint_source", "CQ_training_score",
+)
+CQ_BUDGET_FIELDS = ("CQ_induced", "I_available_bits", "I_retained_bits", "signal_status", "cq_status")
+
+
+def inspect_cq_checkpoint_selection(summary: dict, *, available: float, retained: float,
+                                    k: int, run_dir: Path) -> dict:
+    """Audit CQ selection labels against saved arrays; shared with Formal Core.
+
+    Historical strict-only results have no selection-policy marker and remain
+    readable. New fallback results must identify their actual source and signal.
+    This audit deliberately has no torch dependency.
+    """
+    import math
+    from mignet_ce.information_thresholds import closure_signal_threshold_bits
+    metadata = {key: summary.get(key) for key in CHECKPOINT_AUDIT_FIELDS}
+    policy = summary.get("checkpoint_policy")
+    if policy is None:
+        if summary.get("checkpoint_fallback_used") is True:
+            raise ValueError("CQ fallback is missing its checkpoint policy.")
+        return metadata
+    if policy != "strict_then_low_signal_cq_v1":
+        raise ValueError(f"Unknown CQ checkpoint policy: {policy}")
+    threshold = closure_signal_threshold_bits(k)
+    if not math.isclose(float(summary.get("signal_threshold_bits", float("nan"))), threshold,
+                        rel_tol=0, abs_tol=1e-12):
+        raise ValueError("CQ checkpoint signal threshold disagrees with K.")
+    recorded_available = float(summary.get("I_available", float("nan")))
+    recorded_retained = float(summary.get("I_retained", float("nan")))
+    if (not all(math.isfinite(x) for x in (available, retained, recorded_available, recorded_retained))
+            or not math.isclose(available, recorded_available, rel_tol=0, abs_tol=2e-4)
+            or not math.isclose(retained, recorded_retained, rel_tol=0, abs_tol=2e-4)):
+        raise ValueError("CQ selection information disagrees with saved PIJ/assignments.")
+    tolerance = 1e-8
+    if min(available, recorded_available) <= tolerance or min(retained, recorded_retained) < -tolerance:
+        raise ValueError("CQ checkpoint must have finite positive available information.")
+    strict = recorded_available >= threshold - tolerance
+    fallback = not strict
+    if summary.get("strict_checkpoint_found") is not strict or summary.get("checkpoint_fallback_used") is not fallback:
+        raise ValueError("CQ checkpoint strict/fallback labels disagree with its signal information.")
+    expected = {
+        "fallback_type": "low_signal_cq" if fallback else None,
+        "fallback_reason": "no_strict_cq_checkpoint" if fallback else None,
+        "checkpoint_signal_status": "low-signal" if fallback else "informative",
+        "checkpoint_source": "best_low_signal_cq.pt" if fallback else "best_cq.pt",
+    }
+    if any(summary.get(key) != value for key, value in expected.items()):
+        raise ValueError("CQ checkpoint fallback reason/source/status is inconsistent.")
+    score = float(summary.get("CQ_training_score", float("nan")))
+    if not math.isclose(score, recorded_retained / max(recorded_available, threshold), rel_tol=0, abs_tol=1e-5):
+        raise ValueError("CQ training score disagrees with its signal-clamped denominator.")
+    if summary.get("selected_checkpoint") != "best_cq.pt":
+        raise ValueError("CQ selected checkpoint must be the canonical best_cq.pt.")
+    for name in {"best_cq.pt", expected["checkpoint_source"]}:
+        if not (run_dir / name).is_file():
+            raise FileNotFoundError(f"Missing CQ selection checkpoint: {run_dir / name}")
+    return metadata
 
 
 def _read_json(path: Path) -> dict:
@@ -105,9 +165,19 @@ def inspect_training_run(job: dict, contract: dict, method_root: Path, *, allowe
         raise ValueError("Selected checkpoint disagrees with the method training protocol.")
     if not (root / checkpoint).is_file():
         raise FileNotFoundError(f"Missing selected checkpoint: {root / checkpoint}")
+    extra = {key: summary.get(key) for key in CHECKPOINT_AUDIT_FIELDS}
+    if contract["method"] == "single_stage_cq_only" and (
+        summary.get("checkpoint_policy") is not None or summary.get("checkpoint_fallback_used") is True
+    ):
+        budget = induced_cq_from_saved(root)
+        extra.update(budget)
+        extra.update(inspect_cq_checkpoint_selection(
+            summary, available=budget["I_available_bits"], retained=budget["I_retained_bits"],
+            k=k, run_dir=root,
+        ))
     return {"trained_delta_EI": float(reported), "EI_micro_recomputed": ei_micro,
             "EI_macro_recomputed": ei_macro, "Keff_t": float(summary["Keff_t"]),
-            "Keff_tp": float(summary["Keff_tp"]), "best_epoch": epoch}
+            "Keff_tp": float(summary["Keff_tp"]), "best_epoch": epoch, **extra}
 
 
 def wide_rows(state: dict) -> list[dict]:
@@ -156,7 +226,7 @@ def export_tables(root: Path, state: dict, *, dpi: int = 300) -> None:
     stem = table_dir / "table_generalization_train_deltaei"
     _write_csv(stem.with_suffix(".csv"), rows, ["Organ", "Time pair", *TABLE_COLUMNS])
     fields = ["job_id", "organ", "method", "time_pair", "column", "input_scale", "K", "status",
-              *SUCCESS_METRICS, "run_dir", "log_path", "error"]
+              *SUCCESS_METRICS, *CHECKPOINT_AUDIT_FIELDS, "run_dir", "log_path", "error"]
     long_rows = [{**job, **({key: None for key in SUCCESS_METRICS} if job["status"] != "success" else {})}
                  for job in state["jobs"]]
     _write_csv(root / "generalization_long.csv", long_rows, fields)
@@ -290,7 +360,8 @@ def inspect_spot40_run(job: dict, contract: dict, method_root: Path, allowed_roo
                               ("normalization", "minmax"), ("direction", "higher_is_more_mature")):
             if maturity.get(key) != expected:
                 raise ValueError(f"Saved maturity {key} differs from the requested protocol")
-    budget = induced_cq_from_saved(run_dir)
+    budget = ({key: checked[key] for key in CQ_BUDGET_FIELDS} if "CQ_induced" in checked
+              else induced_cq_from_saved(run_dir))
     summary = _read_json(run_dir / "summary.json")
     for key, measured in (("I_available", budget["I_available_bits"]), ("I_retained", budget["I_retained_bits"])):
         if key in summary and not np.isclose(float(summary[key]), measured, atol=2e-4, rtol=0):
@@ -343,7 +414,7 @@ def export_spot40_tables(root: Path, state: dict, *, dpi: int = 300) -> dict:
         _write_csv(table_dir / f"table_spot40_{name}.csv", rows, ["Organ", *pairs])
     fields = ["job_id", "organ", "method", "time_pair", "status", "trained_delta_EI", "CQ_induced",
               "I_available_bits", "I_retained_bits", "signal_status", "cq_status", "best_epoch", "Keff_t", "Keff_tp",
-              "action", "run_dir", "source_root", "log_path", "error"]
+              *CHECKPOINT_AUDIT_FIELDS, "action", "run_dir", "source_root", "log_path", "error"]
     _write_csv(root / "spot40_sources.csv", state["jobs"], fields)
     failures = [{**j, "error": j.get("error") or j.get("cq_status", "")}
                 for j in state["jobs"] if j["status"] != "success" or j.get("CQ_induced") is None]
