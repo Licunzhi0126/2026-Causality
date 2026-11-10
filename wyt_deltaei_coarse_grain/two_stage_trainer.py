@@ -237,6 +237,23 @@ class WYTTwoStageDeltaEIConfig:
 
 
 @dataclass(frozen=True)
+class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
+    lambda_stage1_closure: float = 0.0
+    lambda_stage2_cq: float = 0.0
+    report_hard_occupancy: bool = False
+
+    def validate(self, prepared: PreparedCoarseInput) -> None:
+        super().validate(prepared)
+        if prepared.method != "maturity_cci_grn_two_stage":
+            raise ValueError("Loss ablation requires maturity_cci_grn_two_stage.")
+        weights = (self.lambda_stage1_closure, self.lambda_stage2_cq)
+        if any(not np.isfinite(weight) or weight < 0.0 for weight in weights):
+            raise ValueError("Loss ablation weights must be finite and non-negative.")
+        if self.lambda_stage2_cq and (self.lambda_retain_norm or self.lambda_retain_floor):
+            raise ValueError("Stage 2 CQ requires zero Retain Norm and Retain Floor weights.")
+
+
+@dataclass(frozen=True)
 class WYTTwoStageDeltaEIResult:
     out_dir: Path
     best_epoch: int
@@ -427,6 +444,13 @@ def _log(handle: TextIO, message: str) -> None:
     handle.flush()
 
 
+def _hard_effective_count(counts: np.ndarray) -> float:
+    occupied = counts[counts > 0]
+    frequencies = occupied / occupied.sum(dtype=np.float64)
+    entropy_bits = -float(np.sum(frequencies * np.log2(frequencies)))
+    return min(float(occupied.size), 2.0 ** entropy_bits)
+
+
 def train_deltaei_two_stage(
     prepared: PreparedCoarseInput,
     config: WYTTwoStageDeltaEIConfig,
@@ -549,6 +573,11 @@ def train_deltaei_two_stage(
     ).to(device)
     parameters = list(encoder.parameters()) + list(macro_net.parameters())
     optimizer = torch.optim.Adam(parameters, lr=config.lr)
+
+    ablation = config if isinstance(config, WYTTwoStageLossAblationConfig) else None
+    lambda_stage1_closure = ablation.lambda_stage1_closure if ablation else 0.0
+    lambda_stage2_cq = ablation.lambda_stage2_cq if ablation else 0.0
+    report_hard_occupancy = ablation is not None and ablation.report_hard_occupancy
     metrics: list[dict[str, object]] = []
     stage1_epochs = min(config.epochs - 1, max(1, round(config.epochs * config.stage1_ratio)))
     best_delta = -float("inf")
@@ -754,6 +783,8 @@ def train_deltaei_two_stage(
                     + config.lambda_dead_usage * usage
                     + config.lambda_keff * keff
                 )
+                if lambda_stage1_closure:
+                    loss = loss + lambda_stage1_closure * closure
             else:
                 if ei_reference is None or available_reference is None or retained_reference is None:
                     raise AssertionError("Stage 2 started without frozen Stage 1 references.")
@@ -785,6 +816,10 @@ def train_deltaei_two_stage(
                     + config.lambda_keff * keff
                     + config.lambda_ei_constraint * ei_constraint
                 )
+                if lambda_stage2_cq:
+                    loss = loss + dynamic_pair_weight * lambda_stage2_cq * (
+                        1.0 - information["closure_quality"]
+                    )
             if not all(torch.isfinite(value) for value in (
                 align, var, local, sharp, dev, proto, usage, closure, within, inter, keff,
                 retain_norm, normalized_retained, retain_floor, information["I_available"],
@@ -887,6 +922,16 @@ def train_deltaei_two_stage(
                 "hard_load_cv_t": float((hard_load_t.std(unbiased=False) / hard_load_t.mean().clamp_min(1e-12)).detach().cpu()),
                 "hard_load_cv_tp": float((hard_load_tp.std(unbiased=False) / hard_load_tp.mean().clamp_min(1e-12)).detach().cpu()),
             }
+            if report_hard_occupancy:
+                row["KeffHard_t"] = _hard_effective_count(hard_load_t.cpu().numpy())
+                row["KeffHard_tp"] = _hard_effective_count(hard_load_tp.cpu().numpy())
+                row["weighted_stage1_closure"] = (
+                    lambda_stage1_closure * row["L_closure"] if stage == "stage1" else 0.0
+                )
+                row["weighted_stage2_cq"] = (
+                    dynamic_pair_weight * lambda_stage2_cq * (1.0 - row["closure_quality"])
+                    if stage == "stage2" else 0.0
+                )
             stage1_eligible = stage1_checkpoint_eligible(
                 available_information=float(row["I_available"]),
                 keff_t=float(row["Keff_t"]),
@@ -1242,6 +1287,8 @@ def train_deltaei_two_stage(
             ).sum(axis=1)
             positive_counts = counts[counts > 0]
             summary[f"hardK_{label}"] = int(np.count_nonzero(counts))
+            if report_hard_occupancy:
+                summary[f"KeffHard_{label}"] = _hard_effective_count(counts)
             summary[f"Keff_{label}"] = effective_k
             summary[f"soft_usage_cv_{label}"] = float(
                 usage.std() / max(float(usage.mean()), 1e-12)

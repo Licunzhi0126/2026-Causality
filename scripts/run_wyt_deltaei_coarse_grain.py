@@ -93,6 +93,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-retained-floor-abs", type=float, default=None)
     parser.add_argument("--retained-floor-abs", type=float, default=None)
     parser.add_argument("--stage1-ratio", type=float, default=None)
+    parser.add_argument("--lambda-stage1-closure", type=float, default=None)
+    parser.add_argument("--lambda-stage2-cq", type=float, default=None)
+    parser.add_argument("--report-hard-occupancy", action="store_true")
     parser.add_argument("--ei-retain-ratio", type=float, default=None)
     parser.add_argument("--lambda-ei-constraint", type=float, default=None)
     parser.add_argument("--lambda-closure", type=float, default=None)
@@ -146,6 +149,13 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     method_spec = get_coarse_method_spec(args.method)
+    loss_ablation = (
+        args.lambda_stage1_closure is not None
+        or args.lambda_stage2_cq is not None
+        or args.report_hard_occupancy
+    )
+    if loss_ablation and args.method != "maturity_cci_grn_two_stage":
+        raise SystemExit("Loss ablation options require maturity_cci_grn_two_stage.")
     lambda_dev = (
         float(args.lambda_dev)
         if args.lambda_dev is not None
@@ -206,6 +216,16 @@ def main(argv: list[str] | None = None) -> None:
         if args.out_dir.exists() and any(args.out_dir.iterdir()):
             raise SystemExit(f"Output directory is not empty and will not be overwritten: {args.out_dir}")
     config = build_training_config(args)
+    if loss_ablation:
+        from dataclasses import asdict
+        from wyt_deltaei_coarse_grain.two_stage_trainer import WYTTwoStageLossAblationConfig
+
+        config = WYTTwoStageLossAblationConfig(
+            **asdict(config),
+            lambda_stage1_closure=args.lambda_stage1_closure or 0.0,
+            lambda_stage2_cq=args.lambda_stage2_cq or 0.0,
+            report_hard_occupancy=args.report_hard_occupancy,
+        )
     result = train_deltaei(prepared, config)
     print(
         f"completed method={args.method} K={args.k} "
