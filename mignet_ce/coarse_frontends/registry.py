@@ -16,8 +16,10 @@ from mignet_ce.representations.coarse_input import PreparedCoarseInput
 from mignet_ce.coarse_frontends.two_stage_no_keff import prepare as prepare_no_keff
 from mignet_ce.coarse_frontends.two_stage_no_keff_hard_ei import prepare as prepare_hard_ei
 from mignet_ce.coarse_frontends.single_stage_cq_only import prepare as prepare_cq_only
+from mignet_ce.coarse_frontends.formal_two_stage import prepare as prepare_formal_two_stage
 
 MATURITY_GRN_METHODS = frozenset({
+    "formal_two_stage",
     "complete_combined_coarse_maturity_cci_grn", "maturity_cci_grn_two_stage",
     "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",
 })
@@ -27,6 +29,7 @@ COARSE_FRONTEND_REGISTRY: dict[
     str,
     Callable[[CoarseFrontendRequest], PreparedCoarseInput],
 ] = {
+    "formal_two_stage": prepare_formal_two_stage,
     "complete_combined_coarse": prepare_complete_combined_coarse,
     "complete_combined_coarse_maturity_cci_grn": prepare_complete_combined_coarse_maturity_cci_grn,
     "maturity_cci_grn_two_stage": prepare_maturity_cci_grn_two_stage,

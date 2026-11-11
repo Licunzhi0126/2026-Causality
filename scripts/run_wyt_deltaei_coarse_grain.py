@@ -96,6 +96,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-stage1-closure", type=float, default=None)
     parser.add_argument("--lambda-stage2-cq", type=float, default=None)
     parser.add_argument("--report-hard-occupancy", action="store_true")
+    parser.add_argument("--ei-loss-retain-ratio", type=float, default=None)
+    parser.add_argument("--lambda-gap", type=float, default=None)
+    parser.add_argument("--gap-temperature", type=float, default=None)
+    parser.add_argument("--gap-count-temperature", type=float, default=None)
+    parser.add_argument("--stage1-only", action="store_true")
+    parser.add_argument("--stage1-source", type=Path)
+    parser.add_argument("--prepared-cache", type=Path)
     parser.add_argument("--ei-retain-ratio", type=float, default=None)
     parser.add_argument("--lambda-ei-constraint", type=float, default=None)
     parser.add_argument("--lambda-closure", type=float, default=None)
@@ -154,8 +161,14 @@ def main(argv: list[str] | None = None) -> None:
         or args.lambda_stage2_cq is not None
         or args.report_hard_occupancy
     )
-    if loss_ablation and args.method != "maturity_cci_grn_two_stage":
+    if loss_ablation and args.method not in {"maturity_cci_grn_two_stage", "formal_two_stage"}:
         raise SystemExit("Loss ablation options require maturity_cci_grn_two_stage.")
+    if args.method != "formal_two_stage" and any((
+        args.ei_loss_retain_ratio is not None, args.lambda_gap is not None,
+        args.gap_temperature is not None, args.gap_count_temperature is not None,
+        args.stage1_only, args.stage1_source is not None, args.prepared_cache is not None,
+    )):
+        raise SystemExit("Formal training controls require formal_two_stage.")
     lambda_dev = (
         float(args.lambda_dev)
         if args.lambda_dev is not None
@@ -210,13 +223,25 @@ def main(argv: list[str] | None = None) -> None:
         maturity_normalization=args.maturity_normalization,
         maturity_direction=args.maturity_direction,
     )
-    prepared = prepare_coarse_input(args.method, frontend_request)
+    if args.prepared_cache is not None:
+        from joblib.externals import cloudpickle
+
+        with args.prepared_cache.open("rb") as stream:
+            prepared = cloudpickle.load(stream)
+        if prepared.method != args.method:
+            raise ValueError("Prepared cache method does not match the requested method.")
+        for key in ("h5ad_t", "h5ad_tp", "cci_t", "cci_tp", "grn_t", "grn_tp"):
+            if str(getattr(args, key)) != prepared.provenance.get(key):
+                raise ValueError(f"Prepared cache input does not match --{key.replace('_', '-')}")
+        prepared.validate()
+    else:
+        prepared = prepare_coarse_input(args.method, frontend_request)
     from wyt_deltaei_coarse_grain.training_config import build_training_config
     if method_spec.training_mode in {DYNAMIC_CLOSURE_TWO_STAGE, CQ_ONLY}:
         if args.out_dir.exists() and any(args.out_dir.iterdir()):
             raise SystemExit(f"Output directory is not empty and will not be overwritten: {args.out_dir}")
     config = build_training_config(args)
-    if loss_ablation:
+    if loss_ablation and args.method != "formal_two_stage":
         from dataclasses import asdict
         from wyt_deltaei_coarse_grain.two_stage_trainer import WYTTwoStageLossAblationConfig
 

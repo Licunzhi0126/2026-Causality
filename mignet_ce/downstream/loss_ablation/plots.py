@@ -15,11 +15,11 @@ from .variants import METHOD_LABELS, STAGES, TARGET_K, TIME_PAIRS
 SCALE_LABELS = {"spot": "Spot", "seurat_k150": "Seurat K150", "seurat_k40": "Seurat K40"}
 
 
-def preview_rows(scales: tuple[str, ...]) -> list[dict[str, object]]:
+def preview_rows(scales: tuple[str, ...], methods: tuple[str, ...] = METHOD_LABELS) -> list[dict[str, object]]:
     rows = []
     for scale in scales:
         k = TARGET_K[scale]
-        for index, method in enumerate(METHOD_LABELS):
+        for index, method in enumerate(methods):
             for stage_number, stage in enumerate(STAGES):
                 for pair_number, (source, target) in enumerate(TIME_PAIRS):
                     available = .048 + .008 * pair_number + .0006 * index
@@ -55,8 +55,9 @@ def _metric_text(row: dict, metric: str, occupancy: bool) -> str:
 
 def draw_tables(
     rows: list[dict[str, object]], out_dir: Path, scales: tuple[str, ...], *, preview: bool = False,
+    methods: tuple[str, ...] = METHOD_LABELS,
 ) -> None:
-    grid = table_grid(rows, scales)
+    grid = table_grid(rows, scales, methods)
     fallback = any(row["fallback_used"] for row in rows)
     for name, title, columns, subtitle in (
         ("information", "Table 1  |  Information metrics", INFORMATION_COLUMNS,
@@ -66,7 +67,7 @@ def draw_tables(
     ):
         occupancy = name == "cluster_occupancy"
         width = 15.3
-        body_rows = len(METHOD_LABELS) * len(STAGES)
+        body_rows = len(methods) * len(STAGES)
         panel_units = body_rows + 3.65
         grid_height = len(scales) * panel_units
         height = 1.38 + .34 * grid_height
@@ -77,8 +78,9 @@ def draw_tables(
         ax.set_xlim(0, 1)
         ax.set_ylim(grid_height, 0)
 
-        column_widths = [.10, .075]
-        metric_width = .825 / len(TIME_PAIRS)
+        method_width = .12 if max(map(len, methods)) > 12 else .10
+        column_widths = [method_width, .075]
+        metric_width = (1.0 - sum(column_widths)) / len(TIME_PAIRS)
         weights = (1.0, 1.05, 1.40) if occupancy else (1.0, 1.0, 1.0, 1.0)
         column_widths.extend(metric_width * weight / sum(weights) for _ in TIME_PAIRS for weight in weights)
         boundaries = [0.0]
@@ -107,7 +109,7 @@ def draw_tables(
                 for offset, label in enumerate(columns.values()):
                     cell(start + offset, header_y + 1, label, fill="#F3F5F6", bold=True)
 
-            for method_index, method in enumerate(METHOD_LABELS):
+            for method_index, method in enumerate(methods):
                 y = header_y + 2 + method_index * len(STAGES)
                 cell(0, y, method, rowspan=2, fill="#F3F5F6", bold=True, left=True)
                 for stage_index, stage in enumerate(STAGES):

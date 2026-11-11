@@ -39,6 +39,15 @@ COARSE_METHOD_SPECS: dict[str, CoarseMethodSpec] = {
 }
 COARSE_METHOD_SPECS.update(
     {
+        "formal_two_stage": CoarseMethodSpec(
+            name="formal_two_stage",
+            training_mode=DYNAMIC_CLOSURE_TWO_STAGE,
+            frontend="complete_combined_coarse_maturity_cci_grn",
+            requires_maturity=True,
+            requires_grn=True,
+            default_lambda_dev=0.05,
+            objective_version="formal_two_stage_v1",
+        ),
         "complete_combined_coarse": CoarseMethodSpec(
             name="complete_combined_coarse",
             requires_grn=True,

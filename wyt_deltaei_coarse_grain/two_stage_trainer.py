@@ -8,6 +8,10 @@ checkpoint, and writes the unified experiment artifact contract.
 """
 
 from dataclasses import dataclass
+from dataclasses import asdict
+import hashlib
+import json
+import shutil
 from pathlib import Path
 from time import perf_counter
 from typing import TextIO
@@ -47,6 +51,7 @@ from wyt_deltaei_coarse_grain.two_stage_objective import (
     keff_floor_loss,
     normalized_retained_information_loss,
     retained_information_floor_constraint,
+    occupancy_gap_loss,
 )
 from wyt_deltaei_coarse_grain.result import (
     write_csv,
@@ -234,6 +239,8 @@ class WYTTwoStageDeltaEIConfig:
                 f"{prepared.method} requires lambda_dev > 0; use the non-maturity "
                 "baseline or an explicit ablation harness for lambda_dev=0."
             )
+        if prepared.method == "formal_two_stage" and self.lambda_dev <= 0.0:
+            raise ValueError("formal_two_stage requires lambda_dev > 0.")
 
 
 @dataclass(frozen=True)
@@ -244,13 +251,52 @@ class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
 
     def validate(self, prepared: PreparedCoarseInput) -> None:
         super().validate(prepared)
-        if prepared.method != "maturity_cci_grn_two_stage":
+        if prepared.method not in {"maturity_cci_grn_two_stage", "formal_two_stage"}:
             raise ValueError("Loss ablation requires maturity_cci_grn_two_stage.")
         weights = (self.lambda_stage1_closure, self.lambda_stage2_cq)
         if any(not np.isfinite(weight) or weight < 0.0 for weight in weights):
             raise ValueError("Loss ablation weights must be finite and non-negative.")
-        if self.lambda_stage2_cq and (self.lambda_retain_norm or self.lambda_retain_floor):
+        if prepared.method != "formal_two_stage" and self.lambda_stage2_cq and (self.lambda_retain_norm or self.lambda_retain_floor):
             raise ValueError("Stage 2 CQ requires zero Retain Norm and Retain Floor weights.")
+
+
+@dataclass(frozen=True)
+class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
+    lambda_var: float = 0.0
+    lambda_local: float = 0.0
+    lambda_proto: float = 0.0
+    lambda_dead_usage: float = 0.0
+    lambda_sharp: float = 0.0
+    lambda_within: float = 0.0
+    lambda_inter: float = 0.0
+    lambda_dev: float = 0.05
+    report_hard_occupancy: bool = True
+    ei_loss_retain_ratio: float = 0.85
+    lambda_gap: float = 0.0
+    gap_temperature: float = 0.10
+    gap_count_temperature: float = 0.05
+    stage1_only: bool = False
+    stage1_source: Path | None = None
+
+    def validate(self, prepared: PreparedCoarseInput) -> None:
+        super().validate(prepared)
+        if prepared.method != "formal_two_stage":
+            raise ValueError("Formal configuration requires formal_two_stage.")
+        if not self.report_hard_occupancy:
+            raise ValueError("Formal two-stage requires hard occupancy reporting.")
+        if any((self.lambda_var, self.lambda_local, self.lambda_proto, self.lambda_dead_usage,
+                self.lambda_sharp, self.lambda_within, self.lambda_inter)):
+            raise ValueError("Formal two-stage requires the Step 0, 1 and 3 loss weights to be zero.")
+        if not 0.0 < self.ei_loss_retain_ratio <= 1.0:
+            raise ValueError("ei_loss_retain_ratio must be in (0, 1].")
+        if not np.isfinite(self.lambda_gap) or self.lambda_gap < 0.0:
+            raise ValueError("lambda_gap must be finite and non-negative.")
+        if self.lambda_gap and self.lambda_keff:
+            raise ValueError("Gap replacement requires lambda_keff=0.")
+        if not 0.0 < self.gap_temperature <= 1.0 or not 0.0 < self.gap_count_temperature <= 1.0:
+            raise ValueError("Gap temperatures must be in (0, 1].")
+        if self.stage1_only and self.stage1_source is not None:
+            raise ValueError("stage1_only and stage1_source are mutually exclusive.")
 
 
 @dataclass(frozen=True)
@@ -451,11 +497,54 @@ def _hard_effective_count(counts: np.ndarray) -> float:
     return min(float(occupied.size), 2.0 ** entropy_bits)
 
 
+def formal_stage1_signature(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig) -> str:
+    """Hash the input values and every setting used to train or select Stage 1."""
+    names = (
+        "k", "hidden_dim", "mid_dim", "gnn_layers", "macro_layers", "knn_k", "local_dims",
+        "local_graph_mode", "temperature", "align_temperature", "epochs", "stage1_ratio", "lr",
+        "lambda_align", "lambda_ei", "lambda_var", "lambda_local", "lambda_sharp", "lambda_dev",
+        "lambda_proto", "lambda_dead_usage", "lambda_keff", "lambda_stage1_closure", "lambda_gap",
+        "gap_temperature", "gap_count_temperature", "keff_min", "checkpoint_keff_min", "min_usage",
+        "development_min_state_mass", "embedding_target_std", "prototype_max_cosine", "seed", "device",
+        "low_signal_threshold_bits",
+    )
+    configuration = asdict(config)
+    digest = hashlib.sha256(json.dumps({name: configuration[name] for name in names}, sort_keys=True).encode())
+    digest.update(json.dumps(prepared.manifest(), sort_keys=True, default=str).encode())
+    digest.update(json.dumps([prepared.unit_ids_t, prepared.unit_ids_tp]).encode())
+    arrays = {
+        name: getattr(prepared, name) for name in (
+            "encoder_features_t", "encoder_features_tp", "micro_features_t", "micro_features_tp",
+            "micro_pij", "coords_t", "coords_tp", "maturity_t", "maturity_tp",
+            "maturity_confidence_t", "maturity_confidence_tp",
+        )
+    }
+    for label in ("t", "tp"):
+        network = getattr(prepared, f"network_{label}").tocsr()
+        for component in ("data", "indices", "indptr"):
+            arrays[f"network_{label}_{component}"] = getattr(network, component)
+        arrays.update({f"block_{label}_{key}": value for key, value in getattr(prepared, f"feature_blocks_{label}").items()})
+    for name, value in sorted(arrays.items()):
+        digest.update(name.encode())
+        if value is not None:
+            array = np.ascontiguousarray(value)
+            digest.update(str((array.shape, array.dtype)).encode())
+            digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
+
+
+def _formal_complete_stage1(path: Path, metrics: list[dict[str, object]]) -> dict:
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint["stage1_history"] = metrics
+    torch.save(checkpoint, path)
+    return checkpoint
+
+
 def train_deltaei_two_stage(
     prepared: PreparedCoarseInput,
     config: WYTTwoStageDeltaEIConfig,
 ) -> WYTTwoStageDeltaEIResult:
-    if prepared.method not in {"maturity_cci_grn_two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI"}:
+    if prepared.method not in {"maturity_cci_grn_two_stage", "formal_two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI"}:
         raise ValueError(
             "dynamic-closure two-stage training is reserved for "
             "maturity_cci_grn_two_stage."
@@ -463,6 +552,11 @@ def train_deltaei_two_stage(
     started = perf_counter()
     prepared.validate()
     config.validate(prepared)
+    formal = config if isinstance(config, WYTFormalTwoStageConfig) else None
+    if prepared.method == "formal_two_stage" and formal is None:
+        raise TypeError("formal_two_stage requires WYTFormalTwoStageConfig.")
+    stage1_signature = formal_stage1_signature(prepared, formal) if formal else None
+    ei_loss_ratio = formal.ei_loss_retain_ratio if formal else config.ei_retain_ratio
     resolved_keff_min = config.resolved_keff_min()
     resolved_checkpoint_keff_min = config.resolved_checkpoint_keff_min()
     signal_threshold_bits = config.resolved_low_signal_threshold_bits()
@@ -588,8 +682,8 @@ def train_deltaei_two_stage(
     signal_status_reference: str | None = None
     stage1_reference_keff_t: float | None = None
     stage1_reference_keff_tp: float | None = None
-    best_joint_score: tuple[float, float, float, float, float] | None = None
-    best_relaxed_score: tuple[float, float, float, float, float] | None = None
+    best_joint_score: tuple[float, ...] | None = None
+    best_relaxed_score: tuple[float, ...] | None = None
     best_relaxed_epoch = 0
     best_epoch = 0
     best_stage2_delta = -float("inf")
@@ -598,6 +692,20 @@ def train_deltaei_two_stage(
     best_stage1_unconstrained_delta = -float("inf")
     best_stage1_unconstrained_epoch = 0
     best_stage1_unconstrained_row: dict[str, object] | None = None
+    first_epoch = 1
+    if formal and formal.stage1_source is not None:
+        source = Path(formal.stage1_source)
+        checkpoint = torch.load(source, map_location="cpu", weights_only=False)
+        if checkpoint.get("stage1_signature") != stage1_signature:
+            raise ValueError("Stage 1 source input/configuration fingerprint does not match this run.")
+        metrics = checkpoint["stage1_history"]
+        if len(metrics) != stage1_epochs or any(row["stage"] != "stage1" for row in metrics):
+            raise ValueError("Stage 1 source has an incomplete training history.")
+        shutil.copyfile(source, out_dir / "best_ei.pt")
+        best_delta = float(checkpoint["best_delta_ei"])
+        best_delta_epoch = int(checkpoint["epoch"])
+        first_epoch = stage1_epochs + 1
+    final_epoch = stage1_epochs if formal and formal.stage1_only else config.epochs
 
     with (out_dir / "train.log").open("w", encoding="utf-8") as log_handle:
         _log(log_handle, "========== WYT FeatureAlign-DeltaEI ==========")
@@ -631,7 +739,7 @@ def train_deltaei_two_stage(
              "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
         _log(log_handle, "================================================")
 
-        for epoch in range(1, config.epochs + 1):
+        for epoch in range(first_epoch, final_epoch + 1):
             stage = "stage1" if epoch <= stage1_epochs else "stage2"
             if epoch == stage1_epochs + 1:
                 if not (out_dir / "best_ei.pt").exists():
@@ -652,10 +760,16 @@ def train_deltaei_two_stage(
                         "Stage 2 will not start with a degenerate reference."
                         + details
                     )
-                checkpoint = torch.load(out_dir / "best_ei.pt", map_location=device)
+                if formal and formal.stage1_source is None:
+                    _formal_complete_stage1(out_dir / "best_ei.pt", metrics)
+                checkpoint = torch.load(out_dir / "best_ei.pt", map_location=device, weights_only=False)
                 encoder.load_state_dict(checkpoint["encoder"])
                 macro_net.load_state_dict(checkpoint["macro_net"])
                 optimizer.load_state_dict(checkpoint["optimizer"])
+                if formal:
+                    torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
+                    if device.type == "cuda":
+                        torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_states"]])
                 ei_reference = float(checkpoint["best_delta_ei"])
                 available_reference = float(checkpoint["I_available"])
                 retained_reference = float(checkpoint["I_retained"])
@@ -793,7 +907,7 @@ def train_deltaei_two_stage(
                     if signal_status_reference == "informative"
                     else config.low_signal_pair_weight
                 )
-                ei_constraint = ei_floor_constraint(delta, ei_reference, config.ei_retain_ratio)
+                ei_constraint = ei_floor_constraint(delta, ei_reference, ei_loss_ratio)
                 retain_norm, normalized_retained = normalized_retained_information_loss(
                     information["I_retained"], available_reference
                 )
@@ -820,6 +934,10 @@ def train_deltaei_two_stage(
                     loss = loss + dynamic_pair_weight * lambda_stage2_cq * (
                         1.0 - information["closure_quality"]
                     )
+            gap = loss.new_zeros(())
+            if formal and formal.lambda_gap:
+                gap = occupancy_gap_loss(assignment_t, assignment_tp, formal.gap_temperature, formal.gap_count_temperature)
+                loss = loss + formal.lambda_gap * gap
             if not all(torch.isfinite(value) for value in (
                 align, var, local, sharp, dev, proto, usage, closure, within, inter, keff,
                 retain_norm, normalized_retained, retain_floor, information["I_available"],
@@ -932,6 +1050,15 @@ def train_deltaei_two_stage(
                     dynamic_pair_weight * lambda_stage2_cq * (1.0 - row["closure_quality"])
                     if stage == "stage2" else 0.0
                 )
+            if formal:
+                row.update(L_gap=float(gap.detach().cpu()), weighted_gap=float((formal.lambda_gap * gap).detach().cpu()))
+                row["EI_loss_floor"] = float(ei_reference * ei_loss_ratio) if ei_reference is not None else None
+                row["EI_checkpoint_floor"] = row["EI_floor"]
+                for key in ("weighted_within", "weighted_inter", "weighted_retain_norm", "weighted_retain_floor"):
+                    if stage == "stage1":
+                        row[key] = 0.0
+                if stage == "stage1":
+                    row["weighted_closure"] = row["weighted_stage1_closure"]
             stage1_eligible = stage1_checkpoint_eligible(
                 available_information=float(row["I_available"]),
                 keff_t=float(row["Keff_t"]),
@@ -993,6 +1120,10 @@ def train_deltaei_two_stage(
                             "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                             "method": prepared.method,
                             "selection": "stage1_best_delta_ei_noncollapsed",
+                            **({"stage1_signature": stage1_signature,
+                                "torch_rng_state": torch.get_rng_state(),
+                                "cuda_rng_states": torch.cuda.get_rng_state_all() if device.type == "cuda" else []}
+                               if formal else {}),
                         },
                         out_dir / "best_ei.pt",
                     )
@@ -1011,6 +1142,8 @@ def train_deltaei_two_stage(
                         out_dir / "best_stage2_deltaei_diagnostic.pt",
                     )
                 score = strict_joint_score(row)
+                if formal:
+                    score = (float(row["normalized_retained"]), float(row["closure_quality"]), float(row["delta_EI"]))
                 if stage2_strict_eligible and (best_joint_score is None or score > best_joint_score):
                     best_joint_score = score
                     best_epoch = epoch
@@ -1030,6 +1163,8 @@ def train_deltaei_two_stage(
                         out_dir / "best_joint.pt",
                     )
                 relaxed_score = relaxed_joint_score(row)
+                if formal:
+                    relaxed_score = (float(row["I_retained"]), float(row["closure_quality"]), float(row["delta_EI"]))
                 if stage2_relaxed_eligible and (
                     best_relaxed_score is None or relaxed_score > best_relaxed_score
                 ):
@@ -1068,6 +1203,19 @@ def train_deltaei_two_stage(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(parameters, 5.0)
             optimizer.step()
+
+        if formal and formal.stage1_only:
+            write_csv(out_dir / "metrics.csv", metrics)
+            if not (out_dir / "best_ei.pt").is_file():
+                raise RuntimeError("Stage 1 produced no eligible checkpoint.")
+            checkpoint = _formal_complete_stage1(out_dir / "best_ei.pt", metrics)
+            write_json(out_dir / "stage1_summary.json", {
+                "method": prepared.method, "stage1_signature": stage1_signature,
+                "stage1_best_epoch": best_delta_epoch, "stage1_best_delta_EI": best_delta,
+                "history_rows": len(metrics), "status": "complete",
+            })
+            return WYTTwoStageDeltaEIResult(out_dir, best_delta_epoch, best_delta,
+                                           best_delta + prepared.micro_ei, best_delta, metrics)
 
         if best_joint_score is None:
             if best_relaxed_score is not None:
@@ -1275,6 +1423,11 @@ def train_deltaei_two_stage(
             ),
         }
         assignment_t_np = assignment_t.cpu().numpy()
+        if formal:
+            summary.update(loss_protocol="formal_two_stage_v1", stage1_signature=stage1_signature,
+                           ei_loss_retain_ratio=ei_loss_ratio, ei_checkpoint_retain_ratio=config.ei_retain_ratio,
+                           stage1_source=str(formal.stage1_source) if formal.stage1_source else None,
+                           stage1_checkpoint_sha256=hashlib.sha256((out_dir / "best_ei.pt").read_bytes()).hexdigest())
         assignment_tp_np = assignment_tp.cpu().numpy()
         for label, values in (("t", assignment_t_np), ("tp", assignment_tp_np)):
             hard = values.argmax(axis=1)

@@ -105,6 +105,26 @@ def keff_floor_loss(
     return 0.5 * (loss_t + loss_tp), keff_t, keff_tp
 
 
+def occupancy_gap_loss(
+    assignment_t: torch.Tensor,
+    assignment_tp: torch.Tensor,
+    temperature: float = 0.10,
+    count_temperature: float = 0.05,
+) -> torch.Tensor:
+    """Normalized occupancy gap with zero mass contributing zero active states."""
+    losses = []
+    for assignment in (assignment_t, assignment_tp):
+        sharpened = torch.softmax(torch.log(assignment.clamp_min(EPS)) / temperature, dim=1)
+        counts = sharpened.sum(dim=0)
+        zero = torch.sigmoid(assignment.new_tensor(-0.5 / count_temperature))
+        active = ((torch.sigmoid((counts - 0.5) / count_temperature) - zero) / (1.0 - zero)).sum()
+        probabilities = counts / counts.sum().clamp_min(EPS)
+        entropy = -(probabilities * probabilities.clamp_min(EPS).log2()).sum()
+        effective = torch.pow(assignment.new_tensor(2.0), entropy)
+        losses.append(torch.relu(active - effective) / (active - 1.0).clamp_min(EPS))
+    return 0.5 * (losses[0] + losses[1])
+
+
 def row_js_divergence(
     p: torch.Tensor,
     q: torch.Tensor,

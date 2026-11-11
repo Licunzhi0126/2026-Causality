@@ -89,12 +89,14 @@ def write_tables(rows: list[dict[str, object]], out_dir: Path) -> None:
             writer.writerows(rows)
 
 
-def table_grid(rows: list[dict[str, object]], scales: tuple[str, ...]) -> dict:
+def table_grid(
+    rows: list[dict[str, object]], scales: tuple[str, ...], methods: tuple[str, ...] = METHOD_LABELS,
+) -> dict:
     grid = {
         (row["input_scale"], row["method"], row["stage"], (row["source_time"], row["target_time"])): row
         for row in rows
     }
-    expected = set(product(scales, METHOD_LABELS, STAGES, TIME_PAIRS))
+    expected = set(product(scales, methods, STAGES, TIME_PAIRS))
     if len(rows) != len(grid) or grid.keys() != expected:
         raise ValueError("Expected one table record per scale, method, stage, and time pair.")
     return grid
