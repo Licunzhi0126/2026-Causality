@@ -18,7 +18,8 @@ from scripts.run_wyt_deltaei_coarse_grain import build_argparser
 from wyt_deltaei_coarse_grain.training_config import build_training_config
 from wyt_deltaei_coarse_grain.two_stage_objective import occupancy_gap_loss
 from wyt_deltaei_coarse_grain.two_stage_trainer import (
-    WYTFormalTwoStageConfig, formal_stage1_signature, train_deltaei_two_stage,
+    WYTFormalTwoStageConfig, checkpoint_consistency, finalize_two_stage_run,
+    formal_stage1_signature, train_deltaei_two_stage,
 )
 
 
@@ -41,6 +42,205 @@ def _prepared():
         micro_pij=micro.astype("float32"), micro_ei=0.0, macro_pij_builder=_macro,
         maturity_t=np.linspace(0, 1, 6, dtype="float32"), maturity_tp=np.linspace(0, 1, 7, dtype="float32"),
     )
+
+
+def _prepared_spot40():
+    from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
+
+    rng = np.random.default_rng(31)
+    source_count, target_count = 48, 50
+    micro = rng.random((source_count, target_count))
+    micro = .05 * micro / micro.sum(1, keepdims=True) + .95 / target_count
+    return replace(
+        _prepared(), unit_ids_t=[str(i) for i in range(source_count)],
+        unit_ids_tp=[str(i) for i in range(target_count)],
+        network_t=sp.eye(source_count, format="csr"), network_tp=sp.eye(target_count, format="csr"),
+        encoder_features_t=rng.normal(size=(source_count, 5)).astype("float32"),
+        encoder_features_tp=rng.normal(size=(target_count, 5)).astype("float32"),
+        micro_features_t=rng.normal(size=(source_count, 32)).astype("float32"),
+        micro_features_tp=rng.normal(size=(target_count, 32)).astype("float32"),
+        micro_pij=micro.astype("float32"), maturity_t=np.linspace(0, 1, source_count, dtype="float32"),
+        maturity_tp=np.linspace(0, 1, target_count, dtype="float32"),
+        provenance={"loss_protocol": FORMAL_TWO_STAGE_PROTOCOL},
+    )
+
+
+def test_consistency_accepts_reported_roundoff_but_rejects_wrong_or_nonfinite_metrics():
+    recorded = dict(delta_EI=1.9, I_available=.02, I_retained=.004,
+                    closure_quality=.2, Keff_t=14., Keff_tp=22.)
+    recomputed = dict(recorded, delta_EI=1.9 + 1.0013580322265625e-5,
+                      I_available=.02 + 2.7939677238464355e-8,
+                      I_retained=.004 + 1.5366822481155396e-8)
+    checks = checkpoint_consistency(recorded, recomputed)
+    assert all(item["passed"] for item in checks.values())
+    assert checks["delta_EI"]["absolute_error"] > 1e-5
+    for value in (1.91, float("nan"), float("inf")):
+        assert not checkpoint_consistency(recorded, dict(recomputed, delta_EI=value))["delta_EI"]["passed"]
+    assert not checkpoint_consistency(recorded, dict(recomputed, I_retained=.004002))["I_retained"]["passed"]
+
+
+def test_finalize_restores_failed_export_without_training_and_rejects_wrong_weights(tmp_path, monkeypatch):
+    import shutil
+    import wyt_deltaei_coarse_grain.two_stage_trainer as trainer
+
+    prepared = _prepared()
+    config = WYTFormalTwoStageConfig(k=2, out_dir=tmp_path / "failed", hidden_dim=8, mid_dim=4,
+                                    epochs=4, stage1_ratio=.5, knn_k=2, log_every=1)
+    original_check = trainer.checkpoint_consistency
+
+    def simulate_failed_export(recorded, recomputed):
+        result = original_check(recorded, recomputed)
+        result["delta_EI"]["passed"] = False
+        return result
+
+    monkeypatch.setattr(trainer, "checkpoint_consistency", simulate_failed_export)
+    with pytest.raises(AssertionError, match="Reloaded checkpoint metrics"):
+        train_deltaei_two_stage(prepared, config)
+    assert not (config.out_dir / "summary.json").exists()
+    source_hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in config.out_dir.iterdir()}
+    monkeypatch.setattr(trainer, "checkpoint_consistency", original_check)
+
+    def forbidden_training(*_args, **_kwargs):
+        raise AssertionError("Finalization must never optimize or backpropagate")
+
+    monkeypatch.setattr(torch.optim.Adam, "step", forbidden_training)
+    monkeypatch.setattr(torch.Tensor, "backward", forbidden_training)
+    output_config = replace(config, out_dir=tmp_path / "finalized")
+    result = finalize_two_stage_run(prepared, output_config, config.out_dir)
+    summary = json.loads((result.out_dir / "summary.json").read_text())
+    assert summary["finalization_only"] and summary["optimizer_steps_this_run"] == 0
+    assert summary["checkpoint_metric_state_consistent"]
+    assert summary["checkpoint_consistency_policy"] == "per_metric_atol_plus_rtol_v1"
+    assert len(result.metrics) == 4
+    for name, value in source_hashes.items():
+        assert hashlib.sha256((config.out_dir / name).read_bytes()).hexdigest() == value
+    for name in ("best_ei.pt", "best_joint.pt"):
+        assert (result.out_dir / name).read_bytes() == (config.out_dir / name).read_bytes()
+    log = (config.out_dir / "train.log").read_text()
+    assert "Effective loss weights: align=0; stage1_closure=0.5" in log
+    assert "weighted_align=0.000000" in log and "FeatureAlign-DeltaEI" not in log
+    assert "optimizer steps=0" in (result.out_dir / "train.log").read_text()
+    with pytest.raises(ValueError, match="loss/model configuration"):
+        finalize_two_stage_run(prepared, replace(output_config, out_dir=tmp_path / "wrong_config", lambda_align=1), config.out_dir)
+    incomplete = tmp_path / "incomplete"
+    shutil.copytree(config.out_dir, incomplete)
+    history_lines = (incomplete / "metrics.csv").read_text().splitlines()
+    (incomplete / "metrics.csv").write_text("\n".join(history_lines[:-1]) + "\n")
+    with pytest.raises(ValueError, match="complete Stage 1 and Stage 2 history"):
+        finalize_two_stage_run(prepared, replace(config, out_dir=tmp_path / "incomplete_output"), incomplete)
+    bad_source = tmp_path / "changed_weights"
+    shutil.copytree(config.out_dir, bad_source)
+    joint = torch.load(bad_source / "best_joint.pt", map_location="cpu", weights_only=False)
+    joint["macro_net"]["out.weight"] *= 1000
+    torch.save(joint, bad_source / "best_joint.pt")
+    bad_output = tmp_path / "wrong_state"
+    with pytest.raises(AssertionError, match="Reloaded checkpoint metrics"):
+        finalize_two_stage_run(prepared, replace(config, out_dir=bad_output), bad_source)
+    assert not json.loads((bad_output / "checkpoint_consistency.json").read_text())["passed"]
+    assert not (bad_output / "summary.json").exists()
+
+
+def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path, monkeypatch):
+    import csv
+    from pathlib import Path
+    from types import SimpleNamespace
+    import shutil
+    from joblib.externals import cloudpickle
+    from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
+    from mignet_ce.downstream.loss_ablation.formal import workflow
+    from mignet_ce.downstream.loss_ablation.formal.variants import TIME_PAIRS
+    import wyt_deltaei_coarse_grain.two_stage_trainer as trainer
+
+    prepared = _prepared_spot40()
+    root = tmp_path / "server_round"
+    args = SimpleNamespace(data_root=tmp_path / "data", cci_root=tmp_path / "cci", grn_root=tmp_path / "grn",
+                           developmental_root=tmp_path / "maturity", seed=42, epochs=4, device="cpu",
+                           output_root=root, branches=["branch3"])
+    parser = build_argparser()
+    inputs = {}
+    for pair in TIME_PAIRS:
+        parsed = parser.parse_args(workflow.command(args, pair, VARIANTS[0], tmp_path / "unused")[2:])
+        for key in ("h5ad_t", "h5ad_tp", "cci_t", "cci_tp", "cci_index_t", "cci_index_tp",
+                    "grn_t", "grn_tp", "maturity_t", "maturity_tp"):
+            path = getattr(parsed, key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("training input")
+            inputs[str(path)] = workflow.file_digest(path)
+    base = build_training_config(parser.parse_args(workflow.command(
+        args, TIME_PAIRS[0], VARIANTS[0], tmp_path / "failed_base_template")[2:]))
+    original_check = trainer.checkpoint_consistency
+
+    def failed_export(recorded, recomputed):
+        result = original_check(recorded, recomputed)
+        result["delta_EI"]["passed"] = False
+        return result
+
+    monkeypatch.setattr(trainer, "checkpoint_consistency", failed_export)
+    with pytest.raises(AssertionError, match="Reloaded checkpoint metrics"):
+        train_deltaei_two_stage(prepared, base)
+    monkeypatch.setattr(trainer, "checkpoint_consistency", original_check)
+    completed_base = replace(base, out_dir=tmp_path / "completed_base_template")
+    finalize_two_stage_run(prepared, completed_base, base.out_dir)
+    gap = next(variant for variant in VARIANTS if variant.name == "branch3")
+    gap_config = build_training_config(parser.parse_args(workflow.command(
+        args, TIME_PAIRS[0], gap, tmp_path / "gap_template")[2:]))
+    train_deltaei_two_stage(prepared, gap_config)
+    assert "Occupancy loss: Lgap" in (gap_config.out_dir / "train.log").read_text()
+
+    root.mkdir()
+    config_file = root / "run_config.json"
+    config_file.write_text(json.dumps(dict(protocol=FORMAL_TWO_STAGE_PROTOCOL, manifest_version=3,
+        input_sha256=inputs, training_code_sha256="original_training_fingerprint", epochs=4, seed=42, device="cpu")))
+    old_report = root / "reports" / "branch3" / "run_manifest.json"
+    old_report.parent.mkdir(parents=True)
+    old_report.write_text(json.dumps({"status": "failed", "error": "previous fixed-tolerance failure"}))
+    cache_dir = root / "_prepared"
+    cache_dir.mkdir()
+    for pair in TIME_PAIRS:
+        key = "_to_".join(pair)
+        cache = cache_dir / f"{key}.pkl"
+        with cache.open("wb") as stream:
+            cloudpickle.dump(prepared, stream)
+        cache.with_suffix(".sha256").write_text(workflow.file_digest(cache))
+        for variant in (VARIANTS[0], gap):
+            failed = variant.name == "baseline" and pair == TIME_PAIRS[2]
+            template = base.out_dir if failed else (
+                completed_base.out_dir if variant.name == "baseline" else gap_config.out_dir)
+            run_dir = root / "stage2" / variant.name / key / "attempt_0001"
+            shutil.copytree(template, run_dir)
+            saved = json.loads((run_dir / "config.json").read_text())
+            (run_dir / "config.json").write_text(json.dumps(dict(saved, out_dir=str(run_dir))))
+            names = ("summary.json", "best_joint.pt", "best_ei.pt", "metrics.csv", "config.json")
+            context = {"status": "failed" if failed else "complete", "identity": {
+                "cache_sha256": workflow.file_digest(cache),
+                "source_sha256": workflow.file_digest(run_dir / "best_ei.pt")}}
+            if not failed:
+                context["artifacts"] = {name: workflow.file_digest(run_dir / name) for name in names}
+            run_dir.with_suffix(".json").write_text(json.dumps(context))
+    before = {path: workflow.file_digest(path) for path in root.rglob("*") if path.is_file()}
+
+    def forbidden_training(*_args, **_kwargs):
+        raise AssertionError("Finalization must not launch or execute training")
+
+    monkeypatch.setattr(workflow.subprocess, "run", forbidden_training)
+    monkeypatch.setattr(workflow, "_parallel", forbidden_training)
+    monkeypatch.setattr(torch.optim.Adam, "step", forbidden_training)
+    monkeypatch.setattr(torch.Tensor, "backward", forbidden_training)
+    result_dir = workflow.finalize(args)
+    manifest = json.loads((result_dir / "run_manifest.json").read_text())
+    assert manifest["status"] == "complete" and manifest["optimizer_steps"] == 0
+    assert manifest["training_code_sha256"] == "original_training_fingerprint"
+    assert manifest["finalization_code_sha256"] != manifest["training_code_sha256"]
+    assert [item["action"] for item in manifest["results"]].count("reused_complete") == 5
+    assert [item["action"] for item in manifest["results"]].count("recomputed_checkpoint") == 1
+    assert all(workflow.file_digest(path) == checksum for path, checksum in before.items())
+    for name in ("information", "cluster_occupancy"):
+        assert (result_dir / f"{name}.png").is_file() and (result_dir / f"{name}.pdf").is_file()
+        with (result_dir / f"{name}.csv").open(newline="") as stream:
+            assert len(list(csv.DictReader(stream))) == 12
+    next(Path(name) for name in inputs).write_text("changed training input")
+    with pytest.raises(ValueError, match="training input checksum mismatch"):
+        workflow.finalize(args)
 
 
 def test_formal_method_defaults_and_independent_branches(tmp_path):
@@ -217,29 +417,13 @@ def test_previous_1b_import_checks_inputs_configuration_and_artifacts(tmp_path):
     from types import SimpleNamespace
     import shutil
     from joblib.externals import cloudpickle
-    from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
     from mignet_ce.downstream.loss_ablation.formal import workflow
     from mignet_ce.downstream.loss_ablation.formal.variants import TIME_PAIRS
 
     args = SimpleNamespace(data_root=tmp_path / "data", cci_root=tmp_path / "cci", grn_root=tmp_path / "grn",
                            developmental_root=tmp_path / "maturity", seed=42, epochs=4, device="cpu",
                            reuse_baseline_from=tmp_path / "old_round")
-    rng = np.random.default_rng(31)
-    source_count, target_count = 48, 50
-    micro = rng.random((source_count, target_count))
-    micro = .05 * micro / micro.sum(1, keepdims=True) + .95 / target_count
-    prepared = replace(
-        _prepared(), unit_ids_t=[str(i) for i in range(source_count)],
-        unit_ids_tp=[str(i) for i in range(target_count)],
-        network_t=sp.eye(source_count, format="csr"), network_tp=sp.eye(target_count, format="csr"),
-        encoder_features_t=rng.normal(size=(source_count, 5)).astype("float32"),
-        encoder_features_tp=rng.normal(size=(target_count, 5)).astype("float32"),
-        micro_features_t=rng.normal(size=(source_count, 32)).astype("float32"),
-        micro_features_tp=rng.normal(size=(target_count, 32)).astype("float32"),
-        micro_pij=micro.astype("float32"), maturity_t=np.linspace(0, 1, source_count, dtype="float32"),
-        maturity_tp=np.linspace(0, 1, target_count, dtype="float32"),
-        provenance={"loss_protocol": FORMAL_TWO_STAGE_PROTOCOL},
-    )
+    prepared = _prepared_spot40()
     parsed = build_argparser().parse_args(workflow.command(args, TIME_PAIRS[0], VARIANTS[0], tmp_path / "template")[2:])
     config = build_training_config(parsed)
     train_deltaei_two_stage(replace(prepared, provenance={"loss_protocol": "formal_two_stage_v1"}), config)
@@ -289,6 +473,20 @@ def test_round_cli_defaults_to_1b_vs_gap_and_six_workers(tmp_path, monkeypatch):
     assert captured[0].workers == 6 and captured[0].branches == ["branch3"]
     with pytest.raises(SystemExit):
         main([*argv, "--workers", "7"])
+
+
+def test_finalize_cli_requires_only_existing_output_root_and_uses_recovery_route(tmp_path, monkeypatch):
+    from mignet_ce.downstream.loss_ablation.formal import workflow
+    from mignet_ce.downstream.loss_ablation.formal.__main__ import main
+
+    captured = []
+    monkeypatch.setattr(workflow, "finalize", lambda args: captured.append(args))
+    assert main(["--finalize-only", "--output-root", str(tmp_path)]) == 0
+    assert len(captured) == 1 and captured[0].device is None
+    assert captured[0].branches == ["branch3"]
+    for extra in (["--resume"], ["--preview"]):
+        with pytest.raises(SystemExit):
+            main(["--finalize-only", "--output-root", str(tmp_path), *extra])
 
 
 def test_workflow_preserves_attempts_and_reuses_verified_outputs(tmp_path, monkeypatch):

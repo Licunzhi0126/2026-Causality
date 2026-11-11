@@ -16,17 +16,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--epochs", type=int, default=1500)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", choices=("cuda", "cpu", "auto"), default="cuda")
+    parser.add_argument("--device", choices=("cuda", "cpu", "auto"), default=None)
     parser.add_argument("--workers", type=int, choices=range(1, 7), default=6,
                         help="Concurrent method/time-pair tasks. Each proceeds directly from Stage 1 to Stage 2.")
     parser.add_argument("--reuse-baseline-from", type=Path,
                         help="Previous formal round root containing verified completed stage2/branch1b runs.")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--finalize-only", action="store_true",
+                        help="Reuse completed runs and re-evaluate existing selected checkpoints. Zero training steps.")
     parser.add_argument("--branches", nargs="+", choices=[variant.name for variant in VARIANTS],
                         default=list(DEFAULT_BRANCHES), help="Branches in this round; baseline is included automatically.")
     args = parser.parse_args(argv)
     selected = select_variants(args.branches)
     methods = tuple(variant.label for variant in selected)
+    if args.finalize_only:
+        if args.preview or args.resume or args.reuse_baseline_from is not None:
+            parser.error("--finalize-only is a separate recovery mode; supply --output-root and optional --branches.")
+        if args.output_root is None:
+            parser.error("--output-root is required for finalization.")
+        from .workflow import finalize
+
+        finalize(args)
+        return 0
     if args.preview:
         from ..plots import draw_tables, preview_rows
 
@@ -50,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--{name.replace('_', '-')} is required for formal training.")
     if args.epochs < 2:
         parser.error("--epochs must be at least 2.")
+    args.device = args.device or "cuda"
     from .workflow import run
 
     run(args)

@@ -9,6 +9,7 @@ checkpoint, and writes the unified experiment artifact contract.
 
 from dataclasses import dataclass, replace
 from dataclasses import asdict
+import csv
 import hashlib
 import json
 import shutil
@@ -555,9 +556,88 @@ def formal_stage1_source_matches(prepared: PreparedCoarseInput, config: WYTForma
     return signature == formal_stage1_signature(legacy, config)
 
 
+def checkpoint_consistency(recorded: dict, recomputed: dict) -> dict[str, dict[str, object]]:
+    """Check finite metrics with explicit per-metric absolute and relative bounds."""
+    absolute = {"delta_EI": 1e-5, "I_available": 1e-7, "I_retained": 1e-7,
+                "closure_quality": 1e-5, "Keff_t": 1e-5, "Keff_tp": 1e-5}
+    result = {}
+    for name, value in recomputed.items():
+        reference = float(recorded[name])
+        value = float(value)
+        atol, rtol = absolute[name], 1e-5
+        error = abs(value - reference)
+        allowed = atol + rtol * abs(reference)
+        result[name] = {"recorded": reference, "recomputed": value, "absolute_error": error,
+                        "allowed_error": allowed, "atol": atol, "rtol": rtol,
+                        "passed": bool(np.isfinite(reference) and np.isfinite(value) and error <= allowed)}
+    return result
+
+
+def audit_formal_run(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig, source: Path) -> dict:
+    """Validate the saved configuration, full history and checkpoint identities."""
+    source = Path(source)
+    saved = json.loads((source / "config.json").read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(asdict(config), default=str))
+    controls = {"out_dir", "stage1_source", "stage1_only"}
+    if {key: value for key, value in saved.items() if key not in controls} != {
+        key: value for key, value in expected.items() if key not in controls
+    } or saved.get("stage1_only"):
+        raise ValueError(f"Saved loss/model configuration does not match finalization: {source}")
+
+    def scalar(value):
+        if value == "":
+            return None
+        if value in ("True", "False"):
+            return value == "True"
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+
+    with (source / "metrics.csv").open(encoding="utf-8", newline="") as stream:
+        history = [{key: scalar(value) for key, value in row.items()} for row in csv.DictReader(stream)]
+    stage1_epochs = min(config.epochs - 1, max(1, round(config.epochs * config.stage1_ratio)))
+    if len(history) != config.epochs or any(
+        row["epoch"] != epoch or row["stage"] != ("stage1" if epoch <= stage1_epochs else "stage2")
+        for epoch, row in enumerate(history, 1)
+    ):
+        raise ValueError(f"Finalization requires a complete Stage 1 and Stage 2 history: {source}")
+    stage1 = torch.load(source / "best_ei.pt", map_location="cpu", weights_only=False)
+    joint = torch.load(source / "best_joint.pt", map_location="cpu", weights_only=False)
+    if not formal_stage1_source_matches(prepared, config, stage1.get("stage1_signature")):
+        raise ValueError(f"Finalization Stage 1 input/configuration fingerprint mismatch: {source}")
+    if stage1.get("stage1_history") != history[:stage1_epochs]:
+        raise ValueError(f"Finalization Stage 1 checkpoint/history mismatch: {source}")
+    for checkpoint, stage in ((stage1, "stage1"), (joint, "stage2")):
+        epoch = int(checkpoint["epoch"])
+        if checkpoint.get("method") != "formal_two_stage" or not 1 <= epoch <= config.epochs:
+            raise ValueError(f"Finalization checkpoint identity mismatch: {source}")
+        row = history[epoch - 1]
+        if row["stage"] != stage:
+            raise ValueError(f"Finalization checkpoint stage mismatch: {source}")
+        for name in ("delta_EI", "I_available", "I_retained", "closure_quality", "Keff_t", "Keff_tp"):
+            value, reference = float(checkpoint[name]), float(row[name])
+            if not np.isfinite(value) or not np.isfinite(reference) or value != reference:
+                raise ValueError(f"Finalization checkpoint/history mismatch ({name}): {source}")
+    if joint.get("selection") not in {"strict_retained_first", "relaxed_noncollapsed_stage2_fallback"}:
+        raise ValueError(f"Finalization requires the selected Stage 2 checkpoint: {source}")
+    for name, key in (("ei_reference", "best_delta_ei"), ("retained_reference", "I_retained")):
+        if float(joint[name]) != float(stage1[key]):
+            raise ValueError(f"Finalization Stage 1 reference mismatch ({name}): {source}")
+    return {"stage1": stage1, "joint": joint, "history": history}
+
+
+def finalize_two_stage_run(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig,
+                           source: Path) -> WYTTwoStageDeltaEIResult:
+    """Re-evaluate an existing selected checkpoint with zero optimizer steps."""
+    return train_deltaei_two_stage(prepared, config, finalize_source=Path(source))
+
+
 def train_deltaei_two_stage(
     prepared: PreparedCoarseInput,
     config: WYTTwoStageDeltaEIConfig,
+    *,
+    finalize_source: Path | None = None,
 ) -> WYTTwoStageDeltaEIResult:
     if prepared.method not in {"maturity_cci_grn_two_stage", "formal_two_stage", "two_stage_noKeff", "two_stage_noKeff_HardEI"}:
         raise ValueError(
@@ -570,6 +650,15 @@ def train_deltaei_two_stage(
     formal = config if isinstance(config, WYTFormalTwoStageConfig) else None
     if prepared.method == "formal_two_stage" and formal is None:
         raise TypeError("formal_two_stage requires WYTFormalTwoStageConfig.")
+    recovered = None
+    if finalize_source is not None:
+        if formal is None or formal.stage1_only or formal.stage1_source is not None:
+            raise ValueError("Finalization requires a full formal configuration without stage1_source.")
+        if config.out_dir.resolve() == finalize_source.resolve() or (
+            config.out_dir.exists() and any(config.out_dir.iterdir())
+        ):
+            raise FileExistsError("Finalization requires a fresh output directory.")
+        recovered = audit_formal_run(prepared, formal, finalize_source)
     stage1_signature = formal_stage1_signature(prepared, formal) if formal else None
     ei_loss_ratio = formal.ei_loss_retain_ratio if formal else config.ei_retain_ratio
     resolved_keff_min = config.resolved_keff_min()
@@ -721,9 +810,32 @@ def train_deltaei_two_stage(
         best_delta_epoch = int(checkpoint["epoch"])
         first_epoch = stage1_epochs + 1
     final_epoch = stage1_epochs if formal and formal.stage1_only else config.epochs
+    if recovered is not None:
+        source_state, selected = recovered["stage1"], recovered["joint"]
+        metrics = recovered["history"]
+        for name in ("best_ei.pt", "best_joint.pt"):
+            shutil.copyfile(finalize_source / name, out_dir / name)
+        best_delta, best_delta_epoch = float(source_state["best_delta_ei"]), int(source_state["epoch"])
+        ei_reference = best_delta
+        available_reference, retained_reference = float(source_state["I_available"]), float(source_state["I_retained"])
+        signal_status_reference = str(source_state["signal_status"])
+        stage1_reference_keff_t, stage1_reference_keff_tp = float(source_state["Keff_t"]), float(source_state["Keff_tp"])
+        best_epoch = int(selected["epoch"])
+        used_joint_fallback = selected["selection"] == "relaxed_noncollapsed_stage2_fallback"
+        if used_joint_fallback:
+            best_relaxed_score, best_relaxed_epoch = tuple(selected["joint_score"]), best_epoch
+            shutil.copyfile(finalize_source / "best_joint.pt", out_dir / "best_relaxed_joint.pt")
+        else:
+            best_joint_score = tuple(selected["joint_score"])
+            relaxed_source = finalize_source / "best_relaxed_joint.pt"
+            if relaxed_source.is_file():
+                relaxed = torch.load(relaxed_source, map_location="cpu", weights_only=False)
+                best_relaxed_score = tuple(relaxed["joint_score"])
+        first_epoch = config.epochs + 1
 
     with (out_dir / "train.log").open("w", encoding="utf-8") as log_handle:
-        _log(log_handle, "========== WYT FeatureAlign-DeltaEI ==========")
+        _log(log_handle, f"========== formal_two_stage | {FORMAL_TWO_STAGE_PROTOCOL} =========="
+             if formal else "========== WYT FeatureAlign-DeltaEI ==========")
         _log(log_handle, f"method: {prepared.method}")
         _log(log_handle, f"network_t: {prepared.network_t.shape}; network_tp: {prepared.network_tp.shape}")
         _log(log_handle, f"encoder_t: {tuple(features_t.shape)}; encoder_tp: {tuple(features_tp.shape)}")
@@ -749,9 +861,21 @@ def train_deltaei_two_stage(
             "(diagnostic label only; not a Stage 2 checkpoint hard gate)",
         )
         _log(log_handle, "Stage 2: normalized retained information and closure refinement under EI floor")
-        _log(log_handle, "Prototype usage: Keff/dead-usage penalties disabled; Keff is diagnostic only"
-             if config.keff_policy == "iterative_no_floor" else
-             "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
+        if formal:
+            _log(log_handle, f"Effective loss weights: align={config.lambda_align:g}; "
+                 f"stage1_closure={formal.lambda_stage1_closure:g}; stage2_closure={config.lambda_closure:g}; "
+                 f"dev={config.lambda_dev:g}; keff={config.lambda_keff:g}; gap={formal.lambda_gap:g}; "
+                 f"retain_norm={config.lambda_retain_norm:g}; retain_floor={config.lambda_retain_floor:g}; "
+                 f"stage2_cq={formal.lambda_stage2_cq:g}; ei_constraint={config.lambda_ei_constraint:g}")
+            _log(log_handle, f"EI protection: training_ratio={ei_loss_ratio:g}; checkpoint_ratio={config.ei_retain_ratio:g}")
+            _log(log_handle, "Occupancy loss: " + ("Lgap" if formal.lambda_gap else "soft Keff floor")
+                 + f"; checkpoint soft-Keff minimum={resolved_checkpoint_keff_min}")
+            if recovered is not None:
+                _log(log_handle, f"Mode: checkpoint finalization only; optimizer steps=0; source={finalize_source}")
+        else:
+            _log(log_handle, "Prototype usage: Keff/dead-usage penalties disabled; Keff is diagnostic only"
+                 if config.keff_policy == "iterative_no_floor" else
+                 "Prototype usage: Keff floor plus weak anti-dead threshold (not uniform balancing)")
         _log(log_handle, "================================================")
 
         for epoch in range(first_epoch, final_epoch + 1):
@@ -1067,6 +1191,8 @@ def train_deltaei_two_stage(
                 )
             if formal:
                 row.update(L_gap=float(gap.detach().cpu()), weighted_gap=float((formal.lambda_gap * gap).detach().cpu()))
+                row.update(weighted_align=float((config.lambda_align * align).detach().cpu()),
+                           weighted_dev=float((config.lambda_dev * dev).detach().cpu()))
                 row["EI_loss_floor"] = float(ei_reference * ei_loss_ratio) if ei_reference is not None else None
                 row["EI_checkpoint_floor"] = row["EI_floor"]
                 for key in ("weighted_within", "weighted_inter", "weighted_retain_norm", "weighted_retain_floor"):
@@ -1202,14 +1328,26 @@ def train_deltaei_two_stage(
                         out_dir / "best_relaxed_joint.pt",
                     )
             if epoch == 1 or epoch % config.log_every == 0 or epoch == config.epochs:
+                loss_description = (
+                    f"weighted_align={row['weighted_align']:.6f} | "
+                    f"weighted_closure={row['weighted_closure']:.6f} | "
+                    f"weighted_dev={row['weighted_dev']:.6f} | weighted_keff={row['weighted_keff']:.6f} | "
+                    f"weighted_gap={row['weighted_gap']:.6f} | "
+                    f"weighted_retain={row['weighted_retain_norm']:.6f} | "
+                    f"weighted_retain_floor={row['weighted_retain_floor']:.6f} | "
+                    f"weighted_stage2_cq={row['weighted_stage2_cq']:.6f} | "
+                    f"weighted_EIc={row['weighted_ei_constraint']:.6f} | "
+                    if formal else
+                    f"Lalign={row['L_align']:.6f} | "
+                    f"Lclosure={row['L_closure']:.6f} | Lwithin={row['L_within_dynamics']:.6f} | "
+                    f"Linter={row['L_inter']:.6f} | Ldev={row['L_dev']:.6f} | "
+                )
                 _log(
                     log_handle,
-                    f"[wyt/{stage}] {epoch:04d} loss={row['loss']:.6f} | "
-                    f"Lalign={row['L_align']:.6f} | EI_macro={row['EI_macro']:.6f} | "
+                    f"[{'formal' if formal else 'wyt'}/{stage}] {epoch:04d} loss={row['loss']:.6f} | "
+                    + loss_description + f"EI_macro={row['EI_macro']:.6f} | "
                     f"delta={row['delta_EI']:.6f} | "
                     f"Iretained={row['I_retained']:.6f} | CQ={row['closure_quality']:.4f} | "
-                    f"Lclosure={row['L_closure']:.6f} | Lwithin={row['L_within_dynamics']:.6f} | Linter={row['L_inter']:.6f} | "
-                    f"Ldev={row['L_dev']:.6f} | "
                     f"Keff=[{row['Keff_t']:.1f},{row['Keff_tp']:.1f}] | "
                     f"hardK=[{row['hardK_t']},{row['hardK_tp']}]",
                 )
@@ -1335,21 +1473,23 @@ def train_deltaei_two_stage(
         final_closure_quality_value = float(final_information["closure_quality"].cpu())
         final_keff_t_value = float(final_keff_t.cpu())
         final_keff_tp_value = float(final_keff_tp.cpu())
-        consistency_errors = {
-            "delta_EI": abs(final_delta_value - float(checkpoint["delta_EI"])),
-            "I_available": abs(final_available_value - float(checkpoint["I_available"])),
-            "I_retained": abs(final_retained_value - float(checkpoint["I_retained"])),
-            "Keff_t": abs(final_keff_t_value - float(checkpoint["Keff_t"])),
-            "Keff_tp": abs(final_keff_tp_value - float(checkpoint["Keff_tp"])),
-        }
+        recomputed_metrics = {"delta_EI": final_delta_value, "I_available": final_available_value,
+                              "I_retained": final_retained_value, "closure_quality": final_closure_quality_value,
+                              "Keff_t": final_keff_t_value, "Keff_tp": final_keff_tp_value}
+        consistency_details = checkpoint_consistency(checkpoint, recomputed_metrics)
+        consistency_errors = {name: item["absolute_error"] for name, item in consistency_details.items()}
+        # Retain the scalar field for readers of the previous summary contract.
         checkpoint_consistency_tolerance = 1e-5
-        checkpoint_metric_state_consistent = bool(
-            max(consistency_errors.values(), default=0.0) <= checkpoint_consistency_tolerance
-        )
+        checkpoint_metric_state_consistent = all(item["passed"] for item in consistency_details.values())
+        write_json(out_dir / "checkpoint_consistency.json", {
+            "policy": "per_metric_atol_plus_rtol_v1", "passed": checkpoint_metric_state_consistent,
+            "selected_checkpoint": "best_joint.pt", "selected_epoch": int(checkpoint["epoch"]),
+            "metrics": consistency_details,
+        })
         if not checkpoint_metric_state_consistent:
             raise AssertionError(
                 "Reloaded checkpoint metrics do not match the metrics recorded when the "
-                f"checkpoint was selected: {consistency_errors}"
+                f"checkpoint was selected: {consistency_details}"
             )
         summary = {
             "method": prepared.method,
@@ -1418,6 +1558,8 @@ def train_deltaei_two_stage(
             "checkpoint_metric_state_consistent": checkpoint_metric_state_consistent,
             "checkpoint_consistency_tolerance": checkpoint_consistency_tolerance,
             "checkpoint_consistency_errors": consistency_errors,
+            "checkpoint_consistency_policy": "per_metric_atol_plus_rtol_v1",
+            "checkpoint_consistency_details": consistency_details,
             "L_closure": float(final_closure.cpu()),
             "L_within_dynamics": float(final_within.cpu()),
             "L_inter": float(final_inter.cpu()),
@@ -1443,6 +1585,11 @@ def train_deltaei_two_stage(
                            ei_loss_retain_ratio=ei_loss_ratio, ei_checkpoint_retain_ratio=config.ei_retain_ratio,
                            stage1_source=str(formal.stage1_source) if formal.stage1_source else None,
                            stage1_checkpoint_sha256=hashlib.sha256((out_dir / "best_ei.pt").read_bytes()).hexdigest())
+            if recovered is not None:
+                summary.update(finalization_only=True, optimizer_steps_this_run=0,
+                               training_source_dir=str(finalize_source.resolve()),
+                               elapsed_seconds_scope="checkpoint_finalization",
+                               source_best_joint_sha256=hashlib.sha256((finalize_source / "best_joint.pt").read_bytes()).hexdigest())
         assignment_tp_np = assignment_tp.cpu().numpy()
         for label, values in (("t", assignment_t_np), ("tp", assignment_tp_np)):
             hard = values.argmax(axis=1)

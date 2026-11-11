@@ -381,3 +381,142 @@ def run(args) -> None:
         raise
     finally:
         lock.release()
+
+
+def finalize(args) -> Path:
+    """Recover an existing round using its tensors, history and selected weights."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from filelock import FileLock
+    from joblib.externals import cloudpickle
+    from scripts.run_wyt_deltaei_coarse_grain import build_argparser
+    from wyt_deltaei_coarse_grain.training_config import build_training_config
+    from wyt_deltaei_coarse_grain.two_stage_trainer import audit_formal_run, finalize_two_stage_run
+    from ..plots import draw_tables
+    from ..tables import checkpoint_rows, table_grid, write_tables
+
+    root = args.output_root.resolve()
+    config_file = root / "run_config.json"
+    if not config_file.is_file():
+        raise FileNotFoundError(f"No existing formal round to finalize: {root}")
+    selected = select_variants(getattr(args, "branches", None))
+    methods = tuple(variant.label for variant in selected)
+    with FileLock(root / ".running.lock", timeout=0):
+        plan = json.loads(config_file.read_text(encoding="utf-8"))
+        if plan.get("protocol") != FORMAL_TWO_STAGE_PROTOCOL or plan.get("manifest_version") != 3:
+            raise ValueError("Finalization requires the recorded 1B baseline protocol.")
+        if getattr(args, "device", None) not in (None, plan["device"]):
+            raise ValueError("Finalization uses the recorded training device for checkpoint comparison.")
+        for name, checksum in plan["input_sha256"].items():
+            if file_digest(Path(name)) != checksum:
+                raise ValueError(f"Original training input checksum mismatch: {name}")
+
+        # A different evaluator is allowed only in this no-training mode. The
+        # original training manifest and completed attempt records stay intact.
+        code = hashlib.sha256(_training_code_digest().encode())
+        for path in (Path(__file__), Path(__file__).with_name("__main__.py")):
+            code.update(path.read_bytes())
+        parent = root / "finalized" / report_name(selected)
+        parent.mkdir(parents=True, exist_ok=True)
+        attempts = list(parent.glob("attempt_*"))
+        number = max((int(path.name.rsplit("_", 1)[1]) for path in attempts if path.is_dir()), default=0) + 1
+        out = parent / f"attempt_{number:04d}"
+        out.mkdir()
+        manifest = {"status": "running", "mode": "finalize_only", "optimizer_steps": 0,
+                    "loss_protocol": FORMAL_TWO_STAGE_PROTOCOL, "source_run_config": str(config_file),
+                    "source_run_config_sha256": file_digest(config_file),
+                    "training_code_sha256": plan["training_code_sha256"],
+                    "finalization_code_sha256": code.hexdigest(), "results": []}
+        manifest_file = out / "run_manifest.json"
+
+        def save_manifest():
+            manifest_file.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        save_manifest()
+        try:
+            imported = {}
+            import_file = root / "baseline_reuse.json"
+            if "baseline_reuse_root" in plan:
+                imported_audit = json.loads(import_file.read_text(encoding="utf-8"))
+                if imported_audit["source_root"] != plan["baseline_reuse_root"]:
+                    raise ValueError("Imported baseline source differs from the training manifest.")
+                imported = {tuple(item["time_pair"]): item for item in imported_audit["runs"]}
+            rows = []
+            caches = {}
+            expected_args = SimpleNamespace(seed=plan["seed"], epochs=plan["epochs"], device=plan["device"],
+                                            data_root=Path("."), cci_root=Path("."), grn_root=Path("."),
+                                            developmental_root=Path("."))
+            for variant in selected:
+                for pair in TIME_PAIRS:
+                    key = "_to_".join(pair)
+                    if pair not in caches:
+                        cache = root / "_prepared" / f"{key}.pkl"
+                        checksum = file_digest(cache)
+                        if checksum != cache.with_suffix(".sha256").read_text().strip():
+                            raise ValueError(f"Prepared cache checksum mismatch: {cache}")
+                        caches[pair] = (cache, checksum)
+                    cache, checksum = caches[pair]
+                    imported_run = imported.get(pair) if variant.name == "baseline" else None
+                    if imported_run is not None:
+                        source = Path(imported_run["run_dir"])
+                        context = {"status": "complete", "artifacts": imported_run["artifacts"]}
+                    else:
+                        source_parent = root / "stage2" / variant.name / key
+                        contexts = sorted(source_parent.glob("attempt_*.json"), reverse=True)
+                        if not contexts:
+                            raise FileNotFoundError(f"No trained checkpoint for finalization: {source_parent}")
+                        context_file = contexts[0]
+                        context = json.loads(context_file.read_text(encoding="utf-8"))
+                        source = context_file.with_suffix("")
+                        if context.get("status") not in {"complete", "failed"}:
+                            raise ValueError(f"Training attempt is not finalized: {context_file}")
+                        if context["identity"]["cache_sha256"] != checksum:
+                            raise ValueError(f"Training attempt prepared-cache identity mismatch: {source}")
+                        source_hash = context["identity"]["source_sha256"]
+                        if source_hash is None or file_digest(source / "best_ei.pt") != source_hash:
+                            raise ValueError(f"Training attempt Stage 1 checkpoint identity mismatch: {source}")
+                    names = ("config.json", "metrics.csv", "best_ei.pt", "best_joint.pt")
+                    source_hashes = {name: file_digest(source / name) for name in names}
+                    if context["status"] == "complete":
+                        for name in (*names, "summary.json"):
+                            actual = file_digest(source / name)
+                            if actual != context.get("artifacts", {}).get(name):
+                                raise ValueError(f"Completed training artifact checksum mismatch: {source / name}")
+                            source_hashes[name] = actual
+                    parsed = build_argparser().parse_args(command(expected_args, pair, variant, out / "unused")[2:])
+                    expected = build_training_config(parsed)
+                    with cache.open("rb") as stream:
+                        prepared = cloudpickle.load(stream)
+                    # Check all completed and failed sources before selecting a
+                    # report result. A failed attempt must have all epochs and
+                    # matching saved checkpoint metrics, not just a .pt file.
+                    audited = audit_formal_run(prepared, expected, source)
+                    del audited
+                    if context["status"] == "complete":
+                        run_dir = source
+                        action = "reused_complete"
+                        print(f"[reuse] completed {variant.name}/{key}", flush=True)
+                    else:
+                        run_dir = out / "runs" / variant.name / key
+                        print(f"[finalize] {variant.name}/{key}; zero optimizer steps", flush=True)
+                        finalize_two_stage_run(prepared, replace(expected, out_dir=run_dir), source)
+                        action = "recomputed_checkpoint"
+                    del prepared
+                    if any(file_digest(source / name) != value for name, value in source_hashes.items()):
+                        raise ValueError(f"Training source changed during finalization: {source}")
+                    rows.extend(checkpoint_rows(run_dir, method=variant.label, scale="spot", pair=pair, k=40))
+                    manifest["results"].append({"variant": variant.name, "time_pair": list(pair),
+                        "action": action, "training_source": str(source), "run_dir": str(run_dir),
+                        "source_artifacts": source_hashes})
+                    save_manifest()
+            table_grid(rows, ("spot",), methods)
+            write_tables(rows, out, baseline_method=VARIANTS[0].label)
+            draw_tables(rows, out, ("spot",), methods=methods, baseline_method=VARIANTS[0].label)
+            manifest.update(status="complete")
+            save_manifest()
+            print(f"Finalized tables with zero training steps: {out}", flush=True)
+            return out
+        except Exception as error:
+            manifest.update(status="failed", error=str(error))
+            save_manifest()
+            raise
