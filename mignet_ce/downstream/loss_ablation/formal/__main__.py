@@ -1,4 +1,4 @@
-"""Spot-only formal_two_stage branch ablation with up to four training processes."""
+"""Spot-only 1B baseline ablation, with independent Stage 1-to-2 pair tasks."""
 
 import argparse
 from pathlib import Path
@@ -17,7 +17,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--epochs", type=int, default=1500)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cuda", "cpu", "auto"), default="cuda")
-    parser.add_argument("--workers", type=int, choices=range(1, 5), default=4)
+    parser.add_argument("--workers", type=int, choices=range(1, 7), default=6,
+                        help="Concurrent method/time-pair tasks. Each proceeds directly from Stage 1 to Stage 2.")
+    parser.add_argument("--reuse-baseline-from", type=Path,
+                        help="Previous formal round root containing verified completed stage2/branch1b runs.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--branches", nargs="+", choices=[variant.name for variant in VARIANTS],
                         default=list(DEFAULT_BRANCHES), help="Branches in this round; baseline is included automatically.")
@@ -27,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.preview:
         from ..plots import draw_tables, preview_rows
 
-        out = (args.output_root or Path("output/loss_ablation/formal_rounds_preview") / report_name(selected)).resolve()
+        out = (args.output_root or Path("output/loss_ablation/formal_1b_gap_preview") / report_name(selected)).resolve()
         out.mkdir(parents=True, exist_ok=True)
         if any((out / name).exists() for name in ("run_config.json", "run_manifest.json")):
             parser.error("Choose a separate preview folder.")
@@ -35,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         # Stage 2-only branches share the exact baseline Stage 1 in this layout demo.
         for row in rows:
             if row["stage"] == "stage1" and row["method"] in {"Branch 2A", "Branch 2B", "Branch 5"}:
-                base = next(r for r in rows if r["method"] == "Formal baseline" and r["stage"] == "stage1"
+                base = next(r for r in rows if r["method"] == VARIANTS[0].label and r["stage"] == "stage1"
                             and r["source_time"] == row["source_time"] and r["target_time"] == row["target_time"])
                 row.update({key: value for key, value in base.items() if key != "method"})
         draw_tables(rows, out, ("spot",), preview=True, methods=methods,

@@ -80,7 +80,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=1500)
     parser.add_argument("--lr", type=float, default=5e-4)
 
-    parser.add_argument("--lambda-align", type=float, default=1.0)
+    parser.add_argument("--lambda-align", type=float, default=None,
+                        help="Defaults to 0 for formal_two_stage and 1 for the original methods.")
     parser.add_argument("--lambda-ei", type=float, default=1.0)
     parser.add_argument("--lambda-var", type=float, default=1.0)
     parser.add_argument("--lambda-local", type=float, default=0.1)
@@ -231,8 +232,16 @@ def main(argv: list[str] | None = None) -> None:
         if prepared.method != args.method:
             raise ValueError("Prepared cache method does not match the requested method.")
         for key in ("h5ad_t", "h5ad_tp", "cci_t", "cci_tp", "grn_t", "grn_tp"):
-            if str(getattr(args, key)) != prepared.provenance.get(key):
-                raise ValueError(f"Prepared cache input does not match --{key.replace('_', '-')}")
+            recorded = prepared.provenance.get(key)
+            if recorded is None and key in {"grn_t", "grn_tp"}:
+                stage_key = "stage_t" if key == "grn_t" else "stage_tp"
+                recorded = prepared.provenance.get(stage_key, {}).get("grn_path")
+            requested = getattr(args, key).resolve()
+            if recorded is None or requested != Path(recorded).resolve():
+                raise ValueError(
+                    f"Prepared cache input does not match --{key.replace('_', '-')}: "
+                    f"requested={requested}, cached={recorded}"
+                )
         prepared.validate()
     else:
         prepared = prepare_coarse_input(args.method, frontend_request)

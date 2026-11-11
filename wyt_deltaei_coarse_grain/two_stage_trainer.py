@@ -7,7 +7,7 @@ delegates macro PIJ to the selected mignet frontend, restores the best
 checkpoint, and writes the unified experiment artifact contract.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import asdict
 import hashlib
 import json
@@ -21,6 +21,7 @@ import scipy.sparse as sp
 import torch
 
 from mignet_ce.information_thresholds import closure_signal_threshold_bits
+from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
 from mignet_ce.representations.coarse_input import MacroPijInputs, PreparedCoarseInput
 from wyt_deltaei_coarse_grain.assignment import usage_stats
 from wyt_deltaei_coarse_grain.development import (
@@ -262,6 +263,9 @@ class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
 
 @dataclass(frozen=True)
 class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
+    # The accepted former Branch 1B is the registered method's baseline.
+    lambda_align: float = 0.0
+    lambda_stage1_closure: float = 0.50
     lambda_var: float = 0.0
     lambda_local: float = 0.0
     lambda_proto: float = 0.0
@@ -540,6 +544,17 @@ def _formal_complete_stage1(path: Path, metrics: list[dict[str, object]]) -> dic
     return checkpoint
 
 
+def formal_stage1_source_matches(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig,
+                                 signature: str | None) -> bool:
+    """Accept the same 1B state across the metadata-only protocol rename."""
+    if signature == formal_stage1_signature(prepared, config):
+        return True
+    if config.lambda_align != 0.0 or config.lambda_stage1_closure != 0.5:
+        return False
+    legacy = replace(prepared, provenance={**prepared.provenance, "loss_protocol": "formal_two_stage_v1"})
+    return signature == formal_stage1_signature(legacy, config)
+
+
 def train_deltaei_two_stage(
     prepared: PreparedCoarseInput,
     config: WYTTwoStageDeltaEIConfig,
@@ -696,7 +711,7 @@ def train_deltaei_two_stage(
     if formal and formal.stage1_source is not None:
         source = Path(formal.stage1_source)
         checkpoint = torch.load(source, map_location="cpu", weights_only=False)
-        if checkpoint.get("stage1_signature") != stage1_signature:
+        if not formal_stage1_source_matches(prepared, formal, checkpoint.get("stage1_signature")):
             raise ValueError("Stage 1 source input/configuration fingerprint does not match this run.")
         metrics = checkpoint["stage1_history"]
         if len(metrics) != stage1_epochs or any(row["stage"] != "stage1" for row in metrics):
@@ -1424,7 +1439,7 @@ def train_deltaei_two_stage(
         }
         assignment_t_np = assignment_t.cpu().numpy()
         if formal:
-            summary.update(loss_protocol="formal_two_stage_v1", stage1_signature=stage1_signature,
+            summary.update(loss_protocol=FORMAL_TWO_STAGE_PROTOCOL, stage1_signature=stage1_signature,
                            ei_loss_retain_ratio=ei_loss_ratio, ei_checkpoint_retain_ratio=config.ei_retain_ratio,
                            stage1_source=str(formal.stage1_source) if formal.stage1_source else None,
                            stage1_checkpoint_sha256=hashlib.sha256((out_dir / "best_ei.pt").read_bytes()).hexdigest())

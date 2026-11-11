@@ -13,12 +13,20 @@ class Variant:
     flags: tuple[str, ...] = ()
 
 
-VARIANTS = (
-    Variant("baseline", "Formal baseline", "baseline"),
-    Variant("branch1a", "Branch 1A", "branch1a", ("--lambda-align", "0")),
+LEGACY_ROUND1_VARIANTS = (
+    # Explicit original settings preserve the first round's definitions.
+    Variant("baseline", "Formal baseline", "baseline", (
+        "--lambda-align", "1", "--lambda-stage1-closure", "0",
+    )),
+    Variant("branch1a", "Branch 1A", "branch1a", (
+        "--lambda-align", "0", "--lambda-stage1-closure", "0",
+    )),
     Variant("branch1b", "Branch 1B", "branch1b", (
         "--lambda-align", "0", "--lambda-stage1-closure", "0.5",
     )),
+)
+VARIANTS = (
+    Variant("baseline", "Baseline (1B)", "baseline"),
     Variant("branch2a", "Branch 2A", "baseline", ("--lambda-retain-floor", "0")),
     Variant("branch2b", "Branch 2B", "baseline", (
         "--lambda-retain-floor", "0", "--lambda-stage2-cq", "1",
@@ -29,7 +37,7 @@ VARIANTS = (
 )
 METHOD_LABELS = tuple(variant.label for variant in VARIANTS)
 STAGE1_VARIANTS = tuple(variant for variant in VARIANTS if variant.name == variant.stage1_group)
-DEFAULT_BRANCHES = ("branch1a", "branch1b")
+DEFAULT_BRANCHES = ("branch3",)
 
 
 def select_variants(branches=None) -> tuple[Variant, ...]:
