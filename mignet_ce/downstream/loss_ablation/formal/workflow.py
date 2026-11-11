@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from .variants import METHOD_LABELS, STAGE1_VARIANTS, TIME_PAIRS, VARIANTS
+from .variants import TIME_PAIRS, VARIANTS, report_name, required_stage1_variants, select_variants
 
 
 REPO = Path(__file__).resolve().parents[4]
@@ -23,6 +23,19 @@ def file_digest(path: Path) -> str:
         for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _training_code_digest() -> str:
+    """Presentation and round selection can evolve independently of the learner."""
+    code = hashlib.sha256()
+    mignet = REPO / "mignet_ce"
+    sources = [RUNNER, *sorted(path for path in mignet.rglob("*.py")
+                              if path.relative_to(mignet).parts[0] != "downstream"),
+               *sorted((REPO / "wyt_deltaei_coarse_grain").rglob("*.py"))]
+    for path in sources:
+        code.update(str(path.relative_to(REPO)).replace("\\", "/").encode())
+        code.update(path.read_bytes())
+    return code.hexdigest()
 
 
 def command(args, pair: tuple[str, str], variant, out: Path) -> list[str]:
@@ -111,6 +124,8 @@ def run(args) -> None:
     from ..tables import checkpoint_rows, table_grid, write_tables
 
     root = args.output_root.resolve()
+    selected = select_variants(getattr(args, "branches", None))
+    methods = tuple(variant.label for variant in selected)
     inputs = {}
     for pair in TIME_PAIRS:
         parsed = build_argparser().parse_args(command(args, pair, VARIANTS[0], Path("unused"))[2:])
@@ -118,28 +133,36 @@ def run(args) -> None:
                      "grn_t", "grn_tp", "maturity_t", "maturity_tp"):
             path = getattr(parsed, name)
             inputs[str(path)] = file_digest(path)
-    code = hashlib.sha256()
-    sources = [RUNNER, *sorted((REPO / "mignet_ce").rglob("*.py")),
-               *sorted((REPO / "wyt_deltaei_coarse_grain").rglob("*.py"))]
-    for path in sources:
-        code.update(str(path.relative_to(REPO)).replace("\\", "/").encode())
-        code.update(path.read_bytes())
-    plan = {"protocol": "formal_two_stage_v1", "input_sha256": inputs, "code_sha256": code.hexdigest(),
-            "epochs": args.epochs, "seed": args.seed, "device": args.device,
-            "variants": {v.name: list(v.flags) for v in VARIANTS}}
+    plan = {"protocol": "formal_two_stage_v1", "manifest_version": 2, "input_sha256": inputs,
+            "training_code_sha256": _training_code_digest(),
+            "epochs": args.epochs, "seed": args.seed, "device": args.device}
     root.mkdir(parents=True, exist_ok=True)
     lock_file = root / ".running.lock"
     lock = FileLock(lock_file, timeout=0)
     lock.acquire()
+    round_file = None
     try:
         config_file = root / "run_config.json"
         if args.resume:
-            if json.loads(config_file.read_text(encoding="utf-8")) != plan:
+            saved = json.loads(config_file.read_text(encoding="utf-8"))
+            if saved.get("manifest_version") != 2:
+                raise ValueError("This folder uses the previous whole-matrix manifest. Start branch rounds in a fresh output folder.")
+            if saved != plan:
                 raise ValueError("Saved inputs, code or training settings differ from this run.")
         else:
             if any(path != lock_file for path in root.iterdir()):
                 raise FileExistsError(f"Use a fresh output folder or --resume: {root}")
             config_file.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+
+        report_dir = root / "reports" / report_name(selected)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        round_manifest = {
+            "status": "running", "shared_config": str(config_file),
+            "branches": {variant.name: list(variant.flags) for variant in selected},
+            "workers": args.workers,
+        }
+        round_file = report_dir / "run_manifest.json"
+        round_file.write_text(json.dumps(round_manifest, indent=2) + "\n", encoding="utf-8")
 
         caches = {}
         for pair in TIME_PAIRS:
@@ -166,7 +189,7 @@ def run(args) -> None:
             caches[pair] = (cache, file_digest(cache))
 
         stage1_jobs = []
-        for variant in STAGE1_VARIANTS:
+        for variant in required_stage1_variants(selected):
             for pair in TIME_PAIRS:
                 cache, checksum = caches[pair]
                 cmd = command(args, pair, variant, Path("unused"))
@@ -177,7 +200,7 @@ def run(args) -> None:
         stage1_results = _parallel(stage1_jobs, args.workers)
 
         stage2_jobs = []
-        for variant in VARIANTS:
+        for variant in selected:
             for pair in TIME_PAIRS:
                 cache, checksum = caches[pair]
                 source = stage1_results[variant.stage1_group, pair] / "best_ei.pt"
@@ -188,7 +211,7 @@ def run(args) -> None:
                     "cache_sha256": checksum, "source_sha256": file_digest(source)})
         stage2_results = _parallel(stage2_jobs, args.workers)
         rows = []
-        for variant in VARIANTS:
+        for variant in selected:
             for pair in TIME_PAIRS:
                 run_dir = stage2_results[variant.name, pair]
                 rows.extend(checkpoint_rows(run_dir, method=variant.label, scale="spot", pair=pair, k=40))
@@ -196,9 +219,21 @@ def run(args) -> None:
                 source = stage1_results[variant.stage1_group, pair] / "best_ei.pt"
                 if summary["stage1_checkpoint_sha256"] != file_digest(source):
                     raise ValueError(f"Restored Stage 1 checkpoint hash mismatch: {run_dir}")
-        table_grid(rows, ("spot",), METHOD_LABELS)
-        write_tables(rows, root)
-        draw_tables(rows, root, ("spot",), methods=METHOD_LABELS)
-        print(f"Completed formal loss ablation. Tables saved to {root}", flush=True)
+        table_grid(rows, ("spot",), methods)
+        write_tables(rows, report_dir, baseline_method=VARIANTS[0].label)
+        draw_tables(rows, report_dir, ("spot",), methods=methods, baseline_method=VARIANTS[0].label)
+        round_manifest.update(status="complete", results=[
+            {"variant": variant.name, "time_pair": list(pair),
+             "stage1_run": str(stage1_results[variant.stage1_group, pair]),
+             "stage2_run": str(stage2_results[variant.name, pair])}
+            for variant in selected for pair in TIME_PAIRS
+        ])
+        round_file.write_text(json.dumps(round_manifest, indent=2) + "\n", encoding="utf-8")
+        print(f"Completed formal loss ablation round. Tables saved to {report_dir}", flush=True)
+    except Exception as error:
+        if round_file is not None:
+            round_manifest.update(status="failed", error=str(error))
+            round_file.write_text(json.dumps(round_manifest, indent=2) + "\n", encoding="utf-8")
+        raise
     finally:
         lock.release()

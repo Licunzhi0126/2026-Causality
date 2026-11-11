@@ -8,7 +8,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
-from .tables import ENDPOINTS, INFORMATION_COLUMNS, OCCUPANCY_COLUMNS, table_grid
+from .tables import ENDPOINTS, INFORMATION_COLUMNS, OCCUPANCY_COLUMNS, baseline_differences, table_grid
 from .variants import METHOD_LABELS, STAGES, TARGET_K, TIME_PAIRS
 
 
@@ -26,6 +26,7 @@ def preview_rows(scales: tuple[str, ...], methods: tuple[str, ...] = METHOD_LABE
                     retained = .0008 + .0004 * index + .004 * stage_number
                     row = {
                         "input_scale": scale, "method": method, "stage": stage,
+                        "k": k,
                         "source_time": source, "target_time": target,
                         "delta_ei_bits": .79 + .032 * index + .013 * pair_number - .04 * stage_number,
                         "cq": retained / available, "i_retain_bits": retained,
@@ -41,11 +42,18 @@ def preview_rows(scales: tuple[str, ...], methods: tuple[str, ...] = METHOD_LABE
     return rows
 
 
-def _metric_text(row: dict, metric: str, occupancy: bool) -> str:
+def _metric_text(row: dict, metric: str, occupancy: bool, relative: bool = False) -> str:
+    prefix = "delta_vs_baseline_" if relative else ""
     if occupancy:
         fmt = "d" if metric == "hard_k" else ".2f"
-        return " / ".join(format(row[f"{metric}_{end}"], fmt) for end in ENDPOINTS)
-    value = row[metric]
+        values = [round(row[f"{prefix}{metric}_{end}"], 2) for end in ENDPOINTS]
+        return " / ".join(("+" if relative and value > 0 else "") + format(0 if value == 0 else value, fmt)
+                          for value in values)
+    value = row[prefix + metric]
+    if relative:
+        if value == 0:
+            return "0.0000"
+        return f"{value:+.2e}" if abs(value) < .0001 else f"{value:+.4f}"
     if metric == "delta_ei_bits":
         return f"{value:+.4f}"
     if 0 < abs(value) < .0001:
@@ -56,7 +64,10 @@ def _metric_text(row: dict, metric: str, occupancy: bool) -> str:
 def draw_tables(
     rows: list[dict[str, object]], out_dir: Path, scales: tuple[str, ...], *, preview: bool = False,
     methods: tuple[str, ...] = METHOD_LABELS,
+    baseline_method: str | None = None,
 ) -> None:
+    if baseline_method is not None:
+        rows = baseline_differences(rows, baseline_method)
     grid = table_grid(rows, scales, methods)
     fallback = any(row["fallback_used"] for row in rows)
     for name, title, columns, subtitle in (
@@ -65,6 +76,8 @@ def draw_tables(
         ("cluster_occupancy", "Table 2  |  Hard cluster occupancy", OCCUPANCY_COLUMNS,
          "Values shown as source / target within each time pair."),
     ):
+        if baseline_method is not None:
+            subtitle += "\nBaseline shows absolute values. Branches show branch − baseline at the same stage and time pair."
         occupancy = name == "cluster_occupancy"
         width = 15.3
         body_rows = len(methods) * len(STAGES)
@@ -120,7 +133,8 @@ def draw_tables(
                         row = grid[scale, method, stage, pair]
                         start = 2 + pair_index * len(columns)
                         for offset, metric in enumerate(columns):
-                            value = _metric_text(row, metric, occupancy)
+                            value = _metric_text(row, metric, occupancy,
+                                                 relative=baseline_method is not None and method != baseline_method)
                             if row["fallback_used"] and offset == 0:
                                 value += " †"
                             cell(start + offset, row_y, value, fill=fill)

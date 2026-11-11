@@ -11,7 +11,9 @@ import torch
 
 from mignet_ce.coarse_frontends import get_coarse_method_spec
 from mignet_ce.representations.coarse_input import PreparedCoarseInput
-from mignet_ce.downstream.loss_ablation.formal.variants import VARIANTS, STAGE1_VARIANTS
+from mignet_ce.downstream.loss_ablation.formal.variants import (
+    VARIANTS, STAGE1_VARIANTS, report_name, required_stage1_variants, select_variants,
+)
 from scripts.run_wyt_deltaei_coarse_grain import build_argparser
 from wyt_deltaei_coarse_grain.training_config import build_training_config
 from wyt_deltaei_coarse_grain.two_stage_objective import occupancy_gap_loss
@@ -211,13 +213,19 @@ def test_full_workflow_schedules_only_spot_and_exports_all_branches(tmp_path, mo
             path.write_text("fixture input")
     monkeypatch.setattr(frontends, "prepare_coarse_input", lambda *_: _prepared())
     batches = []
+    created = []
 
     def parallel(jobs, workers):
         assert workers == 4
         batches.append(jobs)
         results = {}
+        new_jobs = 0
         for job in jobs:
             run_dir = job["parent"] / "attempt_0001"
+            if run_dir.is_dir():
+                results[job["key"]] = run_dir
+                continue
+            new_jobs += 1
             run_dir.mkdir(parents=True)
             (run_dir / "best_ei.pt").write_bytes(b"shared stage1" + str(job["key"][1]).encode())
             if not job["stage1"]:
@@ -240,13 +248,118 @@ def test_full_workflow_schedules_only_spot_and_exports_all_branches(tmp_path, mo
                                best_joint_fallback_used=False, stage1_checkpoint_sha256=workflow.file_digest(source))
                 (run_dir / "summary.json").write_text(json.dumps(summary))
             results[job["key"]] = run_dir
+        created.append(new_jobs)
         return results
 
     monkeypatch.setattr(workflow, "_parallel", parallel)
     workflow.run(args)
-    assert [len(batch) for batch in batches] == [15, 24]
+    first_report = args.output_root / "reports" / "branch1a_branch1b"
+    assert [len(batch) for batch in batches] == [9, 9]
+    assert created == [9, 9]
+    with (first_report / "information.csv").open(newline="") as stream:
+        first_rows = list(csv.DictReader(stream))
+    assert len(first_rows) == 18
+    assert {row["method"] for row in first_rows} == {"Formal baseline", "Branch 1A", "Branch 1B"}
+    assert "delta_vs_baseline_cq" in first_rows[0]
+
+    args.resume = True
+    args.branches = ["branch2a", "branch2b"]
+    workflow.run(args)
+    assert [len(batch) for batch in batches[-2:]] == [3, 9]
+    assert created[-2:] == [0, 6]
+    assert (first_report / "information.png").is_file()
+    second_report = args.output_root / "reports" / "branch2a_branch2b"
+    assert json.loads((second_report / "run_manifest.json").read_text())["status"] == "complete"
+
+    args.branches = [variant.name for variant in VARIANTS]
+    workflow.run(args)
+    assert [len(batch) for batch in batches[-2:]] == [15, 24]
+    assert created[-2:] == [6, 9]
+    all_report = args.output_root / "reports" / report_name(VARIANTS)
     for filename in ("information.csv", "cluster_occupancy.csv"):
-        with (args.output_root / filename).open(newline="") as stream:
+        with (all_report / filename).open(newline="") as stream:
             assert len(list(csv.DictReader(stream))) == 48
-    assert (args.output_root / "information.pdf").is_file()
-    assert (args.output_root / "cluster_occupancy.png").is_file()
+    assert (all_report / "information.pdf").is_file()
+    assert (all_report / "cluster_occupancy.png").is_file()
+    args.seed = 43
+    with pytest.raises(ValueError, match="settings differ"):
+        workflow.run(args)
+    args.seed = 42
+    args.branches = ["branch1a"]
+
+    def fail_parallel(*_):
+        raise RuntimeError("simulated training failure")
+
+    monkeypatch.setattr(workflow, "_parallel", fail_parallel)
+    with pytest.raises(RuntimeError, match="simulated training failure"):
+        workflow.run(args)
+    failed = args.output_root / "reports" / "branch1a" / "run_manifest.json"
+    assert json.loads(failed.read_text())["status"] == "failed"
+    assert json.loads((first_report / "run_manifest.json").read_text())["status"] == "complete"
+
+
+def test_round_selection_keeps_baseline_and_stage1_dependencies():
+    first = select_variants()
+    assert [variant.name for variant in first] == ["baseline", "branch1a", "branch1b"]
+    assert required_stage1_variants(first) == first
+    later = select_variants(["branch2b", "branch2a", "branch2a"])
+    assert [variant.name for variant in later] == ["baseline", "branch2a", "branch2b"]
+    assert [variant.name for variant in required_stage1_variants(later)] == ["baseline"]
+    assert [variant.name for variant in select_variants(["branch5"])] == ["baseline", "branch5"]
+    with pytest.raises(ValueError, match="Unknown formal branches"):
+        select_variants(["unknown"])
+
+
+def test_baseline_differences_match_stage_pair_and_endpoint(tmp_path):
+    import csv
+    from mignet_ce.downstream.loss_ablation.plots import _metric_text, preview_rows
+    from mignet_ce.downstream.loss_ablation.tables import baseline_differences, write_tables
+
+    rows = preview_rows(("spot",), ("Formal baseline", "Branch 1A"))
+    baseline = rows[0]
+    branch = next(row for row in rows if row["method"] == "Branch 1A" and row["stage"] == baseline["stage"]
+                  and row["source_time"] == baseline["source_time"] and row["target_time"] == baseline["target_time"])
+    branch.update(delta_ei_bits=baseline["delta_ei_bits"] + .1,
+                  cq=baseline["cq"] - .08,
+                  hard_k_source=baseline["hard_k_source"] + 2,
+                  hard_k_target=baseline["hard_k_target"] - 1,
+                  keff_hard_source=baseline["keff_hard_source"] + 1.25,
+                  keff_hard_target=baseline["keff_hard_target"] - .6)
+    values = baseline_differences(rows, "Formal baseline")
+    comparison = values[rows.index(branch)]
+    assert comparison["delta_vs_baseline_delta_ei_bits"] == pytest.approx(.1)
+    assert comparison["delta_vs_baseline_cq"] == pytest.approx(-.08)
+    assert _metric_text(comparison, "delta_ei_bits", False, relative=True) == "+0.1000"
+    assert _metric_text(comparison, "cq", False, relative=True) == "-0.0800"
+    assert _metric_text(comparison, "hard_k", True, relative=True) == "+2 / -1"
+    assert _metric_text(comparison, "keff_hard", True, relative=True) == "+1.25 / -0.60"
+    assert _metric_text(values[0], "cq", False, relative=True) == "0.0000"
+    assert "delta_vs_baseline_cq" not in baseline
+    write_tables(rows, tmp_path, baseline_method="Formal baseline")
+    with (tmp_path / "information.csv").open(newline="") as stream:
+        exported = list(csv.DictReader(stream))
+    assert float(exported[rows.index(branch)]["cq"]) == branch["cq"]
+    assert float(exported[rows.index(branch)]["delta_vs_baseline_cq"]) == pytest.approx(-.08)
+    with pytest.raises(ValueError, match="Missing baseline"):
+        baseline_differences([row for row in rows if row is not baseline], "Formal baseline")
+    with pytest.raises(ValueError, match="Duplicate baseline"):
+        baseline_differences([*rows, baseline], "Formal baseline")
+
+
+def test_training_fingerprint_excludes_reports_but_covers_model(tmp_path, monkeypatch):
+    from mignet_ce.downstream.loss_ablation.formal import workflow
+
+    runner = tmp_path / "scripts/run_wyt_deltaei_coarse_grain.py"
+    model = tmp_path / "wyt_deltaei_coarse_grain/model.py"
+    frontend = tmp_path / "mignet_ce/coarse_frontends/formal_two_stage.py"
+    plot = tmp_path / "mignet_ce/downstream/loss_ablation/plots.py"
+    for path in (runner, model, frontend, plot):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("first")
+    monkeypatch.setattr(workflow, "REPO", tmp_path)
+    monkeypatch.setattr(workflow, "RUNNER", runner)
+    before = workflow._training_code_digest()
+    plot.write_text("presentation change")
+    assert workflow._training_code_digest() == before
+    model.write_text("model change")
+    assert workflow._training_code_digest() != before

@@ -77,14 +77,45 @@ def checkpoint_rows(
     return records
 
 
-def write_tables(rows: list[dict[str, object]], out_dir: Path) -> None:
+def baseline_differences(rows: list[dict[str, object]], baseline_method: str) -> list[dict[str, object]]:
+    """Add raw signed differences using the same scale, stage, time pair and K."""
+    identities = ("input_scale", "stage", "source_time", "target_time", "k")
+    baselines = {}
+    for row in rows:
+        if row["method"] == baseline_method:
+            key = tuple(row[name] for name in identities)
+            if key in baselines:
+                raise ValueError(f"Duplicate baseline reference for {key}")
+            baselines[key] = row
+    metrics = (*INFORMATION_COLUMNS, *(f"{metric}_{end}" for metric in OCCUPANCY_COLUMNS for end in ENDPOINTS))
+    result = []
+    for row in rows:
+        key = tuple(row[name] for name in identities)
+        if key not in baselines:
+            raise ValueError(f"Missing baseline reference for {key}")
+        record = dict(row)
+        for metric in metrics:
+            value, reference = row[metric], baselines[key][metric]
+            if not math.isfinite(value) or not math.isfinite(reference):
+                raise ValueError(f"Non-finite comparison value for {metric} at {key}")
+            record[f"delta_vs_baseline_{metric}"] = value - reference
+        result.append(record)
+    return result
+
+
+def write_tables(
+    rows: list[dict[str, object]], out_dir: Path, *, baseline_method: str | None = None,
+) -> None:
+    if baseline_method is not None:
+        rows = baseline_differences(rows, baseline_method)
     occupancy_fields = tuple(f"{metric}_{end}" for metric in OCCUPANCY_COLUMNS for end in ENDPOINTS)
     for name, fields in (
         ("information", tuple(INFORMATION_COLUMNS)),
         ("cluster_occupancy", occupancy_fields),
     ):
+        difference_fields = tuple(f"delta_vs_baseline_{field}" for field in fields) if baseline_method else ()
         with (out_dir / f"{name}.csv").open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=(*IDENTITY_COLUMNS, *fields), extrasaction="ignore")
+            writer = csv.DictWriter(stream, fieldnames=(*IDENTITY_COLUMNS, *fields, *difference_fields), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
 

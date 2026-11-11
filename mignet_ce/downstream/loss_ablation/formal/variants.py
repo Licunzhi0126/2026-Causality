@@ -29,3 +29,22 @@ VARIANTS = (
 )
 METHOD_LABELS = tuple(variant.label for variant in VARIANTS)
 STAGE1_VARIANTS = tuple(variant for variant in VARIANTS if variant.name == variant.stage1_group)
+DEFAULT_BRANCHES = ("branch1a", "branch1b")
+
+
+def select_variants(branches=None) -> tuple[Variant, ...]:
+    requested = set(DEFAULT_BRANCHES if branches is None else branches)
+    unknown = requested - {variant.name for variant in VARIANTS}
+    if unknown:
+        raise ValueError(f"Unknown formal branches: {sorted(unknown)}")
+    requested.add("baseline")
+    return tuple(variant for variant in VARIANTS if variant.name in requested)
+
+
+def required_stage1_variants(selected: tuple[Variant, ...]) -> tuple[Variant, ...]:
+    groups = {variant.stage1_group for variant in selected}
+    return tuple(variant for variant in STAGE1_VARIANTS if variant.name in groups)
+
+
+def report_name(selected: tuple[Variant, ...]) -> str:
+    return "_".join(variant.name for variant in selected if variant.name != "baseline") or "baseline"
