@@ -103,19 +103,49 @@ def baseline_differences(rows: list[dict[str, object]], baseline_method: str) ->
     return result
 
 
+def predecessor_differences(rows: list[dict[str, object]], predecessors: dict[str, str]) -> list[dict[str, object]]:
+    """Compare a staircase step against its predecessor at the same stage/pair."""
+    identities = ("input_scale", "stage", "source_time", "target_time", "k")
+    lookup = {}
+    for row in rows:
+        key = (row["method"], *(row[name] for name in identities))
+        if key in lookup:
+            raise ValueError(f"Duplicate staircase reference for {key}")
+        lookup[key] = row
+    metrics = (*INFORMATION_COLUMNS, *(f"{metric}_{end}" for metric in OCCUPANCY_COLUMNS for end in ENDPOINTS))
+    result = []
+    for row in rows:
+        previous = predecessors[row["method"]]
+        key = (previous, *(row[name] for name in identities))
+        if key not in lookup:
+            raise ValueError(f"Missing staircase predecessor for {key}")
+        record = dict(row, comparison_previous_method=previous)
+        for metric in metrics:
+            value, reference = row[metric], lookup[key][metric]
+            if not math.isfinite(value) or not math.isfinite(reference):
+                raise ValueError(f"Non-finite staircase comparison for {metric} at {key}")
+            record[f"delta_vs_previous_{metric}"] = value - reference
+        result.append(record)
+    return result
+
+
 def write_tables(
     rows: list[dict[str, object]], out_dir: Path, *, baseline_method: str | None = None,
+    predecessors: dict[str, str] | None = None,
 ) -> None:
     if baseline_method is not None:
         rows = baseline_differences(rows, baseline_method)
+    if predecessors is not None:
+        rows = predecessor_differences(rows, predecessors)
     occupancy_fields = tuple(f"{metric}_{end}" for metric in OCCUPANCY_COLUMNS for end in ENDPOINTS)
     for name, fields in (
         ("information", tuple(INFORMATION_COLUMNS)),
         ("cluster_occupancy", occupancy_fields),
     ):
         difference_fields = tuple(f"delta_vs_baseline_{field}" for field in fields) if baseline_method else ()
+        previous_fields = ("comparison_previous_method", *(f"delta_vs_previous_{field}" for field in fields)) if predecessors else ()
         with (out_dir / f"{name}.csv").open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=(*IDENTITY_COLUMNS, *fields, *difference_fields), extrasaction="ignore")
+            writer = csv.DictWriter(stream, fieldnames=(*IDENTITY_COLUMNS, *fields, *difference_fields, *previous_fields), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
 

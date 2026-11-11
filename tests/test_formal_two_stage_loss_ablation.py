@@ -10,9 +10,14 @@ import scipy.sparse as sp
 import torch
 
 from mignet_ce.coarse_frontends import get_coarse_method_spec
+from mignet_ce.coarse_frontends.method_specs import (
+    FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL,
+    FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL,
+)
 from mignet_ce.representations.coarse_input import PreparedCoarseInput
 from mignet_ce.downstream.loss_ablation.formal.variants import (
-    VARIANTS, STAGE1_VARIANTS, report_name, required_stage1_variants, select_variants,
+    VARIANTS, STAGE1_VARIANTS, comparison_predecessors, report_name, required_stage1_variants,
+    select_variants, shared_stage1_preview, variants_for_protocol,
 )
 from scripts.run_wyt_deltaei_coarse_grain import build_argparser
 from wyt_deltaei_coarse_grain.training_config import build_training_config
@@ -140,26 +145,32 @@ def test_finalize_restores_failed_export_without_training_and_rejects_wrong_weig
     assert not (bad_output / "summary.json").exists()
 
 
-def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path, monkeypatch):
+@pytest.mark.parametrize("protocol,step,manifest_version", [
+    (FORMAL_TWO_STAGE_1B_PROTOCOL, "branch3", 3),
+    (FORMAL_TWO_STAGE_GAP_PROTOCOL, "branch4", 4),
+])
+def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(
+    tmp_path, monkeypatch, protocol, step, manifest_version,
+):
     import csv
     from pathlib import Path
     from types import SimpleNamespace
     import shutil
     from joblib.externals import cloudpickle
-    from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
     from mignet_ce.downstream.loss_ablation.formal import workflow
     from mignet_ce.downstream.loss_ablation.formal.variants import TIME_PAIRS
     import wyt_deltaei_coarse_grain.two_stage_trainer as trainer
 
-    prepared = _prepared_spot40()
+    prepared = replace(_prepared_spot40(), provenance={"loss_protocol": protocol})
+    legacy_variants = variants_for_protocol(protocol)
     root = tmp_path / "server_round"
     args = SimpleNamespace(data_root=tmp_path / "data", cci_root=tmp_path / "cci", grn_root=tmp_path / "grn",
                            developmental_root=tmp_path / "maturity", seed=42, epochs=4, device="cpu",
-                           output_root=root, branches=["branch3"])
+                           output_root=root, branches=[step])
     parser = build_argparser()
     inputs = {}
     for pair in TIME_PAIRS:
-        parsed = parser.parse_args(workflow.command(args, pair, VARIANTS[0], tmp_path / "unused")[2:])
+        parsed = parser.parse_args(workflow.command(args, pair, legacy_variants[0], tmp_path / "unused")[2:])
         for key in ("h5ad_t", "h5ad_tp", "cci_t", "cci_tp", "cci_index_t", "cci_index_tp",
                     "grn_t", "grn_tp", "maturity_t", "maturity_tp"):
             path = getattr(parsed, key)
@@ -167,7 +178,7 @@ def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path
             path.write_text("training input")
             inputs[str(path)] = workflow.file_digest(path)
     base = build_training_config(parser.parse_args(workflow.command(
-        args, TIME_PAIRS[0], VARIANTS[0], tmp_path / "failed_base_template")[2:]))
+        args, TIME_PAIRS[0], legacy_variants[0], tmp_path / "failed_base_template")[2:]))
     original_check = trainer.checkpoint_consistency
 
     def failed_export(recorded, recomputed):
@@ -181,7 +192,7 @@ def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path
     monkeypatch.setattr(trainer, "checkpoint_consistency", original_check)
     completed_base = replace(base, out_dir=tmp_path / "completed_base_template")
     finalize_two_stage_run(prepared, completed_base, base.out_dir)
-    gap = next(variant for variant in VARIANTS if variant.name == "branch3")
+    gap = next(variant for variant in legacy_variants if variant.name == step)
     gap_config = build_training_config(parser.parse_args(workflow.command(
         args, TIME_PAIRS[0], gap, tmp_path / "gap_template")[2:]))
     train_deltaei_two_stage(prepared, gap_config)
@@ -189,9 +200,9 @@ def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path
 
     root.mkdir()
     config_file = root / "run_config.json"
-    config_file.write_text(json.dumps(dict(protocol=FORMAL_TWO_STAGE_PROTOCOL, manifest_version=3,
+    config_file.write_text(json.dumps(dict(protocol=protocol, manifest_version=manifest_version,
         input_sha256=inputs, training_code_sha256="original_training_fingerprint", epochs=4, seed=42, device="cpu")))
-    old_report = root / "reports" / "branch3" / "run_manifest.json"
+    old_report = root / "reports" / step / "run_manifest.json"
     old_report.parent.mkdir(parents=True)
     old_report.write_text(json.dumps({"status": "failed", "error": "previous fixed-tolerance failure"}))
     cache_dir = root / "_prepared"
@@ -202,7 +213,7 @@ def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path
         with cache.open("wb") as stream:
             cloudpickle.dump(prepared, stream)
         cache.with_suffix(".sha256").write_text(workflow.file_digest(cache))
-        for variant in (VARIANTS[0], gap):
+        for variant in (legacy_variants[0], gap):
             failed = variant.name == "baseline" and pair == TIME_PAIRS[2]
             template = base.out_dir if failed else (
                 completed_base.out_dir if variant.name == "baseline" else gap_config.out_dir)
@@ -237,7 +248,10 @@ def test_finalize_workflow_reuses_five_runs_and_exports_six_pair_report(tmp_path
     for name in ("information", "cluster_occupancy"):
         assert (result_dir / f"{name}.png").is_file() and (result_dir / f"{name}.pdf").is_file()
         with (result_dir / f"{name}.csv").open(newline="") as stream:
-            assert len(list(csv.DictReader(stream))) == 12
+            exported = list(csv.DictReader(stream))
+            assert len(exported) == 12
+            if protocol == FORMAL_TWO_STAGE_GAP_PROTOCOL:
+                assert any(key.startswith("delta_vs_previous_") for key in exported[0])
     next(Path(name) for name in inputs).write_text("changed training input")
     with pytest.raises(ValueError, match="training input checksum mismatch"):
         workflow.finalize(args)
@@ -253,31 +267,31 @@ def test_formal_method_defaults_and_independent_branches(tmp_path):
             *variant.flags,
         ])
         configs[variant.name] = build_training_config(args)
-    assert len(STAGE1_VARIANTS) == 3
+    assert len(STAGE1_VARIANTS) == 1
     base = configs["baseline"]
     assert get_coarse_method_spec("formal_two_stage").requires_maturity
     assert base.lambda_align == 0 and base.lambda_stage1_closure == .5
-    assert base.lambda_keff == 1 and base.lambda_dev == .05
+    assert base.lambda_keff == 0 and base.lambda_gap == 1 and base.lambda_dev == 1
+    assert base.ei_loss_retain_ratio == 1 and base.ei_retain_ratio == .85
+    assert get_coarse_method_spec("formal_two_stage").default_lambda_dev == 1
     assert all(getattr(base, "lambda_" + key) == 0 for key in (
         "var", "local", "proto", "dead_usage", "sharp", "within", "inter",
     ))
     assert configs["branch2b"].lambda_retain_norm == .5
     assert configs["branch2b"].lambda_retain_floor == 0 and configs["branch2b"].lambda_stage2_cq == 1
-    assert configs["branch3"].lambda_gap == 1 and configs["branch3"].lambda_keff == 0
-    assert configs["branch4"].lambda_align == 0 and configs["branch4"].lambda_dev == 1
-    assert configs["branch5"].ei_loss_retain_ratio == 1 and configs["branch5"].ei_retain_ratio == .85
+    assert configs["branch2a"].lambda_retain_floor == 0 and configs["branch2a"].lambda_stage2_cq == 0
+    assert configs["branch2a"].checkpoint_retain_ratio == configs["branch2b"].checkpoint_retain_ratio == .5
     prepared = _prepared()
     reordered = replace(prepared, unit_ids_t=list(reversed(prepared.unit_ids_t)))
     assert formal_stage1_signature(prepared, base) != formal_stage1_signature(reordered, base)
-    for name in ("branch2a", "branch2b", "branch5"):
+    for name in ("branch2a", "branch2b"):
         assert formal_stage1_signature(prepared, configs[name]) == formal_stage1_signature(prepared, base)
-    assert formal_stage1_signature(prepared, configs["branch4"]) != formal_stage1_signature(prepared, base)
-    assert formal_stage1_signature(prepared, configs["branch3"]) != formal_stage1_signature(prepared, base)
+    assert configs["branch2a"].lambda_dev == configs["branch2b"].lambda_dev == 1
     native = parser.parse_args([
         "--method", "maturity_cci_grn_two_stage", "--h5ad-t", "t.h5ad", "--h5ad-tp", "tp.h5ad",
         "--cci-t", "t.npz", "--cci-tp", "tp.npz", "--k", "40", "--out-dir", str(tmp_path),
     ])
-    assert build_training_config(native).lambda_align == 1
+    assert build_training_config(native).lambda_align == 1 and build_training_config(native).lambda_keff == 1
 
 
 def test_gap_zero_empty_states_and_finite_gradient():
@@ -302,7 +316,8 @@ def test_gap_zero_empty_states_and_finite_gradient():
 def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
     prepared = _prepared()
     base = WYTFormalTwoStageConfig(k=2, out_dir=tmp_path / "stage1", hidden_dim=8, mid_dim=4,
-                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1, stage1_only=True)
+                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1, stage1_only=True,
+                                  lambda_dev=.05, ei_loss_retain_ratio=.85)
     train_deltaei_two_stage(prepared, base)
     source = base.out_dir / "best_ei.pt"
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -311,7 +326,7 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
     for name, overrides in (
         ("baseline", {}),
         ("branch2b", {"lambda_retain_floor": 0., "lambda_stage2_cq": 1.}),
-        ("branch5", {"ei_loss_retain_ratio": 1.}),
+        ("ei_loss_only", {"ei_loss_retain_ratio": 1.}),
     ):
         config = replace(base, out_dir=tmp_path / name, stage1_only=False, stage1_source=source, **overrides)
         result = train_deltaei_two_stage(prepared, config)
@@ -319,7 +334,7 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
         if name == "baseline":
             assert result.metrics == reference.metrics
             for row in result.metrics[:2]:
-                expected = -row["delta_EI"] + .5 * row["L_closure"] + .05 * row["L_dev"] + row["L_keff"]
+                expected = -row["delta_EI"] + .5 * row["L_closure"] + .05 * row["L_dev"] + row["L_gap"]
                 assert row["loss"] == pytest.approx(expected, abs=1e-6)
         summary = json.loads((config.out_dir / "summary.json").read_text())
         assert summary["stage1_checkpoint_sha256"] == digest
@@ -328,7 +343,7 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
         for row in result.metrics[2:]:
             assert row["EI_checkpoint_floor"] == pytest.approx(.85 * checkpoint["best_delta_ei"])
             assert row["EI_loss_floor"] == pytest.approx(config.ei_loss_retain_ratio * checkpoint["best_delta_ei"])
-            expected = .05 * row["L_dev"] + row["L_keff"] + 5 * row["L_ei_constraint"]
+            expected = .05 * row["L_dev"] + row["L_gap"] + 5 * row["L_ei_constraint"]
             expected += row["weighted_closure"] + row["weighted_retain_norm"]
             expected += row["weighted_retain_floor"] + row["weighted_stage2_cq"]
             assert row["loss"] == pytest.approx(expected, abs=1e-6)
@@ -339,12 +354,190 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
                                                 stage1_source=source, lambda_dev=1.0))
 
 
+def test_staircase_losses_share_branch4_state_and_only_raise_stage2_training_ei_floor(tmp_path):
+    prepared = _prepared()
+    base = WYTFormalTwoStageConfig(k=2, out_dir=tmp_path / "baseline", hidden_dim=8, mid_dim=4,
+                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1,
+                                  lambda_dev=.05, ei_loss_retain_ratio=.85)
+    baseline = train_deltaei_two_stage(prepared, base)
+    fourth = replace(base, lambda_dev=1., stage1_only=True, out_dir=tmp_path / "fourth_stage1")
+    train_deltaei_two_stage(prepared, fourth)
+    source = fourth.out_dir / "best_ei.pt"
+    checkpoint = torch.load(source, map_location="cpu", weights_only=False)
+    stage1_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    results = []
+    for name, ratio in (("branch4", .85), ("branch5", 1.)):
+        config = replace(fourth, out_dir=tmp_path / name, stage1_only=False,
+                         stage1_source=source, ei_loss_retain_ratio=ratio)
+        result = train_deltaei_two_stage(prepared, config)
+        results.append(result)
+        assert result.metrics[:2] == checkpoint["stage1_history"]
+        assert hashlib.sha256((result.out_dir / "best_ei.pt").read_bytes()).hexdigest() == stage1_hash
+        for row in result.metrics:
+            expected = row["L_dev"] + row["L_gap"]
+            if row["stage"] == "stage1":
+                expected += -row["delta_EI"] + .5 * row["L_closure"]
+            else:
+                expected += row["weighted_closure"] + row["weighted_retain_norm"] + row["weighted_retain_floor"]
+                floor_loss = max(0, ratio * checkpoint["best_delta_ei"] - row["delta_EI"]) ** 2
+                expected += 5 * floor_loss
+                assert row["EI_loss_floor"] == pytest.approx(ratio * checkpoint["best_delta_ei"])
+                assert row["EI_checkpoint_floor"] == pytest.approx(.85 * checkpoint["best_delta_ei"])
+            assert row["weighted_keff"] == 0
+            assert row["loss"] == pytest.approx(expected, abs=1e-6)
+    assert results[0].metrics[2]["delta_EI"] == results[1].metrics[2]["delta_EI"]
+    assert formal_stage1_signature(prepared, base) != formal_stage1_signature(prepared, fourth)
+    for row in baseline.metrics[:2]:
+        assert row["loss"] == pytest.approx(-row["delta_EI"] + .5 * row["L_closure"]
+                                          + .05 * row["L_dev"] + row["L_gap"], abs=1e-6)
+
+
+@pytest.mark.parametrize("threshold,expected_pair_weight", [(0., 1.), (1000., .1)])
+def test_retain_cq_staircase_uses_same_legacy_stage1_and_exact_confirmed_losses(
+    tmp_path, threshold, expected_pair_weight,
+):
+    prepared = replace(_prepared(), provenance={"loss_protocol": FORMAL_TWO_STAGE_PROTOCOL})
+    base = WYTFormalTwoStageConfig(k=2, out_dir=tmp_path / "source", hidden_dim=8, mid_dim=4,
+                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1,
+                                  low_signal_threshold_bits=threshold)
+    # The promoted baseline reuses the exact Stage 1 state of historical 4+5.
+    historical = replace(prepared, provenance={"loss_protocol": FORMAL_TWO_STAGE_GAP_PROTOCOL})
+    train_deltaei_two_stage(historical, replace(base, stage1_only=True, ei_loss_retain_ratio=.85))
+    source = base.out_dir / "best_ei.pt"
+    checkpoint = torch.load(source, map_location="cpu", weights_only=False)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    results = []
+    for name, floor_weight, cq_weight in (("baseline", 2., 0.), ("branch2a", 0., 0.), ("branch2b", 0., 1.)):
+        config = replace(base, out_dir=tmp_path / name, stage1_source=source,
+                         lambda_retain_floor=floor_weight, lambda_stage2_cq=cq_weight)
+        result = train_deltaei_two_stage(prepared, config)
+        results.append(result)
+        assert result.metrics[:2] == checkpoint["stage1_history"]
+        assert hashlib.sha256((result.out_dir / "best_ei.pt").read_bytes()).hexdigest() == digest
+        for row in result.metrics:
+            expected = row["L_dev"] + row["L_gap"]
+            if row["stage"] == "stage1":
+                expected += -row["delta_EI"] + .5 * row["L_closure"]
+            else:
+                retained = row["I_retained"]
+                retain_norm = -retained / max(checkpoint["I_available"], 1e-8)
+                floor = max(0., .5 - retained / max(checkpoint["I_retained"], 1e-8)) ** 2
+                cq = retained / max(row["I_available"], 1e-8)
+                ei_loss = max(0., checkpoint["best_delta_ei"] - row["delta_EI"]) ** 2
+                expected += expected_pair_weight * (.1 * row["L_closure"] + .5 * retain_norm
+                                                   + floor_weight * floor + cq_weight * (1 - cq))
+                expected += 5 * ei_loss
+                assert row["pair_weight"] == expected_pair_weight
+                assert row["weighted_stage2_cq"] == pytest.approx(expected_pair_weight * cq_weight * (1 - cq))
+                assert row["weighted_retain_floor"] == pytest.approx(expected_pair_weight * floor_weight * floor)
+                assert row["EI_loss_floor"] == pytest.approx(checkpoint["best_delta_ei"])
+                assert row["EI_checkpoint_floor"] == pytest.approx(.85 * checkpoint["best_delta_ei"])
+            assert row["loss"] == pytest.approx(expected, abs=2e-6)
+            assert row["weighted_keff"] == row["weighted_align"] == 0
+        assert config.checkpoint_retain_ratio == .5
+    assert len({result.metrics[2]["delta_EI"] for result in results}) == 1
+    assert all(result.metrics[:2] == results[0].metrics[:2] for result in results)
+
+
+def test_retain_cq_preview_shares_all_stage1_rows_and_compares_2b_to_2a(tmp_path):
+    import csv
+    from mignet_ce.downstream.loss_ablation.plots import preview_rows
+    from mignet_ce.downstream.loss_ablation.tables import write_tables
+
+    selected = select_variants()
+    methods = tuple(variant.label for variant in selected)
+    rows = preview_rows(("spot",), methods)
+    shared_stage1_preview(rows, selected)
+    write_tables(rows, tmp_path, baseline_method=methods[0], predecessors=comparison_predecessors(selected))
+    for filename in ("information.csv", "cluster_occupancy.csv"):
+        with (tmp_path / filename).open(newline="") as stream:
+            exported = list(csv.DictReader(stream))
+        stage1 = [row for row in exported if row["stage"] == "stage1" and row["method"] != methods[0]]
+        assert all(float(value) == 0 for row in stage1 for key, value in row.items()
+                   if key.startswith("delta_vs_baseline_") or key.startswith("delta_vs_previous_"))
+        assert all(row["comparison_previous_method"] == "Branch 2A" for row in exported if row["method"] == "Branch 2B")
+
+
+def test_removing_training_retain_floor_preserves_strict_checkpoint_retain_gate():
+    from wyt_deltaei_coarse_grain.two_stage_trainer import joint_checkpoint_eligible
+
+    parameters = dict(delta_ei=.9, available_information=1., retained_information=.51,
+                      keff_t=40., keff_tp=40., ei_reference=1., retained_reference=1.,
+                      ei_retain_ratio=.85, retained_ratio=.5, signal_threshold_bits=0., checkpoint_keff_min=10.)
+    assert joint_checkpoint_eligible(**parameters)
+    assert not joint_checkpoint_eligible(**dict(parameters, retained_information=.49))
+    assert not joint_checkpoint_eligible(**dict(parameters, delta_ei=.84))
+
+
+def test_staircase_preview_and_csv_compare_the_correct_predecessor(tmp_path):
+    import csv
+    from mignet_ce.downstream.loss_ablation.plots import preview_rows
+    from mignet_ce.downstream.loss_ablation.tables import predecessor_differences, write_tables
+
+    selected = select_variants(protocol=FORMAL_TWO_STAGE_GAP_PROTOCOL)
+    methods = tuple(variant.label for variant in selected)
+    rows = preview_rows(("spot",), methods)
+    shared_stage1_preview(rows, selected)
+    by_key = {(row["method"], row["stage"], row["source_time"], row["target_time"]): row for row in rows}
+    for row in rows:
+        if row["method"] == "Branch 4+5" and row["stage"] == "stage1":
+            fourth = by_key["Branch 4", row["stage"], row["source_time"], row["target_time"]]
+            assert {key: value for key, value in row.items() if key != "method"} == {
+                key: value for key, value in fourth.items() if key != "method"}
+    parents = comparison_predecessors(selected)
+    comparisons = predecessor_differences(rows, parents)
+    fifth_first = next(row for row in comparisons if row["method"] == "Branch 4+5" and row["stage"] == "stage1")
+    assert fifth_first["delta_vs_previous_delta_ei_bits"] == 0
+    write_tables(rows, tmp_path, baseline_method=methods[0], predecessors=parents)
+    with (tmp_path / "information.csv").open(newline="") as stream:
+        exported = list(csv.DictReader(stream))
+    fifth = next(row for row in exported if row["method"] == "Branch 4+5" and row["stage"] == "stage2")
+    assert fifth["comparison_previous_method"] == "Branch 4"
+    assert float(fifth["delta_vs_baseline_delta_ei_bits"]) == pytest.approx(.064)
+    assert float(fifth["delta_vs_previous_delta_ei_bits"]) == pytest.approx(.032)
+    with pytest.raises(ValueError, match="Missing staircase predecessor"):
+        predecessor_differences([row for row in rows if row["method"] != "Branch 4"], parents)
+
+
+def test_protocol_profiles_preserve_independent_historical_branch5(tmp_path):
+    parser = build_argparser()
+    configs = {}
+    for protocol in (FORMAL_TWO_STAGE_1B_PROTOCOL, FORMAL_TWO_STAGE_GAP_PROTOCOL):
+        variant = next(item for item in variants_for_protocol(protocol) if item.name == "branch5")
+        args = parser.parse_args(["--method", "formal_two_stage", "--h5ad-t", "t", "--h5ad-tp", "tp",
+                                  "--cci-t", "t", "--cci-tp", "tp", "--k", "40", "--out-dir", str(tmp_path),
+                                  *variant.flags])
+        configs[protocol] = (variant, build_training_config(args))
+    old_variant, old = configs[FORMAL_TWO_STAGE_1B_PROTOCOL]
+    new_variant, new = configs[FORMAL_TWO_STAGE_GAP_PROTOCOL]
+    assert old_variant.stage1_group == "baseline" and old.lambda_dev == .05
+    assert old.lambda_keff == 1 and old.lambda_gap == 0
+    assert new_variant.stage1_group == "branch4" and new.lambda_dev == 1
+    assert new.lambda_keff == 0 and new.lambda_gap == 1
+
+
+def test_legacy_baseline_defaults_are_frozen_after_promoting_dev_and_ei(tmp_path):
+    parser = build_argparser()
+    assert get_coarse_method_spec("formal_two_stage").default_lambda_dev == 1
+    for protocol in (FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL, FORMAL_TWO_STAGE_GAP_PROTOCOL):
+        baseline = variants_for_protocol(protocol)[0]
+        args = parser.parse_args(["--method", "formal_two_stage", "--h5ad-t", "t", "--h5ad-tp", "tp",
+                                  "--cci-t", "t", "--cci-tp", "tp", "--k", "40", "--out-dir", str(tmp_path),
+                                  *baseline.flags])
+        config = build_training_config(args)
+        assert config.lambda_dev == .05 and config.ei_loss_retain_ratio == .85
+        assert config.ei_retain_ratio == .85 and config.lambda_stage2_cq == 0
+        assert config.lambda_keff == (0 if protocol == FORMAL_TWO_STAGE_GAP_PROTOCOL else 1)
+        assert config.lambda_gap == (1 if protocol == FORMAL_TWO_STAGE_GAP_PROTOCOL else 0)
+
+
 def test_branch3_replaces_keff_in_both_stages_and_accepts_old_1b_state(tmp_path):
     from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL
 
     prepared = replace(_prepared(), provenance={"loss_protocol": FORMAL_TWO_STAGE_PROTOCOL})
     base = WYTFormalTwoStageConfig(k=2, out_dir=tmp_path / "baseline", hidden_dim=8, mid_dim=4,
-                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1)
+                                  epochs=4, stage1_ratio=.5, knn_k=2, log_every=1,
+                                  lambda_keff=1, lambda_gap=0, lambda_dev=.05, ei_loss_retain_ratio=.85)
     reference = train_deltaei_two_stage(prepared, base)
     legacy = replace(prepared, provenance={"loss_protocol": "formal_two_stage_v1"})
     legacy_config = replace(base, out_dir=tmp_path / "old_1b", stage1_only=True)
@@ -413,7 +606,14 @@ def test_six_pair_chains_advance_without_stage_barrier(tmp_path, monkeypatch):
     assert peak == 6 and immediate_transition == [True]
 
 
-def test_previous_1b_import_checks_inputs_configuration_and_artifacts(tmp_path):
+@pytest.mark.parametrize("source_protocol,target_protocol,source_variant", [
+    (FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL, "branch1b"),
+    (FORMAL_TWO_STAGE_1B_PROTOCOL, FORMAL_TWO_STAGE_GAP_PROTOCOL, "branch3"),
+    (FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL, "branch5"),
+])
+def test_previous_baseline_import_checks_inputs_configuration_and_artifacts(
+    tmp_path, source_protocol, target_protocol, source_variant,
+):
     from types import SimpleNamespace
     import shutil
     from joblib.externals import cloudpickle
@@ -423,26 +623,28 @@ def test_previous_1b_import_checks_inputs_configuration_and_artifacts(tmp_path):
     args = SimpleNamespace(data_root=tmp_path / "data", cci_root=tmp_path / "cci", grn_root=tmp_path / "grn",
                            developmental_root=tmp_path / "maturity", seed=42, epochs=4, device="cpu",
                            reuse_baseline_from=tmp_path / "old_round")
-    prepared = _prepared_spot40()
-    parsed = build_argparser().parse_args(workflow.command(args, TIME_PAIRS[0], VARIANTS[0], tmp_path / "template")[2:])
+    prepared = replace(_prepared_spot40(), provenance={"loss_protocol": target_protocol})
+    baseline = variants_for_protocol(target_protocol)[0]
+    parsed = build_argparser().parse_args(workflow.command(args, TIME_PAIRS[0], baseline, tmp_path / "template")[2:])
     config = build_training_config(parsed)
-    train_deltaei_two_stage(replace(prepared, provenance={"loss_protocol": "formal_two_stage_v1"}), config)
+    train_deltaei_two_stage(replace(prepared, provenance={"loss_protocol": source_protocol}), config)
     root = args.reuse_baseline_from
     root.mkdir()
-    plan = dict(input_sha256={"fixture": "sha"}, epochs=4, seed=42, device="cpu")
-    (root / "run_config.json").write_text(json.dumps(dict(plan, protocol="formal_two_stage_v1")))
+    plan = dict(protocol=target_protocol, input_sha256={"fixture": "sha"}, epochs=4, seed=42, device="cpu")
+    (root / "run_config.json").write_text(json.dumps(dict(plan, protocol=source_protocol)))
     cache = tmp_path / "new_prepared.pkl"
     with cache.open("wb") as stream:
         cloudpickle.dump(prepared, stream)
     names = ("summary.json", "best_ei.pt", "best_joint.pt", "metrics.csv", "config.json")
     for pair in TIME_PAIRS:
-        run_dir = root / "stage2" / "branch1b" / "_to_".join(pair) / "attempt_0001"
+        run_dir = root / "stage2" / source_variant / "_to_".join(pair) / "attempt_0001"
         shutil.copytree(config.out_dir, run_dir)
         context = {"status": "complete", "artifacts": {name: workflow.file_digest(run_dir / name) for name in names}}
         run_dir.with_suffix(".json").write_text(json.dumps(context))
     caches = {pair: (cache, workflow.file_digest(cache)) for pair in TIME_PAIRS}
     results, audit = workflow._verified_baseline_runs(args, plan, caches)
     assert len(results) == 3 and len(audit["runs"]) == 3
+    assert audit["source_variant"] == source_variant and audit["target_protocol"] == target_protocol
     with pytest.raises(ValueError, match="inputs or training settings"):
         workflow._verified_baseline_runs(args, dict(plan, seed=43), caches)
     run_dir = results["baseline", TIME_PAIRS[0]]["stage2_run"]
@@ -470,7 +672,7 @@ def test_round_cli_defaults_to_1b_vs_gap_and_six_workers(tmp_path, monkeypatch):
     argv = ["--" + key + "-root" for key in ("data", "cci", "grn", "developmental", "output")]
     argv = [item for key in argv for item in (key, str(tmp_path))]
     assert main(argv) == 0
-    assert captured[0].workers == 6 and captured[0].branches == ["branch3"]
+    assert captured[0].workers == 6 and captured[0].branches == ["branch2a", "branch2b"]
     with pytest.raises(SystemExit):
         main([*argv, "--workers", "7"])
 
@@ -483,7 +685,7 @@ def test_finalize_cli_requires_only_existing_output_root_and_uses_recovery_route
     monkeypatch.setattr(workflow, "finalize", lambda args: captured.append(args))
     assert main(["--finalize-only", "--output-root", str(tmp_path)]) == 0
     assert len(captured) == 1 and captured[0].device is None
-    assert captured[0].branches == ["branch3"]
+    assert captured[0].branches is None  # The saved protocol resolves historical defaults.
     for extra in (["--resume"], ["--preview"]):
         with pytest.raises(SystemExit):
             main(["--finalize-only", "--output-root", str(tmp_path), *extra])
@@ -613,41 +815,48 @@ def test_full_workflow_schedules_only_spot_and_exports_all_branches(tmp_path, mo
     monkeypatch.setattr(workflow, "_execute", execute)
     monkeypatch.setattr(workflow, "_parallel", parallel)
     workflow.run(args)
-    first_report = args.output_root / "reports" / "branch3"
-    assert [len(batch) for batch in batches] == [6]
-    assert created.count(True) == 6 and created.count(False) == 6
-    assert {job["key"][0] for job in batches[0]} == {"baseline", "branch3"}
+    first_report = args.output_root / "reports" / "branch2a_branch2b"
+    assert [len(batch) for batch in batches] == [9]
+    assert created.count(True) == 3 and created.count(False) == 9
+    assert {job["key"][0] for job in batches[0]} == {"baseline", "branch2a", "branch2b"}
+    for pair in TIME_PAIRS:
+        base = next(job for job in batches[0] if job["key"] == ("baseline", pair))
+        a = next(job for job in batches[0] if job["key"] == ("branch2a", pair))
+        b = next(job for job in batches[0] if job["key"] == ("branch2b", pair))
+        assert base["stage1_ready"] is a["stage1_ready"] is b["stage1_ready"]
+        assert base["stage1_job"]["parent"] == a["stage1_job"]["parent"] == b["stage1_job"]["parent"]
     assert json.loads((first_report / "run_manifest.json").read_text())["workers"] == 6
     with (first_report / "information.csv").open(newline="") as stream:
         first_rows = list(csv.DictReader(stream))
-    assert len(first_rows) == 12
-    assert {row["method"] for row in first_rows} == {"Baseline (1B)", "Branch 3"}
+    assert len(first_rows) == 18
+    assert {row["method"] for row in first_rows} == {"Baseline (4+5)", "Branch 2A", "Branch 2B"}
     assert "delta_vs_baseline_cq" in first_rows[0]
+    assert "delta_vs_previous_cq" in first_rows[0]
 
     args.resume = True
-    args.branches = ["branch2a", "branch2b"]
+    args.branches = ["branch2a"]
     workflow.run(args)
-    assert len(batches[-1]) == 9
-    assert created.count(True) == 6 and created.count(False) == 12
+    assert len(batches[-1]) == 6
+    assert created.count(True) == 3 and created.count(False) == 9
     assert (first_report / "information.png").is_file()
-    second_report = args.output_root / "reports" / "branch2a_branch2b"
+    second_report = args.output_root / "reports" / "branch2a"
     assert json.loads((second_report / "run_manifest.json").read_text())["status"] == "complete"
 
     args.branches = [variant.name for variant in VARIANTS]
     workflow.run(args)
-    assert len(batches[-1]) == 18
-    assert created.count(True) == 9 and created.count(False) == 18
+    assert len(batches[-1]) == 9
+    assert created.count(True) == 3 and created.count(False) == 9
     all_report = args.output_root / "reports" / report_name(VARIANTS)
     for filename in ("information.csv", "cluster_occupancy.csv"):
         with (all_report / filename).open(newline="") as stream:
-            assert len(list(csv.DictReader(stream))) == 36
+            assert len(list(csv.DictReader(stream))) == 18
     assert (all_report / "information.pdf").is_file()
     assert (all_report / "cluster_occupancy.png").is_file()
     args.seed = 43
     with pytest.raises(ValueError, match="settings differ"):
         workflow.run(args)
     args.seed = 42
-    args.branches = ["branch4"]
+    args.branches = ["branch2a"]
 
     def fail_parallel(*_):
         raise RuntimeError("simulated training failure")
@@ -655,7 +864,7 @@ def test_full_workflow_schedules_only_spot_and_exports_all_branches(tmp_path, mo
     monkeypatch.setattr(workflow, "_parallel", fail_parallel)
     with pytest.raises(RuntimeError, match="simulated training failure"):
         workflow.run(args)
-    failed = args.output_root / "reports" / "branch4" / "run_manifest.json"
+    failed = args.output_root / "reports" / "branch2a" / "run_manifest.json"
     assert json.loads(failed.read_text())["status"] == "failed"
     assert json.loads((first_report / "run_manifest.json").read_text())["status"] == "complete"
 
@@ -741,12 +950,14 @@ def test_failed_child_surfaces_log_tail_and_stops_later_methods(tmp_path, monkey
 
 def test_round_selection_keeps_baseline_and_stage1_dependencies():
     first = select_variants()
-    assert [variant.name for variant in first] == ["baseline", "branch3"]
-    assert required_stage1_variants(first) == first
+    assert [variant.name for variant in first] == ["baseline", "branch2a", "branch2b"]
+    assert [variant.name for variant in required_stage1_variants(first)] == ["baseline"]
     later = select_variants(["branch2b", "branch2a", "branch2a"])
     assert [variant.name for variant in later] == ["baseline", "branch2a", "branch2b"]
     assert [variant.name for variant in required_stage1_variants(later)] == ["baseline"]
-    assert [variant.name for variant in select_variants(["branch5"])] == ["baseline", "branch5"]
+    assert [variant.name for variant in select_variants(["branch2b"])] == ["baseline", "branch2a", "branch2b"]
+    assert [variant.name for variant in select_variants(protocol=FORMAL_TWO_STAGE_GAP_PROTOCOL)] == ["baseline", "branch4", "branch5"]
+    assert [variant.name for variant in select_variants(protocol=FORMAL_TWO_STAGE_1B_PROTOCOL)] == ["baseline", "branch3"]
     with pytest.raises(ValueError, match="Unknown formal branches"):
         select_variants(["unknown"])
 
