@@ -6,6 +6,22 @@ The production flow is deliberately layered:
 coarse frontend -> training -> downstream analysis tables -> visualization
 ```
 
+`formal_two_stage` has one protocol, `formal_two_stage_main`. Its default
+losses, weights and checkpoint selection rules are unchanged. The formal
+ablation entry point is `python -m mignet_ce.downstream.loss_ablation.formal`;
+it compares `Formal main`, `branch2a` and `branch2b`, sharing the same Stage 1.
+Use `python scripts/run_wyt_deltaei_coarse_grain.py --method formal_two_stage ...`
+to train the main method directly.
+
+Training, prepared inputs, checkpoints, baseline reuse, resume and
+`--finalize-only` require the `formal_two_stage_main` identifier. Previous
+protocol identifiers, including the previous default name, are rejected;
+there are no aliases or automatic migrations. Existing output and data files
+are preserved. Start a fresh output directory for the renamed protocol.
+Same-protocol baseline reuse still requires matching inputs, settings and
+verified artifacts. Manifest schema version 5 describes the file structure;
+it does not select a protocol.
+
 Publication assets use one active package, `mignet_ce.downstream.paper_assets`.
 Its `prepare` phase reads persisted EI metrics, Seurat closure metrics, and
 optimal coarse-graining runs, then writes checked paper tables. Its `render`

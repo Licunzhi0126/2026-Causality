@@ -7,7 +7,7 @@ delegates macro PIJ to the selected mignet frontend, restores the best
 checkpoint, and writes the unified experiment artifact contract.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from dataclasses import asdict
 import csv
 import hashlib
@@ -22,7 +22,7 @@ import scipy.sparse as sp
 import torch
 
 from mignet_ce.information_thresholds import closure_signal_threshold_bits
-from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOLS
+from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOL, validate_formal_protocol
 from mignet_ce.representations.coarse_input import MacroPijInputs, PreparedCoarseInput
 from wyt_deltaei_coarse_grain.assignment import usage_stats
 from wyt_deltaei_coarse_grain.development import (
@@ -140,7 +140,9 @@ class WYTTwoStageDeltaEIConfig:
             raise ValueError("k must be at least 2.")
         if self.training_mode != "dynamic_closure_two_stage":
             raise ValueError("Two-stage config requires training_mode=dynamic_closure_two_stage.")
-        if self.objective_version != "wyt_dynamic_closure_two_stage_v2":
+        expected_objective = (FORMAL_TWO_STAGE_PROTOCOL if prepared.method == "formal_two_stage"
+                              else "wyt_dynamic_closure_two_stage_v2")
+        if self.objective_version != expected_objective:
             raise ValueError("Unsupported two-stage objective_version.")
         if self.keff_policy not in {"legacy_floor", "iterative_no_floor"}:
             raise ValueError("Unknown Keff policy.")
@@ -264,7 +266,7 @@ class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
 
 @dataclass(frozen=True)
 class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
-    # Accepted Branches 1B, 3 and cumulative 4+5 define the registered baseline.
+    objective_version: str = FORMAL_TWO_STAGE_PROTOCOL
     lambda_align: float = 0.0
     lambda_stage1_closure: float = 0.50
     lambda_var: float = 0.0
@@ -288,6 +290,7 @@ class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
         super().validate(prepared)
         if prepared.method != "formal_two_stage":
             raise ValueError("Formal configuration requires formal_two_stage.")
+        validate_formal_protocol(prepared.provenance.get("loss_protocol"))
         if not self.report_hard_occupancy:
             raise ValueError("Formal two-stage requires hard occupancy reporting.")
         if any((self.lambda_var, self.lambda_local, self.lambda_proto, self.lambda_dead_usage,
@@ -512,7 +515,7 @@ def formal_stage1_signature(prepared: PreparedCoarseInput, config: WYTFormalTwoS
         "lambda_proto", "lambda_dead_usage", "lambda_keff", "lambda_stage1_closure", "lambda_gap",
         "gap_temperature", "gap_count_temperature", "keff_min", "checkpoint_keff_min", "min_usage",
         "development_min_state_mass", "embedding_target_std", "prototype_max_cosine", "seed", "device",
-        "low_signal_threshold_bits",
+        "low_signal_threshold_bits", "objective_version",
     )
     configuration = asdict(config)
     digest = hashlib.sha256(json.dumps({name: configuration[name] for name in names}, sort_keys=True).encode())
@@ -548,17 +551,12 @@ def _formal_complete_stage1(path: Path, metrics: list[dict[str, object]]) -> dic
 
 def formal_stage1_source_matches(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig,
                                  signature: str | None) -> bool:
-    """Accept a protocol rename only when every Stage 1 setting/input matches."""
-    if signature == formal_stage1_signature(prepared, config):
-        return True
-    if config.lambda_align != 0.0 or config.lambda_stage1_closure != 0.5:
-        return False
-    for protocol in FORMAL_TWO_STAGE_PROTOCOLS:
-        if protocol != prepared.provenance.get("loss_protocol"):
-            legacy = replace(prepared, provenance={**prepared.provenance, "loss_protocol": protocol})
-            if signature == formal_stage1_signature(legacy, config):
-                return True
-    return False
+    """Match only this protocol's exact Stage 1 settings and inputs."""
+    return bool(
+        prepared.provenance.get("loss_protocol") == FORMAL_TWO_STAGE_PROTOCOL
+        and config.objective_version == FORMAL_TWO_STAGE_PROTOCOL
+        and signature == formal_stage1_signature(prepared, config)
+    )
 
 
 def checkpoint_consistency(recorded: dict, recomputed: dict) -> dict[str, dict[str, object]]:
@@ -580,8 +578,10 @@ def checkpoint_consistency(recorded: dict, recomputed: dict) -> dict[str, dict[s
 
 def audit_formal_run(prepared: PreparedCoarseInput, config: WYTFormalTwoStageConfig, source: Path) -> dict:
     """Validate the saved configuration, full history and checkpoint identities."""
+    config.validate(prepared)
     source = Path(source)
     saved = json.loads((source / "config.json").read_text(encoding="utf-8"))
+    validate_formal_protocol(saved.get("objective_version"))
     expected = json.loads(json.dumps(asdict(config), default=str))
     controls = {"out_dir", "stage1_source", "stage1_only"}
     if {key: value for key, value in saved.items() if key not in controls} != {
@@ -614,6 +614,7 @@ def audit_formal_run(prepared: PreparedCoarseInput, config: WYTFormalTwoStageCon
     if stage1.get("stage1_history") != history[:stage1_epochs]:
         raise ValueError(f"Finalization Stage 1 checkpoint/history mismatch: {source}")
     for checkpoint, stage in ((stage1, "stage1"), (joint, "stage2")):
+        validate_formal_protocol(checkpoint.get("loss_protocol"))
         epoch = int(checkpoint["epoch"])
         if checkpoint.get("method") != "formal_two_stage" or not 1 <= epoch <= config.epochs:
             raise ValueError(f"Finalization checkpoint identity mismatch: {source}")
@@ -653,7 +654,7 @@ def train_deltaei_two_stage(
     prepared.validate()
     config.validate(prepared)
     formal = config if isinstance(config, WYTFormalTwoStageConfig) else None
-    loss_protocol = prepared.provenance.get("loss_protocol", FORMAL_TWO_STAGE_PROTOCOL)
+    loss_protocol = FORMAL_TWO_STAGE_PROTOCOL if formal else None
     if prepared.method == "formal_two_stage" and formal is None:
         raise TypeError("formal_two_stage requires WYTFormalTwoStageConfig.")
     recovered = None
@@ -806,6 +807,7 @@ def train_deltaei_two_stage(
     if formal and formal.stage1_source is not None:
         source = Path(formal.stage1_source)
         checkpoint = torch.load(source, map_location="cpu", weights_only=False)
+        validate_formal_protocol(checkpoint.get("loss_protocol"))
         if not formal_stage1_source_matches(prepared, formal, checkpoint.get("stage1_signature")):
             raise ValueError("Stage 1 source input/configuration fingerprint does not match this run.")
         metrics = checkpoint["stage1_history"]
@@ -1267,7 +1269,7 @@ def train_deltaei_two_stage(
                             "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                             "method": prepared.method,
                             "selection": "stage1_best_delta_ei_noncollapsed",
-                            **({"stage1_signature": stage1_signature,
+                            **({"stage1_signature": stage1_signature, "loss_protocol": loss_protocol,
                                 "torch_rng_state": torch.get_rng_state(),
                                 "cuda_rng_states": torch.cuda.get_rng_state_all() if device.type == "cuda" else []}
                                if formal else {}),
@@ -1285,6 +1287,7 @@ def train_deltaei_two_stage(
                          "I_retained": row["I_retained"], "closure_quality": row["closure_quality"],
                          "Keff_t": row["Keff_t"], "Keff_tp": row["Keff_tp"],
                          "method": prepared.method,
+                         **({"loss_protocol": loss_protocol} if formal else {}),
                          "selection": "stage2_highest_delta_ei_diagnostic"},
                         out_dir / "best_stage2_deltaei_diagnostic.pt",
                     )
@@ -1305,6 +1308,7 @@ def train_deltaei_two_stage(
                          "resolved_keff_min": resolved_keff_min,
                          "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                          "method": prepared.method,
+                         **({"loss_protocol": loss_protocol} if formal else {}),
                          "selection": "strict_retained_first", "joint_score": score,
                          "ei_reference": ei_reference, "retained_reference": retained_reference},
                         out_dir / "best_joint.pt",
@@ -1328,6 +1332,7 @@ def train_deltaei_two_stage(
                          "resolved_keff_min": resolved_keff_min,
                          "resolved_checkpoint_keff_min": resolved_checkpoint_keff_min,
                          "method": prepared.method,
+                         **({"loss_protocol": loss_protocol} if formal else {}),
                          "selection": "relaxed_noncollapsed_stage2_fallback",
                          "joint_score": relaxed_score,
                          "ei_reference": ei_reference, "retained_reference": retained_reference},
@@ -1370,6 +1375,7 @@ def train_deltaei_two_stage(
             checkpoint = _formal_complete_stage1(out_dir / "best_ei.pt", metrics)
             write_json(out_dir / "stage1_summary.json", {
                 "method": prepared.method, "stage1_signature": stage1_signature,
+                "loss_protocol": loss_protocol,
                 "stage1_best_epoch": best_delta_epoch, "stage1_best_delta_EI": best_delta,
                 "history_rows": len(metrics), "status": "complete",
             })
@@ -1499,7 +1505,7 @@ def train_deltaei_two_stage(
             )
         summary = {
             "method": prepared.method,
-            "method_version": "wyt_dynamic_closure_two_stage_v2",
+            "method_version": config.objective_version,
             "training_protocol": config.training_mode,
             "keff_policy": config.keff_policy,
             "ei_retain_ratio": config.ei_retain_ratio,

@@ -8,13 +8,14 @@ from mignet_ce.coarse_frontends.registry import COARSE_FRONTEND_REGISTRY
 from mignet_ce.coarse_frontends.method_specs import (
     DYNAMIC_CLOSURE_TWO_STAGE,
     LEGACY_SINGLE_STAGE, CQ_ONLY,
-    training_mode_for_method,
+    FORMAL_TWO_STAGE_PROTOCOL, get_coarse_method_spec, training_mode_for_method,
 )
 from mignet_ce.representations.coarse_input import PreparedCoarseInput
 
 
 def test_coarse_frontend_registry_has_exact_planned_methods() -> None:
     assert set(COARSE_FRONTEND_REGISTRY) == {
+        "formal_two_stage",
         "complete_combined_coarse",
         "complete_combined_coarse_maturity_cci_grn",
         "maturity_cci_grn_two_stage",
@@ -42,6 +43,8 @@ def test_prepared_coarse_input_rejects_nonstochastic_pij() -> None:
 
 
 def test_training_modes_are_method_isolated() -> None:
+    assert training_mode_for_method("formal_two_stage") == DYNAMIC_CLOSURE_TWO_STAGE
+    assert get_coarse_method_spec("formal_two_stage").objective_version == FORMAL_TWO_STAGE_PROTOCOL == "formal_two_stage_main"
     assert training_mode_for_method("complete_combined_coarse") == LEGACY_SINGLE_STAGE
     assert (
         training_mode_for_method("complete_combined_coarse_maturity_cci_grn")

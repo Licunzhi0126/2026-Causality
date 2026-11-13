@@ -8,23 +8,22 @@ from dataclasses import dataclass
 LEGACY_SINGLE_STAGE = "legacy_single_stage"
 DYNAMIC_CLOSURE_TWO_STAGE = "dynamic_closure_two_stage"
 CQ_ONLY = "cq_only"
-FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL = "formal_two_stage_v1"
-FORMAL_TWO_STAGE_1B_PROTOCOL = "formal_two_stage_1b_v2"
-FORMAL_TWO_STAGE_GAP_PROTOCOL = "formal_two_stage_1b_gap_v3"
-FORMAL_TWO_STAGE_PROTOCOL = "formal_two_stage_dev1_ei1_v4"
-FORMAL_TWO_STAGE_PROTOCOLS = (
-    FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL,
-    FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL,
-)
-FORMAL_TWO_STAGE_MANIFEST_VERSIONS = {
-    FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL: (2, 3), FORMAL_TWO_STAGE_1B_PROTOCOL: (3,),
-    FORMAL_TWO_STAGE_GAP_PROTOCOL: (4,), FORMAL_TWO_STAGE_PROTOCOL: (5,),
-}
+FORMAL_TWO_STAGE_PROTOCOL = "formal_two_stage_main"
+FORMAL_TWO_STAGE_MANIFEST_VERSION = 5
 NO_KEFF_EI_RETAIN_RATIOS = {
     "two_stage_noKeff": 0.85,
     "two_stage_noKeff_HardEI": 1.0,
 }
 RETIRED_COARSE_METHODS = frozenset({"shr_method_8", "shr_method_10"})
+
+
+def validate_formal_protocol(protocol: object) -> None:
+    """Require the sole formal protocol, including for persisted artifacts."""
+    if protocol != FORMAL_TWO_STAGE_PROTOCOL:
+        raise ValueError(
+            f"formal_two_stage only supports loss protocol {FORMAL_TWO_STAGE_PROTOCOL!r}; "
+            f"got {protocol!r}."
+        )
 
 
 @dataclass(frozen=True)

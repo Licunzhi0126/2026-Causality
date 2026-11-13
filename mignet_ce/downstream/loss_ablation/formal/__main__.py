@@ -1,10 +1,9 @@
-"""Spot-only dev=1, EI=1 baseline staircase: baseline -> Branch 2A -> Branch 2B."""
+"""formal_two_stage_main Spot ablation: Formal main -> Branch 2A -> Branch 2B."""
 
 import argparse
 from pathlib import Path
 
-from mignet_ce.coarse_frontends.method_specs import FORMAL_TWO_STAGE_PROTOCOLS
-from .variants import comparison_predecessors, report_name, select_variants, shared_stage1_preview, variants_for_protocol
+from .variants import VARIANTS, comparison_predecessors, report_name, select_variants, shared_stage1_preview
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,15 +20,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, choices=range(1, 7), default=6,
                         help="Concurrent method/time-pair tasks. Each proceeds directly from Stage 1 to Stage 2.")
     parser.add_argument("--reuse-baseline-from", type=Path,
-                        help="Previous gap staircase's completed Branch 4+5 (branch5), or a current-protocol baseline.")
+                        help="A completed formal_two_stage_main baseline with matching inputs and settings.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--finalize-only", action="store_true",
                         help="Reuse completed runs and re-evaluate existing selected checkpoints. Zero training steps.")
-    choices = sorted({variant.name for protocol in FORMAL_TWO_STAGE_PROTOCOLS for variant in variants_for_protocol(protocol)})
+    choices = [variant.name for variant in VARIANTS]
     parser.add_argument("--branches", nargs="+", choices=choices, default=None,
                         help="Defaults to branch2a branch2b; branch2b inherits 2A's floor removal and adds CQ. "
-                             "All three methods share baseline Stage 1. "
-                             "Historical names are available when finalizing their recorded protocol.")
+                             "All three methods share Formal main Stage 1.")
     args = parser.parse_args(argv)
     if args.finalize_only:
         if args.preview or args.resume or args.reuse_baseline_from is not None:

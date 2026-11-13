@@ -14,9 +14,7 @@ import sys
 from threading import Lock
 
 from mignet_ce.coarse_frontends.method_specs import (
-    FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL,
-    FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOLS,
-    FORMAL_TWO_STAGE_MANIFEST_VERSIONS,
+    FORMAL_TWO_STAGE_PROTOCOL, FORMAL_TWO_STAGE_MANIFEST_VERSION, validate_formal_protocol,
 )
 
 from .variants import (
@@ -152,7 +150,7 @@ def _parallel(jobs: list[dict], workers: int) -> dict:
 
 
 def _verified_baseline_runs(args, plan: dict, caches: dict) -> tuple[dict, dict]:
-    """Audit a mathematically equivalent prior method as this protocol's baseline."""
+    """Audit a completed main-protocol baseline with identical settings."""
     import math
     import torch
     from joblib.externals import cloudpickle
@@ -163,18 +161,12 @@ def _verified_baseline_runs(args, plan: dict, caches: dict) -> tuple[dict, dict]
 
     previous_root = args.reuse_baseline_from.resolve()
     previous = json.loads((previous_root / "run_config.json").read_text(encoding="utf-8"))
-    protocol = plan.get("protocol", FORMAL_TWO_STAGE_PROTOCOL)
+    protocol = plan.get("protocol")
+    validate_formal_protocol(protocol)
+    validate_formal_protocol(previous.get("protocol"))
     baseline = variants_for_protocol(protocol)[0]
-    migrations = {
-        (FORMAL_TWO_STAGE_PROTOCOL, FORMAL_TWO_STAGE_GAP_PROTOCOL): "branch5",
-        (FORMAL_TWO_STAGE_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL): "baseline",
-        (FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL): "branch3",
-        (FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_GAP_PROTOCOL): "baseline",
-        (FORMAL_TWO_STAGE_1B_PROTOCOL, FORMAL_TWO_STAGE_ORIGINAL_PROTOCOL): "branch1b",
-        (FORMAL_TWO_STAGE_1B_PROTOCOL, FORMAL_TWO_STAGE_1B_PROTOCOL): "baseline",
-    }
-    source_variant = migrations.get((protocol, previous.get("protocol")))
-    if source_variant is None or any(
+    source_variant = "baseline"
+    if previous.get("manifest_version") != FORMAL_TWO_STAGE_MANIFEST_VERSION or any(
         previous.get(key) != plan[key] for key in ("input_sha256", "epochs", "seed", "device")
     ):
         raise ValueError("Previous baseline inputs or training settings/protocol do not match the new baseline.")
@@ -197,6 +189,7 @@ def _verified_baseline_runs(args, plan: dict, caches: dict) -> tuple[dict, dict]
         parsed = build_argparser().parse_args(command(args, pair, baseline, Path("unused"))[2:])
         expected = json.loads(json.dumps(asdict(build_training_config(parsed)), default=str))
         saved = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+        validate_formal_protocol(saved.get("objective_version"))
         execution_fields = {"out_dir", "stage1_source", "stage1_only"}
         if {key: value for key, value in saved.items() if key not in execution_fields} != {
             key: value for key, value in expected.items() if key not in execution_fields
@@ -205,6 +198,7 @@ def _verified_baseline_runs(args, plan: dict, caches: dict) -> tuple[dict, dict]
         with caches[pair][0].open("rb") as stream:
             prepared = cloudpickle.load(stream)
         checkpoint = torch.load(run_dir / "best_ei.pt", map_location="cpu", weights_only=False)
+        validate_formal_protocol(checkpoint.get("loss_protocol"))
         config = build_training_config(parsed)
         if not formal_stage1_source_matches(prepared, config, checkpoint.get("stage1_signature")):
             raise ValueError(f"Previous baseline Stage 1 input/state fingerprint mismatch: {run_dir}")
@@ -225,6 +219,8 @@ def _verified_baseline_runs(args, plan: dict, caches: dict) -> tuple[dict, dict]
                     raise ValueError(f"Previous baseline history/checkpoint mismatch: {run_dir}")
         summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
         joint = torch.load(run_dir / "best_joint.pt", map_location="cpu", weights_only=False)
+        validate_formal_protocol(summary.get("loss_protocol"))
+        validate_formal_protocol(joint.get("loss_protocol"))
         if summary["stage1_checkpoint_sha256"] != file_digest(run_dir / "best_ei.pt") or (
             int(summary["stage1_best_epoch"]) != int(checkpoint["epoch"])
             or int(summary["best_epoch"]) != int(joint["epoch"])
@@ -261,7 +257,7 @@ def run(args) -> None:
                      "grn_t", "grn_tp", "maturity_t", "maturity_tp"):
             path = getattr(parsed, name)
             inputs[str(path)] = file_digest(path)
-    plan = {"protocol": FORMAL_TWO_STAGE_PROTOCOL, "manifest_version": 5, "input_sha256": inputs,
+    plan = {"protocol": FORMAL_TWO_STAGE_PROTOCOL, "manifest_version": FORMAL_TWO_STAGE_MANIFEST_VERSION, "input_sha256": inputs,
             "training_code_sha256": _training_code_digest(),
             "epochs": args.epochs, "seed": args.seed, "device": args.device}
     reuse_root = getattr(args, "reuse_baseline_from", None)
@@ -276,8 +272,9 @@ def run(args) -> None:
         config_file = root / "run_config.json"
         if args.resume:
             saved = json.loads(config_file.read_text(encoding="utf-8"))
-            if saved.get("manifest_version") != 5 or saved.get("protocol") != FORMAL_TWO_STAGE_PROTOCOL:
-                raise ValueError("This folder uses a previous loss protocol. Start the retain/CQ staircase in a fresh output folder.")
+            validate_formal_protocol(saved.get("protocol"))
+            if saved.get("manifest_version") != FORMAL_TWO_STAGE_MANIFEST_VERSION:
+                raise ValueError("Unsupported formal manifest version; use a fresh output folder.")
             if saved != plan:
                 old_settings = {key: value for key, value in saved.items() if key != "training_code_sha256"}
                 new_settings = {key: value for key, value in plan.items() if key != "training_code_sha256"}
@@ -424,8 +421,9 @@ def finalize(args) -> Path:
     with FileLock(root / ".running.lock", timeout=0):
         plan = json.loads(config_file.read_text(encoding="utf-8"))
         protocol = plan.get("protocol")
-        if protocol not in FORMAL_TWO_STAGE_PROTOCOLS or plan.get("manifest_version") not in FORMAL_TWO_STAGE_MANIFEST_VERSIONS[protocol]:
-            raise ValueError("Finalization requires a supported recorded formal loss protocol.")
+        validate_formal_protocol(protocol)
+        if plan.get("manifest_version") != FORMAL_TWO_STAGE_MANIFEST_VERSION:
+            raise ValueError("Finalization requires the current formal manifest version.")
         selected = select_variants(getattr(args, "branches", None), protocol=protocol)
         methods = tuple(variant.label for variant in selected)
         if getattr(args, "device", None) not in (None, plan["device"]):
@@ -534,9 +532,7 @@ def finalize(args) -> Path:
                     save_manifest()
             table_grid(rows, ("spot",), methods)
             write_tables(rows, out, baseline_method=selected[0].label,
-                         predecessors=comparison_predecessors(selected) if protocol in (
-                             FORMAL_TWO_STAGE_GAP_PROTOCOL, FORMAL_TWO_STAGE_PROTOCOL,
-                         ) else None)
+                         predecessors=comparison_predecessors(selected))
             draw_tables(rows, out, ("spot",), methods=methods, baseline_method=selected[0].label)
             manifest.update(status="complete")
             save_manifest()

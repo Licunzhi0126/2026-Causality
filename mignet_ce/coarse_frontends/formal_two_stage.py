@@ -1,4 +1,4 @@
-"""Formal two-stage frontend using the native maturity, CCI and GRN inputs."""
+"""Prepare maturity, CCI and GRN inputs for the sole formal_two_stage_main protocol."""
 
 from dataclasses import replace
 
