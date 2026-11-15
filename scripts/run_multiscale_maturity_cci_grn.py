@@ -30,6 +30,7 @@ from mignet_ce.coarse_frontends.method_specs import (  # noqa: E402
 
 DEFAULT_METHOD = "maturity_cci_grn_two_stage"
 SUPPORTED_METHODS = (
+    "formal_two_stage",
     DEFAULT_METHOD,
     "complete_combined_coarse_maturity_cci_grn",
     "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",

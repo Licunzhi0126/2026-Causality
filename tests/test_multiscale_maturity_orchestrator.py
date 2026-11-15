@@ -244,6 +244,7 @@ def test_wrapper_enforces_genuine_coarse_graining(tmp_path: Path) -> None:
 def test_default_method_is_two_stage_and_legacy_control_stays_available():
     assert orchestrator.DEFAULT_METHOD == "maturity_cci_grn_two_stage"
     assert set(orchestrator.SUPPORTED_METHODS) == {
+        "formal_two_stage",
         "maturity_cci_grn_two_stage", "complete_combined_coarse_maturity_cci_grn",
         "two_stage_noKeff", "two_stage_noKeff_HardEI", "single_stage_cq_only",
     }

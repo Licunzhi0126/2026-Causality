@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.patches import FancyArrowPatch, Rectangle
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path as MplPath
+from matplotlib.collections import LineCollection
 
 from .legacy_figure_style import HEART, MUTED, SPOT, TEAL, TEAL_DARK, TEXT, set_asset_style
 
@@ -49,6 +52,48 @@ def _clean(ax: plt.Axes) -> None:
         spine.set_visible(False)
 
 
+def centroid_connections(spot: pd.DataFrame, membership: pd.DataFrame, label: str,
+                         lower: float, upper: float, yscale: float = .34):
+    """One segment per real spot; endpoints use spatial means of its target group.
+
+    Join by spot identity, never row order or a presumed nesting of domain labels.
+    All geometry uses the same isotropic coordinate transform before layer offsets.
+    """
+    for frame, columns in ((spot, {"spot_id", "x", "y"}), (membership, {"spot_id", label})):
+        if not columns <= set(frame) or frame.empty or frame.spot_id.isna().any() or frame.spot_id.duplicated().any():
+            raise ValueError("Spatial membership requires unique, nonempty spot identities")
+    if not np.isfinite(spot[["x", "y"]].apply(pd.to_numeric).to_numpy(float)).all():
+        raise ValueError("Non-finite spatial coordinates")
+    if set(spot.spot_id) != set(membership.spot_id) or membership[label].isna().any():
+        raise ValueError("Missing or extra spatial membership")
+    members = _norm_xy(spot)[["spot_id", "xn", "yn"]].merge(
+        membership[["spot_id", label]], on="spot_id", validate="one_to_one")
+    centers = members.groupby(label, sort=True)[["xn", "yn"]].mean()
+    target = centers.loc[members[label]].to_numpy(float)
+    source = members[["xn", "yn"]].to_numpy(float)
+    source[:, 1] = source[:, 1] * yscale + lower
+    target[:, 1] = target[:, 1] * yscale + upper
+    return members, centers, np.stack((source, target), axis=1)
+
+
+def _draw_centroid_mapping(ax, spot, membership, label, lower, upper, *, yscale=.34, cmap="tab20"):
+    members, centers, segments = centroid_connections(spot, membership, label, lower, upper, yscale)
+    colors = _domain_colors(members[label], cmap)
+    ax.add_collection(LineCollection(segments, colors=colors, linewidths=.30, alpha=.12,
+                                     rasterized=True, zorder=0))
+    ax.scatter(members.xn, members.yn * yscale + upper, s=2.2, c=colors,
+               alpha=.25, linewidths=0, rasterized=True, zorder=1)
+    ax.scatter(centers.xn, centers.yn * yscale + upper,
+               s=17 if len(centers) <= 40 else 10,
+               c=_domain_colors(pd.Series(centers.index), cmap), edgecolors="white",
+               linewidths=.35, alpha=1, zorder=3)
+    return len(centers)
+
+
+def _metric_value(value) -> str:
+    return f"{float(value):+.3f}" if np.isfinite(float(value)) else "—"
+
+
 def _schematic_embryo(ax: plt.Axes, heart: pd.DataFrame | None = None, rng_seed: int = 7) -> None:
     """Draw only the unavailable whole-slice context schematically.
 
@@ -86,13 +131,13 @@ def _schematic_embryo(ax: plt.Axes, heart: pd.DataFrame | None = None, rng_seed:
     _clean(ax)
 
 
-def draw_context(ax: plt.Axes, full_slice: pd.DataFrame | None, heart: pd.DataFrame, title: str) -> None:
+def draw_context(ax: plt.Axes, full_slice: pd.DataFrame | None, heart: pd.DataFrame, title: str, organ: str = "heart") -> None:
     if full_slice is None or full_slice.empty:
         base = _norm_xy(heart)
         ax.scatter(base["xn"], base["yn"], s=1.2, color=HEART, alpha=0.85, linewidths=0, rasterized=True)
         ax.set_aspect("equal", adjustable="datalim")
         _clean(ax)
-        ax.text(0.5, -0.06, "measured heart region", transform=ax.transAxes, ha="center", fontsize=7.0, color=MUTED)
+        ax.text(0.5, -0.06, f"measured {organ} region", transform=ax.transAxes, ha="center", fontsize=7.0, color=MUTED)
     else:
         ax.scatter(full_slice["x"], full_slice["y"], s=0.45, color="#C8D0D6", alpha=0.42, linewidths=0, rasterized=True)
         h = heart
@@ -144,29 +189,16 @@ def _stack_stage(
     k40: pd.DataFrame,
     *,
     stage: str,
-    max_connectors: int = 240,
+    max_connectors: int | None = None,
 ) -> None:
     coords = _norm_xy(spot)[["spot_id", "xn", "yn"]]
-    d150 = coords.merge(k150[["spot_id", "domain_id"]], on="spot_id", how="inner")
-    d40 = coords.merge(k40[["spot_id", "domain_id"]], on="spot_id", how="inner")
     yscale = 0.34
     offsets = {"spot": 0.0, "k150": 1.0, "k40": 2.0}
 
-    rng = np.random.default_rng(17)
-    if len(coords) > max_connectors:
-        ids = rng.choice(coords.index.to_numpy(), size=max_connectors, replace=False)
-        sample = coords.loc[ids]
-    else:
-        sample = coords
-    for _, row in sample.iterrows():
-        x = row["xn"]
-        y0 = row["yn"] * yscale
-        ax.plot([x, x], [y0 + offsets["spot"], y0 + offsets["k150"]], color="#B6C0C8", alpha=0.24, linewidth=0.42, zorder=0)
-        ax.plot([x, x], [y0 + offsets["k150"], y0 + offsets["k40"]], color="#B6C0C8", alpha=0.20, linewidth=0.42, zorder=0)
-
-    ax.scatter(coords["xn"], coords["yn"] * yscale + offsets["spot"], s=2.3, color=SPOT, alpha=0.90, linewidths=0, rasterized=True, zorder=2)
-    ax.scatter(d150["xn"], d150["yn"] * yscale + offsets["k150"], s=2.4, c=_domain_colors(d150["domain_id"], "tab20"), alpha=0.90, linewidths=0, rasterized=True, zorder=2)
-    ax.scatter(d40["xn"], d40["yn"] * yscale + offsets["k40"], s=2.4, c=_domain_colors(d40["domain_id"], "tab20b"), alpha=0.90, linewidths=0, rasterized=True, zorder=2)
+    ax.scatter(coords["xn"], coords["yn"] * yscale, s=2.3, color=SPOT,
+               alpha=.90, linewidths=0, rasterized=True, zorder=2)
+    _draw_centroid_mapping(ax, spot, k150, "domain_id", 0., 1., cmap="tab20")
+    _draw_centroid_mapping(ax, spot, k40, "domain_id", 1., 2., cmap="tab20b")
     ax.text(-0.08, offsets["spot"] + 0.16, "Spot", ha="right", va="center", fontsize=8.4, color=TEXT)
     ax.text(-0.08, offsets["k150"] + 0.16, "K150", ha="right", va="center", fontsize=8.4, color=TEXT)
     ax.text(-0.08, offsets["k40"] + 0.16, "K40", ha="right", va="center", fontsize=8.4, color=TEXT)
@@ -207,32 +239,20 @@ def _inward_brace(
     text_offset: float = 0.18,
     fontsize: float = 7.6,
 ) -> None:
-    """Draw a brace on the right that unmistakably opens inward (to the left).
-
-    The brace is split into two vertical line segments.  At the midpoint the two
-    segments are connected by a V-shaped protrusion pointing left, i.e. toward the
-    hierarchy.  Top and bottom caps also point left.  This makes the direction of
-    nested braces visually identical to the outer brace and prevents overlapping
-    stems around the shared K150 level.
-    """
-
-    mid = 0.5 * (y0 + y1)
-    gap = max((y1 - y0) * gap_fraction, 0.045)
-    lw = 1.2
-    cap = depth * 0.46
-
-    # Split vertical stem.
-    ax.plot([x, x], [y0, mid - gap], color=TEXT, linewidth=lw, solid_capstyle="round")
-    ax.plot([x, x], [mid + gap, y1], color=TEXT, linewidth=lw, solid_capstyle="round")
-
-    # Top/bottom caps open toward the hierarchy (left/inward).
-    ax.plot([x - cap, x], [y0, y0], color=TEXT, linewidth=lw, solid_capstyle="round")
-    ax.plot([x - cap, x], [y1, y1], color=TEXT, linewidth=lw, solid_capstyle="round")
-
-    # Central inward protrusion: a two-line V pointing left.
-    ax.plot([x, x - depth], [mid - gap, mid], color=TEXT, linewidth=lw, solid_capstyle="round")
-    ax.plot([x - depth, x], [mid, mid + gap], color=TEXT, linewidth=lw, solid_capstyle="round")
-
+    """Continuous inward-opening brace with smooth caps and a rounded waist."""
+    mid = (y0 + y1) / 2
+    shoulder = min((y1 - y0) * .17, .20)
+    waist = min((y1 - y0) * .12, .14)
+    vertices = [
+        (x-depth, y0),
+        (x, y0), (x, y0), (x, y0+shoulder),
+        (x, mid-waist), (x-depth, mid-waist), (x-depth, mid),
+        (x-depth, mid+waist), (x, mid+waist), (x, y1-shoulder),
+        (x, y1), (x, y1), (x-depth, y1),
+    ]
+    path = MplPath(vertices, [MplPath.MOVETO] + [MplPath.CURVE4] * 12)
+    ax.add_patch(PathPatch(path, fill=False, edgecolor=TEXT, linewidth=1.15,
+                           capstyle="round", joinstyle="round"))
     ax.text(
         x + text_offset,
         mid,
@@ -259,6 +279,7 @@ def render_figure1(
     full_slice_source: pd.DataFrame | None = None,
     demo: bool = False,
     dpi: int = 300,
+    preview_notice: str | None = None,
 ) -> None:
     set_asset_style()
     fig = plt.figure(figsize=(18.6, 7.0))
@@ -284,38 +305,40 @@ def render_figure1(
     g_15040 = gains.get("K150 -> K40", np.nan)
     g_s40 = gains.get("Spot -> K40", np.nan)
     _inward_brace(
-        ax_gain, 0.08, 1.10, x=0.48,
+        ax_gain, .195, 1.145, x=0.48,
         text=(
             r"$\Delta EI$ (Spot $\rightarrow$ K150)" "\n"
             r"$= EI(K150)-EI(Spot)$" "\n"
-            f"= {g_s150:+.3f}"
+            f"= {_metric_value(g_s150)}"
         ),
         depth=0.18, text_offset=0.20, fontsize=7.3,
     )
     _inward_brace(
-        ax_gain, 1.24, 2.26, x=0.48,
+        ax_gain, 1.195, 2.145, x=0.48,
         text=(
             r"$\Delta EI$ (K150 $\rightarrow$ K40)" "\n"
             r"$= EI(K40)-EI(K150)$" "\n"
-            f"= {g_15040:+.3f}"
+            f"= {_metric_value(g_15040)}"
         ),
         depth=0.18, text_offset=0.20, fontsize=7.3,
     )
 
     # Outer brace uses exactly the same inward orientation and spans the total hierarchy.
     _inward_brace(
-        ax_gain, 0.08, 2.26, x=3.34,
+        ax_gain, .17, 2.17, x=3.34,
         text=(
             r"Total $\Delta EI$ (Spot $\rightarrow$ K40)" "\n"
             r"$= EI(K40)-EI(Spot)$" "\n"
-            f"= {g_s40:+.3f}"
+            f"= {_metric_value(g_s40)}"
         ),
         depth=0.24, text_offset=0.22, fontsize=7.5,
     )
 
     fig.suptitle("Figure 1 · EI existence across the coarse-graining hierarchy", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
     fig.text(0.02, 0.50, "coarse-graining direction", rotation=90, va="center", ha="center", fontsize=8.5, color=MUTED)
-    if demo:
+    if preview_notice:
+        fig.text(.5, .015, preview_notice, ha="center", va="bottom", fontsize=8, color="#8A5529")
+    elif demo:
         fig.text(0.99, 0.99, "EXPLORATORY REAL DATA · NOT FINAL PAPER RESULTS", ha="right", va="top", fontsize=8.5, color="#A66723")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
@@ -330,21 +353,7 @@ def _stack_stage_k10(
     """Extend the established three-layer panel without changing its styling."""
 
     _stack_stage(ax, spot, k150, k40, stage=stage)
-    coords = _norm_xy(spot)[["spot_id", "xn", "yn"]]
-    d10 = coords.merge(k10[["spot_id", "domain_id"]], on="spot_id", how="inner")
-    rng = np.random.default_rng(17)
-    sample = coords.loc[rng.choice(coords.index.to_numpy(), size=240, replace=False)] if len(coords) > 240 else coords
-    for _, row in sample.iterrows():
-        ax.plot(
-            [row["xn"], row["xn"]],
-            [row["yn"] * 0.34 + 2.0, row["yn"] * 0.34 + 3.0],
-            color="#B6C0C8", alpha=0.20, linewidth=0.42, zorder=0,
-        )
-    ax.scatter(
-        d10["xn"], d10["yn"] * 0.34 + 3.0, s=2.4,
-        c=_domain_colors(d10["domain_id"], "tab10"), alpha=0.90,
-        linewidths=0, rasterized=True, zorder=2,
-    )
+    _draw_centroid_mapping(ax, spot, k10, "domain_id", 2., 3., cmap="tab10")
     ax.text(-0.08, 3.16, "K10", ha="right", va="center", fontsize=8.4, color=TEXT)
     ax.set_ylim(-0.12, 3.46)
 
@@ -357,10 +366,11 @@ def render_figure1_k10(
     source_k10: pd.DataFrame, target_k10: pd.DataFrame,
     gains: Mapping[str, float], output_path: Path,
     full_slice_source: pd.DataFrame | None = None, demo: bool = False, dpi: int = 300,
+    preview_notice: str | None = None,
 ) -> None:
     set_asset_style()
-    fig = plt.figure(figsize=(22.8, 9.2))
-    gs = fig.add_gridspec(1, 5, width_ratios=[1.30, 2.35, 0.58, 2.35, 4.55], wspace=0.18)
+    fig = plt.figure(figsize=(23.8, 9.2))
+    gs = fig.add_gridspec(1, 5, width_ratios=[1.30, 2.35, 0.58, 2.35, 5.55], wspace=0.18)
     ax_context, ax_source, ax_arrow, ax_target, ax_gain = (
         fig.add_subplot(gs[0, index]) for index in range(5)
     )
@@ -371,28 +381,30 @@ def render_figure1_k10(
     ax_arrow.annotate("", xy=(0.89, 3.17), xytext=(0.11, 3.17), arrowprops=dict(arrowstyle="->", color=TEAL_DARK, linewidth=1.35))
     ax_arrow.text(0.5, 3.31, "Pij", ha="center", va="bottom", fontsize=8.0, fontweight="bold", color=TEXT)
     ax_arrow.set_ylim(-0.12, 3.46)
-    ax_gain.set_xlim(0, 9.2)
+    ax_gain.set_xlim(0, 11.2)
     ax_gain.set_ylim(-0.12, 3.46)
     _clean(ax_gain)
     braces = (
-        ("Spot -> K150", 0.08, 1.10, 0.45),
-        ("K150 -> K40", 1.24, 2.26, 0.45),
-        ("K40 -> K10", 2.40, 3.42, 0.45),
-        ("Spot -> K40", 0.08, 2.26, 3.00),
-        ("K150 -> K10", 1.24, 3.42, 3.00),
-        ("Spot -> K10", 0.08, 3.42, 6.10),
+        ("Spot -> K150", .195, 1.145, 0.45),
+        ("K150 -> K40", 1.195, 2.145, 0.45),
+        ("K40 -> K10", 2.195, 3.145, 0.45),
+        ("Spot -> K40", .17, 2.17, 3.05),
+        ("K150 -> K10", 1.17, 3.17, 5.75),
+        ("Spot -> K10", .17, 3.17, 8.45),
     )
     for label, y0, y1, x in braces:
         value = float(gains[label])
         pretty_label = label.replace(" -> ", r" $\rightarrow$ ")
         _inward_brace(
             ax_gain, y0, y1, x=x,
-            text=f"$\\Delta EI$ ({pretty_label})\n= {value:+.3f}",
+            text=f"$\\Delta EI$ ({pretty_label})\n= {_metric_value(value)}",
             depth=0.18, text_offset=0.20, fontsize=7.3,
         )
     fig.suptitle("Figure 1 · EI existence across the extended coarse-graining hierarchy", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
     fig.text(0.02, 0.50, "coarse-graining direction", rotation=90, va="center", ha="center", fontsize=8.5, color=MUTED)
-    if demo:
+    if preview_notice:
+        fig.text(.5, .015, preview_notice, ha="center", va="bottom", fontsize=8, color="#8A5529")
+    elif demo:
         fig.text(0.99, 0.99, "EXPLORATORY REAL DATA · NOT FINAL PAPER RESULTS", ha="right", va="top", fontsize=8.5, color="#A66723")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
@@ -411,23 +423,15 @@ def _draw_optimal_stage(
     assignments: pd.DataFrame,
     stage: str,
     *,
-    max_connectors: int = 300,
+    max_connectors: int | None = None,
     show_layer_labels: bool = True,
 ) -> int:
     coords = _norm_xy(spot)[["spot_id", "xn", "yn"]]
-    macro = _assignment_layer(spot, assignments)
-    yscale = 0.43
-    rng = np.random.default_rng(29)
-    if len(coords) > max_connectors:
-        sample = coords.loc[rng.choice(coords.index.to_numpy(), size=max_connectors, replace=False)]
-    else:
-        sample = coords
-    for _, row in sample.iterrows():
-        y = row["yn"] * yscale
-        ax.plot([row["xn"], row["xn"]], [y, y + 1.35], color="#B6C0C8", alpha=0.20, linewidth=0.40, zorder=0)
-    ax.scatter(coords["xn"], coords["yn"] * yscale, s=2.5, color=SPOT, alpha=0.90, linewidths=0, rasterized=True)
-    ax.scatter(macro["xn"], macro["yn"] * yscale + 1.35, s=3.2, c=_domain_colors(macro["hard_cluster"], "tab20"), alpha=0.94, linewidths=0, rasterized=True)
-    hardk = int(macro["hard_cluster"].nunique())
+    yscale = .43
+    ax.scatter(coords.xn, coords.yn * yscale, s=2.5, color=SPOT,
+               alpha=.90, linewidths=0, rasterized=True, zorder=2)
+    hardk = _draw_centroid_mapping(ax, spot, assignments, "hard_cluster", 0., 1.35,
+                                    yscale=yscale, cmap="tab20")
     if show_layer_labels:
         # One shared set of layer labels is enough; suppressing them on the target
         # panel prevents any collision with the PIJ arrow column.
@@ -454,6 +458,9 @@ def render_figure2(
     full_slice_source: pd.DataFrame | None = None,
     demo: bool = False,
     dpi: int = 300,
+    preview_notice: str | None = None,
+    input_label: str = "Spot",
+    organ: str = "heart",
 ) -> None:
     """Render optimal coarse-graining with the same inward-brace grammar as Figure 1."""
 
@@ -466,7 +473,7 @@ def render_figure2(
     ax_target = fig.add_subplot(gs[0, 3])
     ax_metric = fig.add_subplot(gs[0, 4])
 
-    draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample")
+    draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample", organ=organ)
     kt = _draw_optimal_stage(ax_source, source_spot, source_assignments, source_stage, show_layer_labels=True)
     ktp = _draw_optimal_stage(ax_target, target_spot, target_assignments, target_stage, show_layer_labels=False)
 
@@ -483,11 +490,11 @@ def render_figure2(
 
     # Exactly the same inward-opening brace used by Figure 1.
     _inward_brace(
-        ax_metric, 0.08, 1.82, x=0.48,
+        ax_metric, .215, 1.565, x=0.48,
         text=(
-            r"$\Delta EI$ (Spot $\rightarrow$ Optimal Macro)" "\n"
-            r"$= EI(Macro)-EI(Spot)$" "\n"
-            f"= {delta_ei:+.3f}"
+            f"$\\Delta EI$ ({input_label} $\\rightarrow$ Optimal Macro)" "\n"
+            f"$= EI(Macro)-EI({input_label})$" "\n"
+            f"= {_metric_value(delta_ei)}"
         ),
         depth=0.22, text_offset=0.25, fontsize=7.7,
     )
@@ -497,13 +504,15 @@ def render_figure2(
         ha="left", va="top", fontsize=8.2, fontweight="bold", color=TEXT,
     )
 
-    fig.suptitle("Figure 2 · Learned optimal coarse-graining over the heart region", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
+    fig.suptitle(f"Figure 2 · Learned optimal coarse-graining over the {organ} region", x=0.52, y=0.985, fontsize=15, fontweight="bold", color=TEAL_DARK)
     fig.subplots_adjust(bottom=0.16, top=0.88)
     fig.text(
         0.60, 0.055, f"Method: {method_label}",
         ha="center", va="center", fontsize=7.2, color=MUTED,
     )
-    if demo:
+    if preview_notice:
+        fig.text(.5, .015, preview_notice, ha="center", va="bottom", fontsize=8, color="#8A5529")
+    elif demo:
         fig.text(0.99, 0.99, "EXPLORATORY REAL DATA · NOT FINAL PAPER RESULTS", ha="right", va="top", fontsize=8.2, color=MUTED)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")

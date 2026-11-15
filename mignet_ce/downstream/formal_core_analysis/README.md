@@ -1,3 +1,59 @@
+# Formal Core Analysis：当前正式流程（2026-11-15）
+
+当前最优粗粒化流程仅运行 `formal_two_stage`，并严格核验协议 `formal_two_stage_main`。
+默认器官顺序为 Lung / Brain / Heart；每个器官覆盖 Spot、K150、K40 三种输入以及三个时间对，合计 27 组。
+K 配置沿用 Spot→40、K150→40、K40→10。`--organs heart` 可单独选择器官。
+旧方法标签、兼容函数和历史输出保留，但不会进入当前最优表或被用于当前训练。
+
+## 当前两张最优表
+
+每张表有器官×输入尺度 9 行，三个时间对分组列；输出 CSV、PNG、PDF：
+
+- `tables/table_optimal_deltaei_cq.*`：每个时间对下为训练 checkpoint 的 ΔEI（bits）、原始 induced CQ。
+- `tables/table_optimal_js_hardk_keffhard.*`：每个时间对下为 direct JS（bits）、源时间点 Gap、目标时间点 Gap。
+- Gap = HardK − KeffHard。HardK 为 argmax 硬分配的非空簇数；KeffHard 为其成员计数占比的熵指数。两端分别从持久化 S 矩阵核验，不使用 soft Keff 替代。
+- JS 使用保存的训练微观 PIJ、两端 S 和训练宏观 PIJ；CQ 使用原有 induced 信息预算口径。
+- 方法/器官/协议不符、缺失、重复或非有限值均拒绝作为完整表输出；不会择优挑选 seed。
+- 审计文件 `audit/trained_optimal_run_inventory.csv` 包含器官、协议、两端 HardK、KeffHard 和 Gap。
+
+仅从正式训练结果生成最优表，不依赖自然 sensitivity：
+
+```bash
+python -m mignet_ce.downstream.formal_core_analysis --stage optimal --data-root /path/to/E1S1_domain_factory --optimal-runs-root /path/to/formal_analysis/optimal_runs --output-root /path/to/formal_analysis --skip-figures
+```
+
+训练全部三器官并汇总最优表：
+
+```bash
+python -m mignet_ce.downstream.formal_core_analysis.run_pipeline --stage optimal --data-root /path/to/E1S1_domain_factory --grn-root /path/to/grn --cci-root /path/to/cci --developmental-root /path/to/developmental_features --output-root /path/to/formal_analysis --maturity-mode existing --epochs 1500 --device cuda --resume
+```
+
+先加 `--dry-run` 可只读检查并打印训练命令。不同器官结果隔离在
+`optimal_runs/<organ>/formal_two_stage/<scale>/K<k>/<source>_to_<target>/`。
+GRN/CCI/发育输入仍使用项目已有的按器官命名规则。
+`--stage all` 额外需要 `--sensitivity-root` 并生成原有心脏自然层级表与 Figure 1。
+Figure 2 明确选择 `--figure-organ heart --figure-input-scale spot --figure-pair '12.5->13.5'`，不按方法名排序选结果。
+
+## 图形与预览
+
+括弧为连续圆滑曲线；Spot→K40、K150→K10、Spot→K10 使用独立横向位置。
+每个低层级 spot 均连接到其所属高层级分组的空间质心；高层级保留淡色组织轮廓并突出质心。
+自然层级按 spot_id 对齐各尺度标签，不假定分组严格嵌套。Figure 2 使用训练硬分配展开到 spot 后计算空间质心。
+空间质心只用于绘图；指标按真实训练输入节点计算，不能用展开后的 spot 数量重算占用指标。
+
+```bash
+python -m mignet_ce.downstream.formal_core_analysis.preview --output-root /path/to/new_empty_preview --data-root /path/to/E1S1_domain_factory
+```
+
+省略 `--data-root` 仅预览两张表；表格以 `—` 占位，不产生科学 CSV。
+可附加 `--optimal-run /path/to/run --optimal-scale seurat_k150 --optimal-pair '11.5->12.5'` 预览指定 checkpoint。
+旧 checkpoint 会明确标为历史方法，不会作为正式表输入。已有非空预览目录拒绝覆盖。
+所有历史结果保留；收集器不执行自动清理。
+
+---
+
+以下为历史五方法版本说明，命令、输出名称和条件数量以以上当前流程为准。
+
 # Formal Core Analysis：五方法与 Closure JS Direct Bits（2026-11 增量）
 
 本模块保留原 single-stage / two-stage 方法，增加三个项目内实现的对照方法，统一生成 ΔEI / Keff、CQ 和 Closure JS Direct（bits）表。两种来源的 JS 口径相同，但输入来源不同，不与 CQ 或 Strict Reconstruction 混同。

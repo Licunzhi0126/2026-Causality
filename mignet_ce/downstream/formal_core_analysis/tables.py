@@ -9,8 +9,10 @@ import math
 import re
 import pandas as pd
 import numpy as np
-from .methods import METHODS
-from mignet_ce.coarse_frontends.method_specs import RETIRED_COARSE_METHODS
+from .methods import METHODS, LEGACY_METHODS, ORGANS
+from mignet_ce.coarse_frontends.method_specs import (
+    RETIRED_COARSE_METHODS, FORMAL_TWO_STAGE_PROTOCOL, validate_formal_protocol,
+)
 
 LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
           ("K150 -> K40", "seurat_k150", "seurat_k40"),
@@ -21,6 +23,43 @@ LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
 SCALES = ("spot", "seurat_k150", "seurat_k40")
 PAIRS = ("11.5->12.5", "12.5->13.5", "11.5->13.5")
 TRAINED_DELTA_KEY = "trained_delta_EI"
+OPTIMAL_TABLES = {
+    "table_optimal_deltaei_cq": ("trained_delta_EI", "CQ_raw"),
+    "table_optimal_js_hardk_keffhard": (
+        "closure_JS_direct_bits", "HardK_minus_KeffHard_t", "HardK_minus_KeffHard_tp"),
+}
+
+
+def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, organs=ORGANS) -> pd.DataFrame:
+    """Organ × input scale rows, with one measured set of metrics per time pair."""
+    organs = tuple(organs)
+    if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
+        raise ValueError("Select unique supported organs")
+    required = {"method", "organ", "input_scale", "time_pair", "loss_protocol", *metrics}
+    if not required <= set(frame):
+        raise ValueError(f"Missing optimal report fields: {sorted(required - set(frame))}")
+    rows = []
+    for organ in organs:
+        for scale in SCALES:
+            row = {"Organ": organ, "Input scale": scale}
+            for pair in PAIRS:
+                hit = frame.loc[frame.method.eq("formal_two_stage") & frame.organ.eq(organ)
+                                 & frame.input_scale.eq(scale) & frame.time_pair.eq(pair)]
+                if len(hit) != 1:
+                    raise ValueError(f"{'Missing' if hit.empty else 'Duplicate'} run for {organ}/{scale}/{pair}; select one seed explicitly")
+                record = hit.iloc[0]
+                validate_formal_protocol(record.loss_protocol)
+                for metric in metrics:
+                    value = float(record[metric])
+                    if not np.isfinite(value):
+                        raise ValueError(f"Non-finite {metric} for {organ}/{scale}/{pair}")
+                    if metric != "trained_delta_EI" and value < -1e-9:
+                        raise ValueError(f"Negative {metric} for {organ}/{scale}/{pair}")
+                    if metric in {"CQ_raw", "closure_JS_direct_bits"} and value > 1 + 1e-6:
+                        raise ValueError(f"Out-of-range {metric} for {organ}/{scale}/{pair}")
+                    row[f"{pair}::{metric}"] = value
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _json(p: Path) -> dict:
@@ -112,7 +151,7 @@ def _infer_run_descriptors(run: Path, summary: dict, config: dict) -> dict:
     """Trust explicit saved metadata only; never infer a paper row from folder spelling."""
     merged = {**config, **summary}
     method = merged.get("method")
-    if method not in METHODS:
+    if method not in (*METHODS, *LEGACY_METHODS):
         raise ValueError(f"No valid method in saved summary: {run}")
     scale = next((merged[k] for k in ("input_scale", "layer", "coarse_scale") if k in merged), None)
     pair = next((merged[k] for k in ("time_pair", "pair") if k in merged), None)
@@ -120,7 +159,8 @@ def _infer_run_descriptors(run: Path, summary: dict, config: dict) -> dict:
         pair = f"{pair[0]}->{pair[1]}"
     if pair is not None:
         pair = str(pair).replace(":", "->").replace("_to_", "->")
-    return {"method": method, "input_scale": scale, "time_pair": pair}
+    return {"method": method, "input_scale": scale, "time_pair": pair,
+            "organ": merged.get("organ")}
 
 
 def inspect_optimal_run(run_dir: Path) -> dict:
@@ -135,19 +175,51 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     config_path = next((p/f for f in ("pilot_config.json", "config.json") if (p/f).is_file()), None)
     config = _json(config_path) if config_path else {}
     desc = _infer_run_descriptors(p, summary, config)
+    if desc["method"] == "formal_two_stage":
+        validate_formal_protocol(summary.get("loss_protocol"))
+        validate_formal_protocol(config.get("objective_version"))
+        if (summary.get("selected_checkpoint") != "best_joint.pt"
+                or summary.get("checkpoint_metric_state_consistent") is not True
+                or not (p / "best_joint.pt").is_file()):
+            raise ValueError(f"Formal Stage 2 checkpoint was not verified: {p}")
     provenance = feature.get("provenance", {})
     input_t = provenance.get("h5ad_t", "")
     input_tp = provenance.get("h5ad_tp", "")
+    if desc["method"] == "formal_two_stage":
+        if feature.get("method", desc["method"]) != desc["method"]:
+            raise ValueError(f"Feature manifest method identity mismatch: {p}")
+        if "loss_protocol" in provenance:
+            validate_formal_protocol(provenance["loss_protocol"])
+    source_scales = {scale for path in (input_t, input_tp) for scale in SCALES
+                     if f"/{scale}/" in str(path).replace("\\", "/")}
+    if len(source_scales) > 1 or (desc["input_scale"] and source_scales
+                                and desc["input_scale"] not in source_scales):
+        raise ValueError(f"Conflicting source input scales in saved metadata: {p}")
     if desc["input_scale"] is None:
         desc["input_scale"] = next((scale for scale in SCALES if f"/{scale}/" in str(input_t).replace("\\", "/")), None)
     if desc["time_pair"] is None and input_t and input_tp:
         # Exact time points taken from paths recorded by the completed source loader.
-        match_t = re.search(r"_heart_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
-        match_tp = re.search(r"_heart_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
+        match_t = re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
+        match_tp = re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
         if match_t and match_tp:
             desc["time_pair"] = f"{match_t.group(1)}->{match_tp.group(1)}"
+    recorded_times = [re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(path))
+                      for path in (input_t, input_tp)]
+    if all(recorded_times) and desc["time_pair"] != "->".join(match.group(1) for match in recorded_times):
+        raise ValueError(f"Conflicting source time pair in saved metadata: {p}")
     if desc["input_scale"] not in SCALES or desc["time_pair"] not in PAIRS:
         raise ValueError(f"Could not verify source input scale/time pair from saved manifest: {p}")
+    source_organs = []
+    for saved_input in (input_t, input_tp):
+        match = re.search(r"_(heart|lung|brain)_\d+(?:\.\d+)?\.h5ad$", str(saved_input))
+        if match:
+            source_organs.append(match.group(1))
+    identities = set(source_organs + ([desc["organ"]] if desc["organ"] else []))
+    if len(identities) > 1:
+        raise ValueError(f"Conflicting organ identities in saved inputs: {p}")
+    desc["organ"] = next(iter(identities), None)
+    if desc["method"] == "formal_two_stage" and desc["organ"] not in ORGANS:
+        raise ValueError(f"Cannot verify organ identity from saved metadata: {p}")
     cci = provenance.get("cci_feature_method")
     alpha = provenance.get("alpha_cci")
     if cci != "laplacian_hks" or provenance.get("grn_feature_method") != "legacy_nmf" or alpha is None or not np.isclose(float(alpha), .20):
@@ -182,11 +254,18 @@ def inspect_optimal_run(run_dir: Path) -> dict:
         if not required_path.is_file():
             raise FileNotFoundError(f"Cannot recompute induced CQ without saved micro PIJ/S: {required_path}")
     micro, st, stp = (np.load(fp, allow_pickle=False) for fp in (micro_path, st_path, stp_path))
+    if any(arr.ndim != 2 or min(arr.shape) == 0 for arr in (micro, st, stp)):
+        raise ValueError(f"Invalid micro PIJ/assignment dimensions: {p}")
+    if macro_pij.shape != (st.shape[1], stp.shape[1]):
+        raise ValueError(f"Macro PIJ/S shape mismatch: {p}")
     if micro.shape != (st.shape[0], stp.shape[0]):
         raise ValueError(f"Micro PIJ/S shape mismatch: {p}")
     if not np.all(np.isfinite(micro)) or not np.all(np.isfinite(st)) or not np.all(np.isfinite(stp)):
         raise ValueError(f"Non-finite micro PIJ or learned assignment: {p}")
+    occupancy = {}
     for arr, label in ((st, "t"), (stp, "tp")):
+        if np.any(arr < 0):
+            raise ValueError(f"Negative assignment probabilities: {p}")
         if not np.allclose(arr.sum(axis=1), 1.0, atol=1e-4):
             raise ValueError(f"Assignment not row stochastic at {label}: {p}")
         usage = np.maximum(arr.mean(axis=0), 1e-12)
@@ -194,6 +273,18 @@ def inspect_optimal_run(run_dir: Path) -> dict:
         verified_keff = float(np.exp(-np.sum(usage*np.log(usage))))
         if not np.isclose(verified_keff, float(summary[f"Keff_{label}"]), atol=1e-3, rtol=0):
             raise ValueError(f"Recomputed Keff_{label} mismatch at {p}")
+        _, counts = np.unique(arr.argmax(axis=1), return_counts=True)
+        hard_k = len(counts)
+        usage_hard = counts / counts.sum()
+        keff_hard = float(np.exp(-np.sum(usage_hard * np.log(usage_hard))))
+        if desc["method"] == "formal_two_stage":
+            if summary.get(f"hardK_{label}") != hard_k or not np.isclose(
+                    float(summary.get(f"KeffHard_{label}", np.nan)), keff_hard, atol=1e-4, rtol=0):
+                raise ValueError(f"Recomputed hard occupancy {label} mismatch: {p}")
+        occupancy.update({f"hardK_{label}": hard_k, f"KeffHard_{label}": keff_hard,
+                          f"HardK_minus_KeffHard_{label}": max(0., hard_k - keff_hard)})
+    if not np.isclose(effective_information(micro.copy()), float(summary["EI_micro_fixed"]), atol=2e-4, rtol=0):
+        raise ValueError(f"Saved micro PIJ / EI_micro summary mismatch: {p}")
     budget = information_closure_budget(micro, st, stp)
     # Direct prediction uses the persisted TRAINED macro kernel, not induced Q.
     from .closure_js import direct_js_bits
@@ -223,7 +314,9 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             summary, available=float(budget["I_available_bits"]),
             retained=float(budget["I_macro_retained_bits"]), k=k_value, run_dir=p,
         )
-    return {"method": desc["method"], "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
+    return {"method": desc["method"], "organ": desc["organ"],
+            "loss_protocol": summary.get("loss_protocol"),
+            "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
             "K": summary.get("K"), "trained_delta_EI": float(raw),
             "keff_policy": expected_policy,
@@ -237,6 +330,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             "checkpoint_keff_min": checkpoint_keff_min_resolved,
             "Keff_t": float(summary["Keff_t"]), "Keff_tp": float(summary["Keff_tp"]),
             "hardK_t": summary.get("hardK_t"), "hardK_tp": summary.get("hardK_tp"),
+            **occupancy,
             "CQ_induced": float(budget["closure_quality"]),
             "I_available_bits": float(budget["I_available_bits"]),
             "I_retained_bits": float(budget["I_macro_retained_bits"]),
@@ -264,7 +358,7 @@ def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
     for run in runs:
         try:
             # Historical retired results remain on disk but do not enter active tables.
-            if _json(run / "summary.json").get("method") in RETIRED_COARSE_METHODS:
+            if _json(run / "summary.json").get("method") not in METHODS:
                 continue
             good.append(inspect_optimal_run(run))
         except (ValueError, FileNotFoundError) as exc:

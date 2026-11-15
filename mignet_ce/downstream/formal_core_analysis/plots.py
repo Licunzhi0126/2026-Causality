@@ -12,6 +12,76 @@ import matplotlib.pyplot as plt
 from .methods import METHOD_LABELS
 
 
+def save_optimal_table(frame: pd.DataFrame, path: Path, *, metrics: tuple[str, ...],
+                       organs=None, preview: bool = False) -> None:
+    """Two-level time-pair headers; organ groups and explicit endpoint labels."""
+    from .methods import ORGANS, ORGAN_LABELS
+    from .tables import PAIRS, SCALES
+    from matplotlib.patches import Rectangle
+    organs = tuple(ORGANS if organs is None else organs)
+    columns = ["Organ", "Input scale"] + [f"{pair}::{metric}" for pair in PAIRS for metric in metrics]
+    if list(frame.columns) != columns or list(zip(frame.Organ, frame["Input scale"])) != [
+            (organ, scale) for organ in organs for scale in SCALES]:
+        raise ValueError("Expected canonical organ-scale report layout")
+    rendered = frame.copy()
+    for col in columns[2:]:
+        if preview:
+            if not frame[col].eq("—").all():
+                raise ValueError("Layout previews must use placeholders only")
+        else:
+            values = pd.to_numeric(frame[col], errors="raise")
+            if not np.isfinite(values).all():
+                raise ValueError("No missing/invalid metric may be rendered")
+            pattern = "{:+.4f}" if col.endswith("::trained_delta_EI") else "{:.4f}"
+            rendered[col] = values.map(pattern.format)
+    occupancy = len(metrics) == 3
+    widths = [1.35, 1.30] + ([1.28, 1.72, 1.72] if occupancy else [1.65, 1.45]) * len(PAIRS)
+    xs = np.r_[0, np.cumsum(widths)]
+    n = len(frame)
+    fig, ax = plt.subplots(figsize=(float(xs[-1]) + .6, .47 * (n + 2) + 1.8))
+    fig.subplots_adjust(left=.025, right=.975, bottom=.12, top=.77)
+    ax.set_xlim(0, xs[-1]); ax.set_ylim(0, n + 2); ax.axis("off")
+    ink, border = "#203A50", "#CED7DE"
+    def cell(col, bottom, text="", *, height=1, span=1, fill="white", bold=False, size=10.5):
+        width = sum(widths[col:col + span])
+        ax.add_patch(Rectangle((xs[col], bottom), width, height, facecolor=fill,
+                               edgecolor=border, linewidth=.6))
+        ax.text(xs[col] + width / 2, bottom + height / 2, text, ha="center", va="center",
+                fontsize=size, color=ink, weight="bold" if bold else "normal")
+    for col, label in enumerate(("Organ", "Input scale")):
+        cell(col, n, label, height=2, fill="#EDF3F7", bold=True)
+    for i, pair in enumerate(PAIRS):
+        start = 2 + i * len(metrics)
+        cell(start, n + 1, "E" + pair.replace("->", " → E"), span=len(metrics), fill="#E3EDF4", bold=True, size=11)
+        source, target = pair.split("->")
+        labels = (["JS (bits)", f"Gap @ E{source}", f"Gap @ E{target}"] if occupancy else ["ΔEI (bits)", "CQ"])
+        for j, label in enumerate(labels):
+            cell(start + j, n, label, fill="#F2F6F9", size=10)
+    scale_labels = {"spot": "Spot", "seurat_k150": "K150", "seurat_k40": "K40"}
+    for i, (_, row) in enumerate(rendered.iterrows()):
+        fill = "white" if (i // 3) % 2 == 0 else "#F8FAFC"
+        bottom = n - i - 1
+        cell(1, bottom, scale_labels[row["Input scale"]], fill=fill)
+        for j, column in enumerate(columns[2:]):
+            cell(j + 2, bottom, str(row[column]), fill=fill)
+    for i, organ in enumerate(organs):
+        cell(0, n - (i + 1) * len(SCALES), ORGAN_LABELS[organ], height=len(SCALES),
+             fill="#F0F5F8", bold=True, size=11.5)
+    title = "JS and hard-state occupancy" if occupancy else "Information gain and closure quality"
+    fig.text(.025, .965, ("LAYOUT PREVIEW · " if preview else "") + "Formal two-stage | " + title,
+             fontsize=17, color=ink, va="top")
+    subtitle = ("Gap = HardK − KeffHard · source and target endpoints shown separately · JS in bits"
+                if occupancy else "ΔEI from the saved trained macro PIJ · CQ = I retained / I available")
+    fig.text(.025, .885, subtitle, fontsize=10.5, color="#526778", va="top")
+    fig.text(.025, .045, "Layout only · — = not computed · no experiments run" if preview else
+             "Protocol: formal_two_stage_main · verified checkpoint arrays · no additional checkpoint selection",
+             fontsize=9.5, color="#8A5529" if preview else "#526778")
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path.with_suffix(".png"), dpi=200, bbox_inches="tight", facecolor="white")
+    fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def _merge_group_column_visually(ax, fig, table, rendered: list[list[str]], group_col: int) -> None:
     """Draw a true-looking vertically merged cell for consecutive equal labels.
 
@@ -198,9 +268,9 @@ def _save_triplet_layout(frame: pd.DataFrame, path: Path, *, title: str, subtitl
     plt.close(fig)
 
 
-def _coordinates(data_root: Path, scale: str, time: str) -> pd.DataFrame:
+def _coordinates(data_root: Path, scale: str, time: str, organ: str = "heart") -> pd.DataFrame:
     stem={"seurat_k150":"seurat150","seurat_k40":"seurat","seurat_k10":"seurat10"}[scale]
-    path=Path(data_root)/scale/"heart"/f"{stem}_heart_{time}_spot_domain_map.csv"
+    path=Path(data_root)/scale/organ/f"{stem}_{organ}_{time}_spot_domain_map.csv"
     if not path.is_file():
         raise FileNotFoundError(f"Real coordinate map is required: {path}")
     df=pd.read_csv(path, dtype={"spot_id":str,"domain_id":str})
@@ -224,12 +294,12 @@ def _plot_layer(ax, df: pd.DataFrame, labels: pd.Series, title: str, cmap: str="
 from .paper_figure_layouts import render_figure1, render_figure1_k10, render_figure2
 
 
-def _stage_data(data_root:Path, stage:str, scale:str) -> pd.DataFrame:
-    d=_coordinates(data_root,scale,stage)
+def _stage_data(data_root:Path, stage:str, scale:str, organ: str = "heart") -> pd.DataFrame:
+    d=_coordinates(data_root,scale,stage,organ)
     return d[["spot_id","domain_id","x","y"]]
 
 
-def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, path: Path, *, require_k10: bool=True, draft: bool=False) -> None:
+def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, path: Path, *, require_k10: bool=True, draft: bool=False, preview_notice: str | None = None) -> None:
     match=ei_grid[ei_grid["Time pair"].eq(time_pair)]
     if len(match)!=1:raise ValueError("Missing measured time pair " + time_pair)
     gains={col.replace(" -> "," -> "):float(match.iloc[0][col]) for col in match.columns if "->" in col and col!="Time pair"}
@@ -238,24 +308,27 @@ def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, 
             source_spot=_stage_data(data_root,t,"seurat_k40"),target_spot=_stage_data(data_root,tp,"seurat_k40"),
             source_k150=_stage_data(data_root,t,"seurat_k150"),target_k150=_stage_data(data_root,tp,"seurat_k150"),
             source_k40=_stage_data(data_root,t,"seurat_k40"),target_k40=_stage_data(data_root,tp,"seurat_k40"),
-            gains=gains,output_path=Path(path).with_suffix(".png"),demo=draft)
+            gains=gains,output_path=Path(path).with_suffix(".png"),demo=draft,preview_notice=preview_notice)
     if require_k10:
         kw.update(source_k10=_stage_data(data_root,t,"seurat_k10"),target_k10=_stage_data(data_root,tp,"seurat_k10"))
         render_figure1_k10(**kw)
     else:render_figure1(**kw)
 
 
-def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, trained_delta: float, path: Path, *, draft: bool=False) -> None:
+def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, trained_delta: float, path: Path, *, draft: bool=False, organ: str = "heart", method_label: str = "Formal two-stage", preview_notice: str | None = None) -> None:
     t,tp=time_pair.split("->")
     stage_assignments=[]
     for stage,filename in ((t,"assignments_t.csv"),(tp,"assignments_tp.csv")):
-        d=_stage_data(data_root,stage,"seurat_k40")
+        d=_stage_data(data_root,stage,"seurat_k40",organ)
         ass=pd.read_csv(Path(run_dir)/filename,dtype={"spot_id":str})
         if not {"spot_id","hard_cluster"} <= set(ass):raise ValueError(f"Invalid assignment file {filename}")
+        if ass.spot_id.duplicated().any() or ass.hard_cluster.isna().any():
+            raise ValueError(f"Duplicate or missing assignment in {filename}")
         if input_scale=="spot": mapped=d.spot_id.map(ass.set_index("spot_id").hard_cluster)
         else:
-            lookup=_stage_data(data_root,stage,input_scale).set_index("spot_id").domain_id
+            lookup=_stage_data(data_root,stage,input_scale,organ).set_index("spot_id").domain_id
             mapped=d.spot_id.map(lookup).map(ass.set_index("spot_id").hard_cluster)
         if mapped.isna().any():raise ValueError(f"Missing {mapped.isna().sum()} assignments")
         stage_assignments.append(pd.DataFrame({"spot_id":d.spot_id,"hard_cluster":mapped.to_numpy()}))
-    render_figure2(source_stage=t,target_stage=tp,source_spot=_stage_data(data_root,t,"seurat_k40"),target_spot=_stage_data(data_root,tp,"seurat_k40"),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=trained_delta,method_label=f"{input_scale} · saved trained PIJ",output_path=Path(path).with_suffix(".png"),demo=draft)
+    input_label = {"spot":"Spot", "seurat_k150":"K150", "seurat_k40":"K40"}[input_scale]
+    render_figure2(source_stage=t,target_stage=tp,source_spot=_stage_data(data_root,t,"seurat_k40",organ),target_spot=_stage_data(data_root,tp,"seurat_k40",organ),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=trained_delta,method_label=f"{method_label} · {input_label} input · saved trained PIJ",input_label=input_label,organ=organ,output_path=Path(path).with_suffix(".png"),demo=draft,preview_notice=preview_notice)

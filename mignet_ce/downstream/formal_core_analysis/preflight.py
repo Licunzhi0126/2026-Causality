@@ -11,7 +11,7 @@ from .closure_js import natural_js_grid
 from .methods import expected_conditions
 
 
-def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path | None,
+def _inspect_natural_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path | None,
                    alpha: float, grn_method: str, figure_pair: str, skip_figures: bool,
                    stage: str = "all") -> dict:
     if stage not in {"all", "natural"}:
@@ -95,3 +95,57 @@ def inspect_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path |
         "issues": issues, "cautions": cautions,
         "does_not_train_optimal_models": True,
     }
+
+
+def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
+                   figure_pair, skip_figures, stage="all", *, organs=None,
+                   figure_organ="heart", figure_input_scale="spot"):
+    """Audit natural assets independently from the selected formal organ matrix."""
+    from .methods import ORGANS
+    from .tables import OPTIMAL_TABLES, build_optimal_report_grid
+    organs = tuple(ORGANS if organs is None else organs)
+    if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
+        raise ValueError("Select unique supported organs")
+    if stage not in {"all", "natural", "optimal"}:
+        raise ValueError(f"Unknown formal core stage: {stage}")
+    if stage != "optimal":
+        report = _inspect_natural_inputs(sensitivity_root, data_root, None, alpha,
+                                        grn_method, figure_pair, skip_figures, stage="natural")
+    else:
+        report = {"pipeline":"formal_core_analysis", "issues":[], "cautions":[],
+                  "missing_ei_conditions":[], "missing_natural_direct_js":[],
+                  "missing_spatial_maps":[], "ready_for_publication_candidate":True,
+                  "ready_for_incomplete_preview":True}
+    report.update(stage=stage, organs=list(organs), methods=list(METHODS),
+                  expected_optimal_runs=expected_conditions(SCALES, PAIRS, organs),
+                  does_not_train_optimal_models=True)
+    if stage == "natural":
+        return report
+    runs, rejected = collect_optimal_runs(optimal_root) if optimal_root else (None, ["No optimal run root supplied"])
+    selected = runs.loc[runs.organ.isin(organs)] if runs is not None and not runs.empty else None
+    valid = set() if selected is None else set(zip(selected.organ, selected.input_scale, selected.time_pair))
+    missing = [f"{organ}/{scale}/{pair}" for organ in organs for scale in SCALES for pair in PAIRS
+               if (organ, scale, pair) not in valid]
+    if selected is not None and not missing:
+        try:
+            for metrics in OPTIMAL_TABLES.values():
+                build_optimal_report_grid(selected, metrics, organs=organs)
+        except ValueError as exc:
+            report["issues"].append(str(exc))
+    if not skip_figures:
+        if (figure_organ, figure_input_scale, figure_pair) not in valid:
+            report["issues"].append("Selected Figure 2 run is unavailable")
+        else:
+            for time in figure_pair.split("->"):
+                for scale in {"seurat_k40", figure_input_scale} - {"spot"}:
+                    try:
+                        _coordinates(data_root, scale, time, figure_organ)
+                    except (FileNotFoundError, ValueError) as exc:
+                        report["missing_spatial_maps"].append(str(exc))
+    report.update(optimal_run_root=str(optimal_root) if optimal_root else None,
+                  trained_optimal_runs=0 if selected is None else len(selected),
+                  missing_optimal_conditions=missing, rejected_runs=rejected)
+    report["ready_for_publication_candidate"] = (report["ready_for_publication_candidate"] and not missing
+                                                and not report["issues"] and not report["missing_spatial_maps"])
+    report["ready_for_incomplete_preview"] = not report["issues"] and not report["missing_spatial_maps"]
+    return report
