@@ -127,8 +127,8 @@ def build_argparser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Maturity-loss weight. Defaults to 0.05 for maturity methods "
-            "and 0.0 for non-maturity methods."
+            "Maturity-loss weight. Defaults to 2 for formal_two_stage, 0.05 for "
+            "the original maturity methods, and 0 for non-maturity methods."
         ),
     )
     parser.add_argument("--development-min-state-mass", type=float, default=1e-8)

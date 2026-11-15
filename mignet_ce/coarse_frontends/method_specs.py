@@ -56,7 +56,7 @@ COARSE_METHOD_SPECS.update(
             frontend="complete_combined_coarse_maturity_cci_grn",
             requires_maturity=True,
             requires_grn=True,
-            default_lambda_dev=1.0,
+            default_lambda_dev=2.0,
             objective_version=FORMAL_TWO_STAGE_PROTOCOL,
         ),
         "complete_combined_coarse": CoarseMethodSpec(

@@ -26,6 +26,8 @@ def _scatter(
     xy = stage.coordinates
     colors = PENDING_COLOR if pending else SPOT_COLOR
     if labels is not None:
+        if labels.reindex(xy.index).isna().any():
+            raise ValueError("Domain labels do not cover all spatial coordinates")
         domains, codes = np.unique(labels.reindex(xy.index), return_inverse=True)
         palette = np.array([
             hls_to_rgb((0.60 + i * 0.61803398875) % 1, 0.46 + 0.10 * (i % 3), 0.68)
@@ -55,7 +57,7 @@ def _row_label(fig: plt.Figure, ax: plt.Axes, label: str) -> None:
 def _save(fig: plt.Figure, path: Path) -> None:
     try:
         for extension in ("png", "pdf"):
-            with path.with_suffix(f".{extension}").open("xb") as handle:
+            with (path.parent / f"{path.name}.{extension}").open("xb") as handle:
                 fig.savefig(handle, format=extension, dpi=300, facecolor="white")
     finally:
         plt.close(fig)
@@ -76,6 +78,65 @@ def render_natural(stages: tuple[StageMaps, StageMaps], path: Path) -> None:
 
     fig.text(0.055, 0.062, "Each point is an original Spot. Colors show the Seurat domains within each slice.",
              fontsize=8.5, color=MUTED)
+    _save(fig, path)
+
+
+def render_variants(
+    stages: tuple[StageMaps, StageMaps], domains: dict | None, rows: list[dict] | None, path: Path,
+    *, variants=None, reference: str = "baseline",
+) -> None:
+    """Extend the established domain layout to the selected experiment design."""
+    from .metrics import baseline_differences, metric_lines
+    from .variants import VARIANTS
+
+    variants = VARIANTS if variants is None else variants
+    reference_label = "Baseline" if reference == "baseline" else reference.upper()
+    variants = tuple(sorted(variants, key=lambda item: item.name != reference))
+    set_asset_style()
+    preview = domains is None
+    metrics = {} if rows is None else {row["variant"]: row for row in baseline_differences(rows, reference)}
+    if not preview and (set(domains) != {v.name for v in variants} or set(metrics) != set(domains)):
+        raise ValueError("A domain comparison requires all selected versions and their matching metrics")
+    fig = plt.figure(figsize=(3.8 * len(variants), 6.6))
+    grid = fig.add_gridspec(1, len(variants), left=0.105, right=0.964, bottom=0.325, top=0.745, wspace=0.20)
+    source, target = (f"E{stage.stage}" for stage in stages)
+    design = "Factorial search" if reference == "s8" else "Single-factor comparison"
+    _header(fig, f"Learned domains from Spot · {design}",
+            f"Mouse heart · {source} → {target} · Target K = 40 · formal_two_stage", preview=preview)
+    for col, variant in enumerate(variants):
+        cell = grid[col]
+        axes = cell.subgridspec(2, 2, wspace=0.10, hspace=0.23).subplots()
+        box = cell.get_position(fig)
+        fig.text((box.x0 + box.x1) / 2, 0.805, variant.label, ha="center", va="center",
+                 weight="bold", fontsize=10, color=TEXT)
+        if col == 0:
+            _row_label(fig, axes[0, 0], "Input layer")
+            _row_label(fig, axes[1, 0], "Learned\ndomains")
+        for side, stage in enumerate(stages):
+            input_ax, domain_ax = axes[:, side]
+            slot = input_ax.get_position(original=True)
+            fig.text((slot.x0 + slot.x1) / 2, slot.y1 - 0.020, f"E{stage.stage}",
+                     ha="center", va="center", fontsize=8.5, color=MUTED)
+            _scatter(input_ax, stage, None, size=2.0)
+            learned = None if preview else domains[variant.name][side]
+            _scatter(domain_ax, stage, None if preview else learned.labels, size=2.0, pending=preview)
+            if preview:
+                domain_ax.text(0.5, 0.5, "Awaiting\nassignments", transform=domain_ax.transAxes,
+                               ha="center", va="center", fontsize=8, color=MUTED,
+                               bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.92})
+        baseline = variant.name == reference
+        fig.text(box.x0, 0.291, "Absolute values" if baseline else f"Change vs {reference_label}",
+                 fontsize=8.5, weight="bold", color=TEAL_DARK)
+        for line, label in enumerate(metric_lines(metrics.get(variant.name), baseline=baseline)):
+            fig.text(box.x0, 0.255 - line * 0.034, label, fontsize=8.5,
+                     color=MUTED if preview else TEXT, va="top")
+    caption = (
+        "Real input coordinates; learned domains and metrics are unavailable in this layout preview."
+        if preview else
+        f"Branch metrics = branch − {reference_label} within the same time pair. Occupancy values: source / target. "
+        "Colors distinguish classes within each panel."
+    )
+    fig.text(0.055, 0.045, caption, fontsize=8.5, color=MUTED)
     _save(fig, path)
 
 

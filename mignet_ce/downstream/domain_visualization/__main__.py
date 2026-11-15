@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import sys
 
 from .inputs import INPUT_LABELS, ORGAN, load_comparisons, load_stage
 
@@ -13,7 +14,16 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in {"natural", "optimal"}:
+        if arguments[0] == "natural":
+            from .natural_pipeline import main as pipeline
+        else:
+            from .optimal_pipeline import main as pipeline
+        pipeline(arguments[1:])
+        return
+    parser = argparse.ArgumentParser(description=__doc__ +
+                                     " Use 'natural --help' or 'optimal --help' for the independent pipelines.")
     parser.add_argument("--data-root", type=Path, default=REPO / "data/mouse_embyro/E1S1_domain_factory")
     parser.add_argument("--optimal-runs-root", type=Path, help="Completed formal analysis optimal_runs directory")
     parser.add_argument("--output-root", type=Path, default=REPO / "output/domain_visualization")

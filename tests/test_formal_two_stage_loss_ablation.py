@@ -185,7 +185,7 @@ def test_finalize_restores_failed_export_without_training_and_rejects_wrong_weig
         assert (result.out_dir / name).read_bytes() == (config.out_dir / name).read_bytes()
         assert torch.load(result.out_dir / name, map_location="cpu", weights_only=False)["loss_protocol"] == FORMAL_TWO_STAGE_PROTOCOL
     log = (config.out_dir / "train.log").read_text()
-    assert "Effective loss weights: align=0; stage1_closure=0.5" in log
+    assert "Effective loss weights: align=0; stage1_closure=1" in log
     assert "weighted_align=0.000000" in log and "FeatureAlign-DeltaEI" not in log
     assert "optimizer steps=0" in (result.out_dir / "train.log").read_text()
     with pytest.raises(ValueError, match="loss/model configuration"):
@@ -343,14 +343,14 @@ def test_formal_method_defaults_and_independent_branches(tmp_path):
     base = configs["baseline"]
     assert get_coarse_method_spec("formal_two_stage").requires_maturity
     assert base.objective_version == get_coarse_method_spec("formal_two_stage").objective_version == "formal_two_stage_main"
-    assert base.lambda_align == 0 and base.lambda_stage1_closure == .5
-    assert base.lambda_keff == 0 and base.lambda_gap == 1 and base.lambda_dev == 1
+    assert base.lambda_align == 0 and base.lambda_stage1_closure == 1
+    assert base.lambda_keff == 0 and base.lambda_gap == 1 and base.lambda_dev == 2
     assert base.ei_loss_retain_ratio == 1 and base.ei_retain_ratio == .85
-    assert get_coarse_method_spec("formal_two_stage").default_lambda_dev == 1
+    assert get_coarse_method_spec("formal_two_stage").default_lambda_dev == 2
     assert all(getattr(base, "lambda_" + key) == 0 for key in (
         "var", "local", "proto", "dead_usage", "sharp", "within", "inter",
     ))
-    assert configs["branch2b"].lambda_retain_norm == .5
+    assert configs["branch2b"].lambda_retain_norm == 1
     assert configs["branch2b"].lambda_retain_floor == 0 and configs["branch2b"].lambda_stage2_cq == 1
     assert configs["branch2a"].lambda_retain_floor == 0 and configs["branch2a"].lambda_stage2_cq == 0
     assert configs["branch2a"].checkpoint_retain_ratio == configs["branch2b"].checkpoint_retain_ratio == .5
@@ -359,7 +359,7 @@ def test_formal_method_defaults_and_independent_branches(tmp_path):
     assert formal_stage1_signature(prepared, base) != formal_stage1_signature(reordered, base)
     for name in ("branch2a", "branch2b"):
         assert formal_stage1_signature(prepared, configs[name]) == formal_stage1_signature(prepared, base)
-    assert configs["branch2a"].lambda_dev == configs["branch2b"].lambda_dev == 1
+    assert configs["branch2a"].lambda_dev == configs["branch2b"].lambda_dev == 2
     native = parser.parse_args([
         "--method", "maturity_cci_grn_two_stage", "--h5ad-t", "t.h5ad", "--h5ad-tp", "tp.h5ad",
         "--cci-t", "t.npz", "--cci-tp", "tp.npz", "--k", "40", "--out-dir", str(tmp_path),
@@ -407,7 +407,7 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
         if name == "baseline":
             assert result.metrics == reference.metrics
             for row in result.metrics[:2]:
-                expected = -row["delta_EI"] + .5 * row["L_closure"] + .05 * row["L_dev"] + row["L_gap"]
+                expected = -row["delta_EI"] + config.lambda_stage1_closure * row["L_closure"] + .05 * row["L_dev"] + row["L_gap"]
                 assert row["loss"] == pytest.approx(expected, abs=1e-6)
         summary = json.loads((config.out_dir / "summary.json").read_text())
         assert summary["stage1_checkpoint_sha256"] == digest
@@ -416,7 +416,7 @@ def test_shared_stage1_restores_state_and_separates_ei_floors(tmp_path):
         for row in result.metrics[2:]:
             assert row["EI_checkpoint_floor"] == pytest.approx(.85 * checkpoint["best_delta_ei"])
             assert row["EI_loss_floor"] == pytest.approx(config.ei_loss_retain_ratio * checkpoint["best_delta_ei"])
-            expected = .05 * row["L_dev"] + row["L_gap"] + 5 * row["L_ei_constraint"]
+            expected = .05 * row["L_dev"] + row["L_gap"] + config.lambda_ei_constraint * row["L_ei_constraint"]
             expected += row["weighted_closure"] + row["weighted_retain_norm"]
             expected += row["weighted_retain_floor"] + row["weighted_stage2_cq"]
             assert row["loss"] == pytest.approx(expected, abs=1e-6)
@@ -449,18 +449,18 @@ def test_retain_cq_staircase_uses_same_main_stage1_and_exact_confirmed_losses(
         assert result.metrics[:2] == checkpoint["stage1_history"]
         assert hashlib.sha256((result.out_dir / "best_ei.pt").read_bytes()).hexdigest() == digest
         for row in result.metrics:
-            expected = row["L_dev"] + row["L_gap"]
+            expected = config.lambda_dev * row["L_dev"] + row["L_gap"]
             if row["stage"] == "stage1":
-                expected += -row["delta_EI"] + .5 * row["L_closure"]
+                expected += -row["delta_EI"] + config.lambda_stage1_closure * row["L_closure"]
             else:
                 retained = row["I_retained"]
                 retain_norm = -retained / max(checkpoint["I_available"], 1e-8)
                 floor = max(0., .5 - retained / max(checkpoint["I_retained"], 1e-8)) ** 2
                 cq = retained / max(row["I_available"], 1e-8)
                 ei_loss = max(0., checkpoint["best_delta_ei"] - row["delta_EI"]) ** 2
-                expected += expected_pair_weight * (.1 * row["L_closure"] + .5 * retain_norm
+                expected += expected_pair_weight * (config.lambda_closure * row["L_closure"] + config.lambda_retain_norm * retain_norm
                                                    + floor_weight * floor + cq_weight * (1 - cq))
-                expected += 5 * ei_loss
+                expected += config.lambda_ei_constraint * ei_loss
                 assert row["pair_weight"] == expected_pair_weight
                 assert row["weighted_stage2_cq"] == pytest.approx(expected_pair_weight * cq_weight * (1 - cq))
                 assert row["weighted_retain_floor"] == pytest.approx(expected_pair_weight * floor_weight * floor)

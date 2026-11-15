@@ -50,7 +50,9 @@ def _unit_ids(path: Path) -> pd.Index:
     return ids
 
 
-def load_stage(data_root: Path, stage: str) -> StageMaps:
+def load_stage(
+    data_root: Path, stage: str, *, seurat_scales: tuple[str, ...] = ("seurat_k150", "seurat_k40"),
+) -> StageMaps:
     spot_path = resolve_organ_paths(data_root, "spot", ORGAN, stage)["h5ad"]
     ids = _unit_ids(spot_path)
     spatial = read_h5ad_spatial(spot_path)
@@ -60,6 +62,8 @@ def load_stage(data_root: Path, stage: str) -> StageMaps:
 
     seurat = {}
     for scale, expected_domains in (("seurat_k150", 150), ("seurat_k40", 40)):
+        if scale not in seurat_scales:
+            continue
         path = resolve_organ_paths(data_root, scale, ORGAN, stage)["map"]
         frame = pd.read_csv(path, dtype={"spot_id": str, "domain_id": str}).set_index("spot_id")
         _check_ids(frame.index, path)
@@ -86,7 +90,8 @@ def _load_projection(
         raise ValueError(f"Assignment ID order differs from the input H5AD in {path}")
 
     soft = np.load(run_dir / f"S_{side}.npy", allow_pickle=False)
-    if soft.shape != (len(input_ids), k) or (soft < 0).any():
+    if (soft.shape != (len(input_ids), k) or not np.isfinite(soft).all() or (soft < 0).any()
+            or not np.allclose(soft.sum(axis=1), 1.0, atol=1e-5, rtol=0)):
         raise ValueError(f"Invalid soft assignment for {path}")
     hard = soft.argmax(axis=1)
     if not np.array_equal(hard, assignments["hard_cluster"].to_numpy()):
@@ -146,3 +151,18 @@ def load_comparisons(
                 _load_projection(run, "tp", input_ids[1], spot_to_unit[1], k, audit["Keff_tp"]),
             )
     return results
+
+
+def load_variant_domains(run: Path, stages: tuple[StageMaps, StageMaps], k: int = 40):
+    """Project an independently audited Spot experiment onto its original geometry."""
+    feature = json.loads((run / "feature_manifest.json").read_text(encoding="utf-8"))
+    summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+    result = []
+    for side, stage in zip(("t", "tp"), stages):
+        recorded = feature["provenance"].get(f"h5ad_{side}", "")
+        if PureWindowsPath(recorded).name != f"spot_heart_{stage.stage}.h5ad":
+            raise ValueError(f"Saved input time/scale differs from the figure: {run}")
+        ids = stage.coordinates.index
+        mapping = pd.Series(ids, index=ids)
+        result.append(_load_projection(run, side, ids, mapping, k, summary[f"Keff_{side}"]))
+    return tuple(result)

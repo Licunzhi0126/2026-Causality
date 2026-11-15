@@ -268,7 +268,11 @@ class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
 class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
     objective_version: str = FORMAL_TWO_STAGE_PROTOCOL
     lambda_align: float = 0.0
-    lambda_stage1_closure: float = 0.50
+    lambda_stage1_closure: float = 1.0
+    lambda_closure: float = 1.0
+    lambda_ei_constraint: float = 1.0
+    lambda_retain_norm: float = 1.0
+    lambda_retain_floor: float = 1.0
     lambda_var: float = 0.0
     lambda_local: float = 0.0
     lambda_proto: float = 0.0
@@ -276,7 +280,7 @@ class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
     lambda_sharp: float = 0.0
     lambda_within: float = 0.0
     lambda_inter: float = 0.0
-    lambda_dev: float = 1.0
+    lambda_dev: float = 2.0
     report_hard_occupancy: bool = True
     ei_loss_retain_ratio: float = 1.0
     lambda_keff: float = 0.0
