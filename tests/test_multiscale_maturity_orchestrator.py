@@ -256,3 +256,55 @@ def test_retired_multiscale_methods_fail_before_creating_outputs(tmp_path, metho
         orchestrator.build_run_specs([], method=method, out_root=tmp_path / "runs",
                                      scales=[], pairs=[], k_by_scale={}, seeds=[42])
     assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("saved,extra", [
+    ({"local_graph_mode":"legacy_features", "knn_k":30, "local_dims":2}, []),
+    ({"local_graph_mode":"all_features", "knn_k":15, "local_dims":2}, []),
+    ({"local_graph_mode":"legacy_features", "knn_k":30, "local_dims":3}, ["--local-graph-mode", "legacy_features"]),
+    ({"knn_k":30, "local_dims":2}, []),
+])
+def test_formal_resume_stops_before_writes_or_training_when_graph_differs(tmp_path, monkeypatch, saved, extra):
+    prepared = [_prepared(tmp_path, "spot", stage, 60) for stage in ("11.5", "12.5")]
+    spec = orchestrator.build_run_specs(prepared, method="formal_two_stage", out_root=tmp_path / "runs",
+                                        scales=["spot"], pairs=[("11.5", "12.5")],
+                                        k_by_scale={"spot":[40]}, seeds=[42])[0]
+    spec.run_dir.mkdir(parents=True)
+    summary = {key:1 for key in orchestrator.SUMMARY_REQUIRED_KEYS}
+    summary["method"] = "formal_two_stage"
+    (spec.run_dir / "summary.json").write_text(json.dumps(summary))
+    (spec.run_dir / "config.json").write_text(json.dumps(saved))
+    before = {path.name:path.read_bytes() for path in spec.run_dir.iterdir()}
+    def forbidden(*args, **kwargs):
+        pytest.fail("Mismatched graph must not train, back up, or remove a run")
+    monkeypatch.setattr(orchestrator.subprocess, "run", forbidden)
+    monkeypatch.setattr(orchestrator, "_remove_run_dir", forbidden)
+    with pytest.raises(ValueError, match="KNN graph"):
+        orchestrator.run_experiments([spec], out_root=tmp_path / "runs", runner_extra_args=extra,
+                                     resume=True, force=False, resume_incomplete=True, continue_on_error=False)
+    assert {path.name:path.read_bytes() for path in spec.run_dir.iterdir()} == before
+    assert not orchestrator._context_path(spec, out_root=tmp_path / "runs").exists()
+    assert not (tmp_path / "_incomplete_run_backups").exists()
+
+
+@pytest.mark.parametrize("mode,dims,extra", [
+    ("all_features", 0, []),
+    ("coords", 2, ["--local-graph-mode=coords"]),
+    ("legacy_features", 3, ["--local-graph-mode", "legacy_features", "--local-dims=3"]),
+])
+def test_formal_resume_accepts_only_matching_effective_graph(tmp_path, monkeypatch, mode, dims, extra):
+    prepared = [_prepared(tmp_path, "spot", stage, 60) for stage in ("11.5", "12.5")]
+    spec = orchestrator.build_run_specs(prepared, method="formal_two_stage", out_root=tmp_path / "runs",
+                                        scales=["spot"], pairs=[("11.5", "12.5")],
+                                        k_by_scale={"spot":[40]}, seeds=[42])[0]
+    spec.run_dir.mkdir(parents=True)
+    summary = {key:1 for key in orchestrator.SUMMARY_REQUIRED_KEYS}
+    summary["method"] = "formal_two_stage"
+    (spec.run_dir / "summary.json").write_text(json.dumps(summary))
+    (spec.run_dir / "config.json").write_text(json.dumps({"local_graph_mode":mode, "knn_k":30, "local_dims":dims}))
+    def forbidden(*args, **kwargs):
+        pytest.fail("Matching saved run should be reused without training")
+    monkeypatch.setattr(orchestrator.subprocess, "run", forbidden)
+    result = orchestrator.run_experiments([spec], out_root=tmp_path / "runs", runner_extra_args=extra,
+                                         resume=True, force=False, resume_incomplete=False, continue_on_error=False)
+    assert result[0]["status"] == "resumed"

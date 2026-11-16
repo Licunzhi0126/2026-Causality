@@ -341,6 +341,7 @@ def test_formal_method_defaults_and_independent_branches(tmp_path):
         configs[variant.name] = build_training_config(args)
     assert len(STAGE1_VARIANTS) == 1
     base = configs["baseline"]
+    assert base.local_graph_mode == "all_features"
     assert get_coarse_method_spec("formal_two_stage").requires_maturity
     assert base.objective_version == get_coarse_method_spec("formal_two_stage").objective_version == "formal_two_stage_main"
     assert base.lambda_align == 0 and base.lambda_stage1_closure == 1
@@ -365,6 +366,7 @@ def test_formal_method_defaults_and_independent_branches(tmp_path):
         "--cci-t", "t.npz", "--cci-tp", "tp.npz", "--k", "40", "--out-dir", str(tmp_path),
     ])
     assert build_training_config(native).lambda_align == 1 and build_training_config(native).lambda_keff == 1
+    assert build_training_config(native).local_graph_mode == "legacy_features"
 
 
 def test_gap_zero_empty_states_and_finite_gradient():
@@ -989,3 +991,57 @@ def test_training_fingerprint_excludes_reports_but_covers_model(tmp_path, monkey
     assert workflow._training_code_digest() == before
     model.write_text("model change")
     assert workflow._training_code_digest() != before
+
+
+@pytest.mark.parametrize("mode", [None, "legacy_features", "coords", "all_features"])
+def test_formal_graph_default_and_cli_overrides(tmp_path, mode):
+    arguments = ["--method", "formal_two_stage", "--h5ad-t", "t.h5ad", "--h5ad-tp", "tp.h5ad",
+                 "--cci-t", "t.npz", "--cci-tp", "tp.npz", "--k", "2", "--out-dir", str(tmp_path)]
+    if mode is not None:
+        arguments.extend(("--local-graph-mode", mode))
+    args = build_argparser().parse_args(arguments)
+    assert args.local_graph_mode == mode
+    config = build_training_config(args)
+    assert config.local_graph_mode == (mode or "all_features")
+    assert WYTFormalTwoStageConfig(2, tmp_path).local_graph_mode == "all_features"
+    prepared = _prepared()
+    assert formal_stage1_signature(prepared, replace(config, local_graph_mode="all_features")) != (
+        formal_stage1_signature(prepared, replace(config, local_graph_mode="legacy_features")))
+
+
+def test_all_features_neighbors_depend_on_cci_and_grn_blocks():
+    from wyt_deltaei_coarse_grain.two_stage_trainer import build_knn_adjacency
+    # First two columns stand for CCI, last two for GRN; all rows are unique.
+    features = np.array([[0, 0, 0, 0], [.1, 0, 10, 10], [1, 0, 0, 0],
+                         [.2, 0, 10, 10], [31, 0, 0, 0]], dtype=np.float32)
+    legacy = build_knn_adjacency(features, 1, 2).toarray()
+    full = build_knn_adjacency(features, 1, 0).toarray()
+    assert legacy[0, 1] > 0 and full[0, 1] == 0
+    assert full[0, 2] > 0  # Similar GRN states change the neighbor choice.
+    changed_cci = features.copy()
+    changed_cci[2, 0] = 30
+    changed = build_knn_adjacency(changed_cci, 1, 0).toarray()
+    assert changed[0, 2] == 0 and changed[0, 1] > 0
+    assert np.allclose(full.sum(1), 1.) and np.all(np.diag(full) > 0)
+    assert np.array_equal(full > 0, full.T > 0)
+
+
+def test_default_formal_training_uses_full_encoder_features_for_both_graphs(tmp_path, monkeypatch):
+    import wyt_deltaei_coarse_grain.two_stage_trainer as trainer
+    observed = []
+    original = trainer.build_knn_adjacency
+    def record(features, k, local_dims):
+        observed.append((features.copy(), k, local_dims))
+        return original(features, k, local_dims)
+    monkeypatch.setattr(trainer, "build_knn_adjacency", record)
+    prepared = _prepared()
+    config = WYTFormalTwoStageConfig(2, tmp_path / "run", epochs=4, stage1_ratio=.5,
+                                    hidden_dim=8, mid_dim=4, knn_k=2, log_every=1)
+    train_deltaei_two_stage(prepared, config)
+    assert len(observed) == 2
+    for actual, expected in zip(observed, (prepared.encoder_features_t, prepared.encoder_features_tp)):
+        assert actual[1:] == (2, 0)
+        assert actual[0].shape[1] == expected.shape[1]
+        assert np.array_equal(actual[0], expected)
+    saved = json.loads((config.out_dir / "config.json").read_text())
+    assert saved["local_graph_mode"] == "all_features" and saved["knn_k"] == 2

@@ -9,6 +9,8 @@ from .tables import PAIRS, SCALES, METHODS, selected_candidate_sensitivity, coll
 from .plots import _coordinates
 from .closure_js import natural_js_grid
 from .methods import expected_conditions
+from .natural_analysis import NaturalAnalysisConfig, inspect_source_inputs, load_natural_results
+from mignet_ce.coarse_frontends.method_specs import FORMAL_LOCAL_GRAPH_MODE, graph_configuration
 
 
 def _inspect_natural_inputs(sensitivity_root: Path, data_root: Path, optimal_root: Path | None,
@@ -97,31 +99,70 @@ def _inspect_natural_inputs(sensitivity_root: Path, data_root: Path, optimal_roo
     }
 
 
+def _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
+                                  alpha, figure_pair, skip_figures):
+    cfg = NaturalAnalysisConfig(data_root=Path(data_root),
+                                output_root=Path(natural_root) if natural_root else Path(data_root) / "unused_natural_preflight",
+                                grn_root=grn_root, cci_root=cci_root, alpha=alpha)
+    source = inspect_source_inputs(cfg, figure_pair=None if skip_figures else figure_pair)
+    issues = list(source["issues"]) + list(source["missing_inputs"])
+    measured = False
+    if natural_root and Path(natural_root).exists() and any(Path(natural_root).iterdir()):
+        try:
+            load_natural_results(natural_root, cfg)
+            measured = True
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            issues.append(f"Cannot reuse natural results: {exc}")
+    return {"pipeline": "formal_core_analysis", "issues": issues, "cautions": [],
+            "natural_source_type": "fixed_alpha_from_original_inputs", "sensitivity_required": False,
+            "natural_inputs": source, "has_k10": source["k10_input_present"],
+            "natural_measurements_ready": measured,
+            "natural_computation_pending": not measured,
+            "missing_ei_conditions": [] if measured else [f"{pair}/{layer}" for pair in PAIRS for layer in (*SCALES, "seurat_k10")],
+            "missing_natural_direct_js": [] if measured else [f"{pair}/{hierarchy}" for pair in PAIRS for hierarchy in (
+                "spot->seurat_k150", "spot->seurat_k40", "seurat_k150->seurat_k40", "spot->seurat_k10")],
+            "missing_spatial_maps": [], "ready_for_execution": not issues,
+            "ready_for_publication_candidate": measured and not issues,
+            "ready_for_incomplete_preview": not issues,
+            "does_not_compute_natural_measurements": True,
+            "does_not_train_optimal_models": True}
+
+
 def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
                    figure_pair, skip_figures, stage="all", *, organs=None,
-                   figure_organ="heart", figure_input_scale="spot"):
+                   figure_organ="heart", figure_input_scale="spot",
+                   local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2,
+                   natural_root=None, grn_root=None, cci_root=None):
     """Audit natural assets independently from the selected formal organ matrix."""
     from .methods import ORGANS
     from .tables import OPTIMAL_TABLES, build_optimal_report_grid
+    graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
+                                 knn_k=knn_k, local_dims=local_dims)
     organs = tuple(ORGANS if organs is None else organs)
     if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
         raise ValueError("Select unique supported organs")
     if stage not in {"all", "natural", "optimal"}:
         raise ValueError(f"Unknown formal core stage: {stage}")
     if stage != "optimal":
-        report = _inspect_natural_inputs(sensitivity_root, data_root, None, alpha,
-                                        grn_method, figure_pair, skip_figures, stage="natural")
+        if sensitivity_root is not None:
+            report = _inspect_natural_inputs(sensitivity_root, data_root, None, alpha,
+                                            grn_method, figure_pair, skip_figures, stage="natural")
+            report["ready_for_execution"] = report["ready_for_publication_candidate"]
+        else:
+            report = _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
+                                                   alpha, figure_pair, skip_figures)
     else:
         report = {"pipeline":"formal_core_analysis", "issues":[], "cautions":[],
                   "missing_ei_conditions":[], "missing_natural_direct_js":[],
                   "missing_spatial_maps":[], "ready_for_publication_candidate":True,
-                  "ready_for_incomplete_preview":True}
+                  "ready_for_incomplete_preview":True, "ready_for_execution":True}
     report.update(stage=stage, organs=list(organs), methods=list(METHODS),
                   expected_optimal_runs=expected_conditions(SCALES, PAIRS, organs),
                   does_not_train_optimal_models=True)
+    report.update(graph)
     if stage == "natural":
         return report
-    runs, rejected = collect_optimal_runs(optimal_root) if optimal_root else (None, ["No optimal run root supplied"])
+    runs, rejected = collect_optimal_runs(optimal_root, **graph) if optimal_root else (None, ["No optimal run root supplied"])
     selected = runs.loc[runs.organ.isin(organs)] if runs is not None and not runs.empty else None
     valid = set() if selected is None else set(zip(selected.organ, selected.input_scale, selected.time_pair))
     missing = [f"{organ}/{scale}/{pair}" for organ in organs for scale in SCALES for pair in PAIRS
@@ -129,7 +170,7 @@ def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
     if selected is not None and not missing:
         try:
             for metrics in OPTIMAL_TABLES.values():
-                build_optimal_report_grid(selected, metrics, organs=organs)
+                build_optimal_report_grid(selected, metrics, organs=organs, **graph)
         except ValueError as exc:
             report["issues"].append(str(exc))
     if not skip_figures:
@@ -148,4 +189,6 @@ def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
     report["ready_for_publication_candidate"] = (report["ready_for_publication_candidate"] and not missing
                                                 and not report["issues"] and not report["missing_spatial_maps"])
     report["ready_for_incomplete_preview"] = not report["issues"] and not report["missing_spatial_maps"]
+    report["ready_for_execution"] = (report["ready_for_execution"] and not missing
+                                      and not report["issues"] and not report["missing_spatial_maps"])
     return report

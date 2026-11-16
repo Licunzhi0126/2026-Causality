@@ -35,6 +35,7 @@ from wyt_deltaei_coarse_grain.macro_builder import (
     pool_to_macro,
 )
 from wyt_deltaei_coarse_grain.model import MacroFeatureNet, PrototypeEncoder
+from mignet_ce.coarse_frontends.method_specs import FORMAL_LOCAL_GRAPH_MODE
 from wyt_deltaei_coarse_grain.two_stage_objective import (
     effective_information,
     dynamical_closure_loss,
@@ -267,6 +268,7 @@ class WYTTwoStageLossAblationConfig(WYTTwoStageDeltaEIConfig):
 @dataclass(frozen=True)
 class WYTFormalTwoStageConfig(WYTTwoStageLossAblationConfig):
     objective_version: str = FORMAL_TWO_STAGE_PROTOCOL
+    local_graph_mode: str = FORMAL_LOCAL_GRAPH_MODE
     lambda_align: float = 0.0
     lambda_stage1_closure: float = 1.0
     lambda_closure: float = 1.0

@@ -3,6 +3,7 @@ from __future__ import annotations
 """Method-level coarse-graining metadata shared by CLIs and trainers."""
 
 from dataclasses import dataclass
+from numbers import Integral
 
 
 LEGACY_SINGLE_STAGE = "legacy_single_stage"
@@ -15,6 +16,42 @@ NO_KEFF_EI_RETAIN_RATIOS = {
     "two_stage_noKeff_HardEI": 1.0,
 }
 RETIRED_COARSE_METHODS = frozenset({"shr_method_8", "shr_method_10"})
+
+
+LOCAL_GRAPH_MODES = ("legacy_features", "coords", "all_features")
+FORMAL_LOCAL_GRAPH_MODE = "all_features"
+GRAPH_CONFIG_FIELDS = ("local_graph_mode", "knn_k", "local_dims")
+
+
+def graph_configuration(method, *, local_graph_mode=None, knn_k=30, local_dims=2):
+    """Resolve method-specific graph defaults without importing the trainers."""
+    mode = local_graph_mode if local_graph_mode is not None else (
+        FORMAL_LOCAL_GRAPH_MODE if method == "formal_two_stage" else "legacy_features")
+    if mode not in LOCAL_GRAPH_MODES:
+        raise ValueError(f"Unsupported local_graph_mode: {mode!r}")
+    if isinstance(knn_k, bool) or not isinstance(knn_k, Integral) or knn_k <= 0:
+        raise ValueError("knn_k must be a positive integer")
+    if isinstance(local_dims, bool) or not isinstance(local_dims, Integral) or local_dims < 0:
+        raise ValueError("local_dims must be a nonnegative integer")
+    return dict(local_graph_mode=mode, knn_k=int(knn_k), local_dims=int(local_dims))
+
+
+def saved_graph_configuration(config, *, method):
+    """Saved results must identify their actual graph; never apply new defaults."""
+    missing = [name for name in GRAPH_CONFIG_FIELDS if name not in config or config[name] is None]
+    if missing:
+        raise ValueError(f"Missing saved KNN graph configuration: {missing}")
+    return graph_configuration(method, **{name: config[name] for name in GRAPH_CONFIG_FIELDS})
+
+
+def validate_graph_configuration(actual, expected, *, context="run"):
+    """Compare effective graph settings; local_dims is used only by legacy mode."""
+    names = ("local_graph_mode", "knn_k")
+    if expected["local_graph_mode"] == "legacy_features":
+        names += ("local_dims",)
+    if any(actual[name] != expected[name] for name in names):
+        raise ValueError(f"KNN graph configuration mismatch at {context}: saved={actual}, requested={expected}. "
+                         "Keep these results and use a new output directory for the changed graph.")
 
 
 def validate_formal_protocol(protocol: object) -> None:

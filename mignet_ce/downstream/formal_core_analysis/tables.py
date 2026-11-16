@@ -13,6 +13,10 @@ from .methods import METHODS, LEGACY_METHODS, ORGANS
 from mignet_ce.coarse_frontends.method_specs import (
     RETIRED_COARSE_METHODS, FORMAL_TWO_STAGE_PROTOCOL, validate_formal_protocol,
 )
+from mignet_ce.coarse_frontends.method_specs import (
+    FORMAL_LOCAL_GRAPH_MODE, GRAPH_CONFIG_FIELDS, graph_configuration,
+    saved_graph_configuration, validate_graph_configuration,
+)
 
 LEVELS = (("Spot -> K150", "spot", "seurat_k150"),
           ("K150 -> K40", "seurat_k150", "seurat_k40"),
@@ -30,12 +34,15 @@ OPTIMAL_TABLES = {
 }
 
 
-def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, organs=ORGANS) -> pd.DataFrame:
+def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, organs=ORGANS,
+                              local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2) -> pd.DataFrame:
     """Organ × input scale rows, with one measured set of metrics per time pair."""
     organs = tuple(organs)
     if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
         raise ValueError("Select unique supported organs")
-    required = {"method", "organ", "input_scale", "time_pair", "loss_protocol", *metrics}
+    expected_graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
+                                         knn_k=knn_k, local_dims=local_dims)
+    required = {"method", "organ", "input_scale", "time_pair", "loss_protocol", *metrics, *GRAPH_CONFIG_FIELDS}
     if not required <= set(frame):
         raise ValueError(f"Missing optimal report fields: {sorted(required - set(frame))}")
     rows = []
@@ -49,6 +56,8 @@ def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, 
                     raise ValueError(f"{'Missing' if hit.empty else 'Duplicate'} run for {organ}/{scale}/{pair}; select one seed explicitly")
                 record = hit.iloc[0]
                 validate_formal_protocol(record.loss_protocol)
+                actual_graph = saved_graph_configuration(record, method="formal_two_stage")
+                validate_graph_configuration(actual_graph, expected_graph, context=f"{organ}/{scale}/{pair}")
                 for metric in metrics:
                     value = float(record[metric])
                     if not np.isfinite(value):
@@ -122,7 +131,14 @@ def build_cq_grid(cq: pd.DataFrame, *, require_k10: bool = True, pairs=PAIRS) ->
     return pd.DataFrame(rows)
 
 
+def selected_candidate_natural(root: Path, config):
+    """Validated fixed-alpha measurements, independent of sensitivity results."""
+    from .natural_analysis import load_natural_results
+    return load_natural_results(root, config)
+
+
 def selected_candidate_sensitivity(root: Path, alpha: float, grn_method: str, transition: str = "KL+OT"):
+    """Historical explicit-source compatibility; the current pipeline does not call this."""
     root = Path(root)
     if not (root / "manifest.json").is_file():
         raise FileNotFoundError("Formal sensitivity completion manifest is required")
@@ -175,9 +191,11 @@ def inspect_optimal_run(run_dir: Path) -> dict:
     config_path = next((p/f for f in ("pilot_config.json", "config.json") if (p/f).is_file()), None)
     config = _json(config_path) if config_path else {}
     desc = _infer_run_descriptors(p, summary, config)
+    actual_graph = {name: config.get(name) for name in GRAPH_CONFIG_FIELDS}
     if desc["method"] == "formal_two_stage":
         validate_formal_protocol(summary.get("loss_protocol"))
         validate_formal_protocol(config.get("objective_version"))
+        actual_graph = saved_graph_configuration(config, method=desc["method"])
         if (summary.get("selected_checkpoint") != "best_joint.pt"
                 or summary.get("checkpoint_metric_state_consistent") is not True
                 or not (p / "best_joint.pt").is_file()):
@@ -314,7 +332,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             summary, available=float(budget["I_available_bits"]),
             retained=float(budget["I_macro_retained_bits"]), k=k_value, run_dir=p,
         )
-    return {"method": desc["method"], "organ": desc["organ"],
+    return {"method": desc["method"], "organ": desc["organ"], **actual_graph,
             "loss_protocol": summary.get("loss_protocol"),
             "input_scale": desc["input_scale"], "time_pair": desc["time_pair"],
             "seed": summary.get("seed", config.get("seed")), "epochs": summary.get("epochs", config.get("epochs")),
@@ -340,7 +358,10 @@ def inspect_optimal_run(run_dir: Path) -> dict:
             "provenance": "persisted_train_PIJ_checkpoint_and_assignments_verified"}
 
 
-def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
+def collect_optimal_runs(root: Path, *, local_graph_mode=FORMAL_LOCAL_GRAPH_MODE,
+                         knn_k=30, local_dims=2) -> tuple[pd.DataFrame, list[str]]:
+    expected_graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
+                                         knn_k=knn_k, local_dims=local_dims)
     root = Path(root)
     if not root.exists():
         return pd.DataFrame(), [f"Optimal runs directory does not exist: {root}"]
@@ -360,7 +381,9 @@ def collect_optimal_runs(root: Path) -> tuple[pd.DataFrame, list[str]]:
             # Historical retired results remain on disk but do not enter active tables.
             if _json(run / "summary.json").get("method") not in METHODS:
                 continue
-            good.append(inspect_optimal_run(run))
+            row = inspect_optimal_run(run)
+            validate_graph_configuration(row, expected_graph, context=run)
+            good.append(row)
         except (ValueError, FileNotFoundError) as exc:
             errors.append(f"{run}: {exc}")
     return pd.DataFrame(good), errors

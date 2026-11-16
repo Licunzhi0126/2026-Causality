@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mignet_ce.coarse_frontends import COARSE_METHOD_SPECS
+from mignet_ce.coarse_frontends.method_specs import LOCAL_GRAPH_MODES
 
 METHOD_CHOICES = tuple(sorted(COARSE_METHOD_SPECS))
 
@@ -72,8 +73,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--local-dims", type=int, default=2)
     parser.add_argument(
         "--local-graph-mode",
-        choices=["legacy_features", "coords", "all_features"],
-        default="legacy_features",
+        choices=LOCAL_GRAPH_MODES,
+        default=None,
+        help="Defaults to all_features for formal_two_stage and legacy_features for other methods.",
     )
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--align-temperature", type=float, default=1.0)

@@ -4,17 +4,23 @@ import argparse
 import json
 from pathlib import Path
 
-from .tables import (build_ei_grid, build_cq_grid, selected_candidate_sensitivity,
+from .tables import (build_ei_grid, build_cq_grid, selected_candidate_sensitivity, selected_candidate_natural,
                      collect_optimal_runs, build_optimal_report_grid, OPTIMAL_TABLES, PAIRS, SCALES)
 from .plots import save_table, save_optimal_table, draw_natural_figure, draw_optimal_figure
 from .closure_js import natural_js_grid
 from .preflight import inspect_inputs
 from .methods import METHODS, ORGANS, expected_conditions
+from .natural_analysis import NaturalAnalysisConfig, run as run_natural
+from mignet_ce.coarse_frontends.method_specs import LOCAL_GRAPH_MODES, FORMAL_LOCAL_GRAPH_MODE, graph_configuration
 
 
 def build_argparser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--sensitivity-root", type=Path, help="Required for all/natural; not needed for optimal")
+    p.add_argument("--sensitivity-root", type=Path, help="Explicit legacy natural source; unnecessary for the current pipeline")
+    p.add_argument("--natural-root", type=Path, help="Read independently computed fixed-alpha natural results")
+    p.add_argument("--grn-root", type=Path, help="Defaults to data-root/grn")
+    p.add_argument("--cci-root", type=Path, help="Defaults to data-root/cci, including index TSVs")
+    p.add_argument("--resume", action="store_true", help="Validate/reuse the default natural result directory")
     p.add_argument("--data-root", type=Path, required=True)
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--optimal-runs-root", type=Path)
@@ -22,6 +28,9 @@ def build_argparser():
     p.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
     p.add_argument("--alpha", type=float, default=.20)
     p.add_argument("--grn-method", default="legacy_nmf")
+    p.add_argument("--local-graph-mode", choices=LOCAL_GRAPH_MODES, default=FORMAL_LOCAL_GRAPH_MODE)
+    p.add_argument("--knn-k", type=int, default=30)
+    p.add_argument("--local-dims", type=int, default=2)
     p.add_argument("--allow-incomplete", action="store_true")
     p.add_argument("--figure-pair", choices=PAIRS, default="12.5->13.5")
     p.add_argument("--figure-organ", choices=ORGANS, default="heart")
@@ -32,8 +41,22 @@ def build_argparser():
 
 
 def _render_natural(a, out, status):
-    ei, cq, m = selected_candidate_sensitivity(a.sensitivity_root, a.alpha, a.grn_method)
-    status.update(scientific_source=str(a.sensitivity_root.resolve()),
+    if a.sensitivity_root is not None:
+        # Historical explicit source remains supported, never selected implicitly.
+        source = a.sensitivity_root
+        ei, cq, m = selected_candidate_sensitivity(source, a.alpha, a.grn_method)
+        status["natural_source_type"] = "explicit_legacy_sensitivity"
+    else:
+        source = a.natural_root or out / "natural_analysis"
+        cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=source,
+                                    grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
+        if a.natural_root is None:
+            run_natural(cfg, resume=a.resume)
+        ei, cq, m = selected_candidate_natural(source, cfg)
+        status["natural_source_type"] = "fixed_alpha_from_original_inputs"
+        status["natural_protocol"] = m["protocol"]
+        status["sensitivity_required"] = False
+    status.update(scientific_source=str(source.resolve()),
                   source_cci_order=m["cci_order_provenance"],
                   new_k10_input_present="seurat_k10" in set(ei.layer))
     # Without K10, user-requested FULL existence table must not be silently faked.
@@ -49,18 +72,18 @@ def _render_natural(a, out, status):
     for name,frame in (("table_ei_hierarchy"+suffix,grid),("table_cq_hierarchy"+suffix,grid_cq)):
         frame.to_csv(tab/(name+".csv"),index=False)
         subtitle = ("Measured values · CQ shown as raw measured values without signal labels"
-                    if name.startswith("table_cq") else "Actual measured EI values")
+                    if name.startswith("table_cq") else "Measured Delta EI (upper-layer EI minus lower-layer EI), bits")
         if not full:
             subtitle = "EXPLORATORY ONLY · NO K10 · not a complete paper results table"
         save_table(frame, tab/name, title=name.replace("_"," "), subtitle=subtitle)
-    # Use ONLY the selected natural sensitivity measurements. Missing K10 must
+    # Use ONLY measured natural results. Missing K10 must
     # remain NaN/— in an explicitly marked exploratory table, never imputed.
     natural_js = natural_js_grid(cq, pairs=PAIRS, allow_missing_k10=not full and a.allow_incomplete)
     natural_js_name = "table_natural_closure_js_direct_bits" + suffix
     natural_js.to_csv(tab / (natural_js_name + ".csv"), index=False)
     save_table(natural_js, tab / natural_js_name,
                title="Natural hierarchy · Closure JS Direct (bits)",
-               subtitle=("Measured formal-sensitive results · K150→K40 soft spot-overlap · lower is better"
+               subtitle=("Measured natural results · alpha=.20 · K150→K40 soft spot-overlap · lower is better"
                          if full else "EXPLORATORY · K10 not provided (—) · K150→K40 soft spot-overlap · lower is better"),
                allow_missing=not full and a.allow_incomplete)
     status["natural_direct_js_table"] = natural_js_name
@@ -81,10 +104,12 @@ def _render_natural(a, out, status):
 def main(argv=None):
     p = build_argparser()
     a = p.parse_args(argv)
+    graph = graph_configuration("formal_two_stage", local_graph_mode=a.local_graph_mode,
+                                 knn_k=a.knn_k, local_dims=a.local_dims)
     if len(a.organs) != len(set(a.organs)):
         p.error("--organs must be unique")
-    if a.stage != "optimal" and a.sensitivity_root is None:
-        p.error("--sensitivity-root is required for all/natural")
+    if a.natural_root is not None and a.sensitivity_root is not None:
+        p.error("Select --natural-root or the explicit legacy --sensitivity-root, not both")
     if a.stage != "natural" and a.optimal_runs_root is None and not a.allow_incomplete:
         p.error("--optimal-runs-root is required for all/optimal")
     if abs(a.alpha - .20) > 1e-9 or a.grn_method != "legacy_nmf":
@@ -95,9 +120,11 @@ def main(argv=None):
         report = inspect_inputs(a.sensitivity_root, a.data_root, a.optimal_runs_root,
                                 a.alpha, a.grn_method, a.figure_pair, a.skip_figures,
                                 stage=a.stage, organs=tuple(a.organs),
-                                figure_organ=a.figure_organ, figure_input_scale=a.figure_input_scale)
+                                figure_organ=a.figure_organ, figure_input_scale=a.figure_input_scale,
+                                natural_root=a.natural_root or a.output_root / "natural_analysis",
+                                grn_root=a.grn_root, cci_root=a.cci_root, **graph)
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        if not report["ready_for_incomplete_preview" if a.allow_incomplete else "ready_for_publication_candidate"]:
+        if not report["ready_for_incomplete_preview" if a.allow_incomplete else "ready_for_execution"]:
             raise SystemExit(2)
         return
     out = a.output_root
@@ -107,7 +134,7 @@ def main(argv=None):
     status = {"status":"processing", "stage":a.stage, "methods":list(METHODS),
               "loss_protocol":"formal_two_stage_main", "organs":a.organs,
               "expected_optimal_runs":expected_conditions(SCALES, PAIRS, a.organs),
-              "alpha":a.alpha, "grn_feature":a.grn_method,
+              "alpha":a.alpha, "grn_feature":a.grn_method, **graph,
               "delta_EI_protocol":"selected checkpoint + persisted training macro PIJ",
               "closure_JS_protocol":"uniform mean of JS_rows(P_micro_train @ S_tp, S_t @ P_macro_train), bits",
               "occupancy_protocol":"HardK - exp(entropy(argmax assignment counts)), separately at t and tp",
@@ -116,7 +143,7 @@ def main(argv=None):
     natural_complete = a.stage == "optimal" or _render_natural(a, out, status)
     optimal_complete = a.stage == "natural"
     if a.stage != "natural":
-        runs, rejected = collect_optimal_runs(a.optimal_runs_root) if a.optimal_runs_root else (None, ["No optimal root supplied"])
+        runs, rejected = collect_optimal_runs(a.optimal_runs_root, **graph) if a.optimal_runs_root else (None, ["No optimal root supplied"])
         audit = out / "audit"
         audit.mkdir(exist_ok=True)
         (audit / "optimal_rejected.json").write_text(json.dumps(rejected, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -126,7 +153,7 @@ def main(argv=None):
         try:
             if selected is None or selected.empty:
                 raise ValueError(f"No validated formal_two_stage_main results: {rejected[:5]}")
-            grids = {name:build_optimal_report_grid(selected, metrics, organs=a.organs)
+            grids = {name:build_optimal_report_grid(selected, metrics, organs=a.organs, **graph)
                      for name, metrics in OPTIMAL_TABLES.items()}
         except ValueError as exc:
             if not a.allow_incomplete:

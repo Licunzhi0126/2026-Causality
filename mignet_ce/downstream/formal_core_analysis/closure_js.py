@@ -1,7 +1,8 @@
 """Direct-prediction Jensen-Shannon divergence (bits) for formal Core.
 
 There are TWO distinct scientific inputs:
-* Natural hierarchy: reuse measured `closure_JS_direct_bits` from formal sensitivity.
+* Natural hierarchy: fixed-alpha measurements from original H5AD/CCI/GRN inputs;
+  explicitly selected historical sensitivity measurements remain readable.
 * Trained optimal: compare P_micro_train @ S_tp with S_t @ PIJ_macro_train.
 
 Never use induced/oracle Q or the information-retention CQ as a substitute for
@@ -72,7 +73,7 @@ def read_optimal_direct_js(run_dir: Path) -> float:
 
 def natural_js_grid(cq: pd.DataFrame, *, pairs: tuple[str, ...],
                     allow_missing_k10: bool = False) -> pd.DataFrame:
-    """Read selected formal sensitivity results, preserving fixed 4-column layout.
+    """Read measured natural results, preserving the fixed 4-column layout.
 
     With allow_missing_k10, *only* truly absent K10 can be blank; all other
     scientific measurements remain mandatory. Exploratory output must be labeled.

@@ -26,6 +26,9 @@ from mignet_ce.io.multiscale_coarse_inputs import (  # noqa: E402
 from mignet_ce.coarse_frontends.method_specs import (  # noqa: E402
     get_coarse_method_spec,
 )
+from mignet_ce.coarse_frontends.method_specs import (  # noqa: E402
+    LOCAL_GRAPH_MODES, graph_configuration, saved_graph_configuration, validate_graph_configuration,
+)
 
 
 DEFAULT_METHOD = "maturity_cci_grn_two_stage"
@@ -260,8 +263,26 @@ def run_experiments(
     for spec in specs:
         summary_path = spec.run_dir / "summary.json"
         command = runner_command(spec, runner_extra_args)
+        expected_graph = None
+        if spec.method == "formal_two_stage":
+            graph_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+            graph_parser.add_argument("--local-graph-mode", choices=LOCAL_GRAPH_MODES)
+            graph_parser.add_argument("--knn-k", type=int, default=30)
+            graph_parser.add_argument("--local-dims", type=int, default=2)
+            options, _ = graph_parser.parse_known_args(list(runner_extra_args))
+            expected_graph = graph_configuration(spec.method, local_graph_mode=options.local_graph_mode,
+                                                 knn_k=options.knn_k, local_dims=options.local_dims)
+            # Stop before any backup, overwrite, context write, or child training.
+            config_path = spec.run_dir / "config.json"
+            if resume and (config_path.exists() or summary_path.exists()):
+                try:
+                    saved_graph = saved_graph_configuration(_read_json(config_path), method=spec.method)
+                except (OSError, ValueError) as exc:
+                    raise ValueError(f"Cannot verify saved KNN graph at {spec.run_dir}: {exc}. "
+                                     "Preserve this run and use a new output directory.") from exc
+                validate_graph_configuration(saved_graph, expected_graph, context=spec.run_dir)
         if resume and _valid_summary(
-            summary_path, expected_method=spec.method,
+            summary_path, expected_method=spec.method, expected_graph=expected_graph,
         ):
             rows.append(aggregate_run(spec, status="resumed"))
             continue
@@ -311,6 +332,7 @@ def run_experiments(
                 "target": spec.target.index_source,
             },
             "command": command,
+            "graph_configuration": expected_graph,
             "status": "pending",
         }
         context_path = _context_path(spec, out_root=out_root)
@@ -318,7 +340,7 @@ def run_experiments(
         try:
             subprocess.run(command, check=True, cwd=REPO_ROOT)
             if not _valid_summary(
-                summary_path, expected_method=spec.method,
+                summary_path, expected_method=spec.method, expected_graph=expected_graph,
             ):
                 raise RuntimeError(f"Runner completed without a valid summary/protocol match: {summary_path}")
             context["status"] = "success"
@@ -426,6 +448,7 @@ def _valid_summary(
     path: Path,
     *,
     expected_method: str | None = None,
+    expected_graph: dict | None = None,
 ) -> bool:
     try:
         payload = _read_json(path)
@@ -435,6 +458,12 @@ def _valid_summary(
         return False
     if expected_method is not None and payload.get("method") != expected_method:
         return False
+    if expected_method == "formal_two_stage":
+        try:
+            actual = saved_graph_configuration(_read_json(path.parent / "config.json"), method=expected_method)
+            validate_graph_configuration(actual, expected_graph or graph_configuration(expected_method), context=path.parent)
+        except (OSError, ValueError):
+            return False
     return True
 
 

@@ -21,6 +21,7 @@ def _measurements():
     return pd.DataFrame([
         {"method": method, "organ": organ, "input_scale": scale, "time_pair": pair,
          "loss_protocol":"formal_two_stage_main", "CQ_raw":.4,
+         "local_graph_mode":"all_features", "knn_k":30, "local_dims":2,
          "HardK_minus_KeffHard_t":.2, "HardK_minus_KeffHard_tp":.3,
          "trained_delta_EI": .1 + index / 1000, "Keff_t": 2., "Keff_tp": 2.,
          "CQ_display": .4, "closure_JS_direct_bits": .05}
@@ -38,6 +39,164 @@ def test_only_formal_method_and_all_organs_appear_in_both_reports():
         assert len(grid) == 9
         assert list(zip(grid.Organ, grid["Input scale"])) == list(product(ORGANS, SCALES))
         assert list(grid.columns[2:]) == [f"{pair}::{metric}" for pair in PAIRS for metric in metrics]
+
+
+@pytest.fixture
+def natural_inputs(tmp_path):
+    """Tiny real-format inputs; these are explicitly synthetic, not organ results."""
+    import anndata as ad
+    import scipy.sparse as sp
+    from mignet_ce.downstream.formal_core_analysis.natural_analysis import NaturalAnalysisConfig, LAYERS
+    from mignet_ce.io.organ_paths import resolve_organ_paths
+
+    data = tmp_path / "natural_inputs"
+    rng = np.random.default_rng(108)
+    genes = [f"g{i}" for i in range(6)]
+    counts = dict(zip(LAYERS, (9, 6, 4, 2)))
+    for stage in run_pipeline.TIMES:
+        for layer, n in counts.items():
+            paths = resolve_organ_paths(data, layer, "heart", stage)
+            for path in paths.values():
+                if path is not None:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+            ids = [f"s{i}" if layer == "spot" else f"d{i}" for i in range(n)]
+            ad.AnnData(X=sp.csr_matrix(rng.uniform(.2, 5., size=(n, 6))),
+                       obs=pd.DataFrame(index=ids), var=pd.DataFrame(index=genes)).write_h5ad(paths["h5ad"])
+            pd.DataFrame({"regulator": genes, "target": genes[1:] + genes[:1], "weight": np.ones(6)}).to_csv(paths["grn"], index=False)
+            cci = rng.uniform(.1, 1., size=(n, n))
+            sp.save_npz(paths["cci"], sp.csr_matrix(cci + cci.T))
+            pd.DataFrame({"unit_id": ids}).to_csv(paths["cci_index"], sep="\t", index=False)
+            if layer != "spot":
+                pd.DataFrame({"spot_id": [f"s{i}" for i in range(9)],
+                              "domain_id": [f"d{i % n}" for i in range(9)],
+                              "x": np.arange(9), "y": np.arange(9) % 3}).to_csv(paths["map"], index=False)
+    return NaturalAnalysisConfig(data_root=data, output_root=tmp_path / "natural_results")
+
+
+def test_fixed_natural_matches_existing_shared_math_and_checks_resume(natural_inputs):
+    from dataclasses import replace
+    from mignet_ce.downstream.formal_core_analysis import natural_analysis as natural
+    from mignet_ce.downstream.formal_sensitive_analysis.analysis import SensitiveConfig, run as legacy_run
+
+    cfg = natural_inputs
+    manifest = natural.run(cfg)
+    assert manifest["sensitivity_required"] is False
+    assert manifest["ei_rows"] == manifest["cq_rows"] == 12
+    ei, cq, loaded = natural.load_natural_results(cfg.output_root)
+    assert natural.run(cfg, resume=True) == loaded
+    with pytest.raises(FileExistsError):
+        natural.run(cfg)
+    with pytest.raises(ValueError, match="configuration mismatch"):
+        natural.run(replace(cfg, beta=.1), resume=True)
+    with pytest.raises(ValueError, match="alpha"):
+        natural.run(replace(cfg, alpha=.3))
+    result = cfg.output_root / natural.EI_FILE
+    original_result = result.read_bytes()
+    result.write_bytes(original_result + b"\n")
+    with pytest.raises(ValueError, match="result hash mismatch"):
+        natural.run(cfg, resume=True)
+    result.write_bytes(original_result)
+    # A single-alpha historical computation is used ONLY as a numerical test
+    # baseline. No production entry point invokes the sensitivity pipeline.
+    legacy = cfg.output_root.parent / "legacy_math_baseline"
+    legacy_run(SensitiveConfig(data_root=cfg.data_root, output_root=legacy,
+                              cci_index_root=cfg.data_root / "cci", layers=cfg.layers, alphas=(.20,)))
+    reference_ei = pd.read_csv(legacy / "alpha_layer_ei.csv").sort_values(["time_pair", "layer"])
+    actual_ei = ei.sort_values(["time_pair", "layer"])
+    np.testing.assert_allclose(actual_ei.EI_bits, reference_ei.EI_bits, rtol=0, atol=1e-10)
+    reference_cq = pd.read_csv(legacy / "alpha_natural_cq.csv").sort_values(["time_pair", "hierarchy"])
+    actual_cq = cq.sort_values(["time_pair", "hierarchy"])
+    for column in ("CQ", "closure_JS_direct_bits"):
+        np.testing.assert_allclose(actual_cq[column], reference_cq[column], rtol=0, atol=1e-10)
+    before = (cfg.output_root / "manifest.json").read_bytes()
+    edges = natural.source_files(cfg)["seurat_k10:11.5:grn"]
+    edges.write_text(edges.read_text() + "\n")
+    with pytest.raises(ValueError, match="STALE"):
+        natural.run(cfg, resume=True)
+    assert (cfg.output_root / "manifest.json").read_bytes() == before
+
+
+def test_natural_checks_k10_index_mapping_and_coordinates_before_computation(natural_inputs):
+    from mignet_ce.downstream.formal_core_analysis import natural_analysis as natural
+    cfg = natural_inputs
+    assert natural.inspect_source_inputs(cfg, figure_pair=PAIRS[1])["ready"]
+    files = natural.source_files(cfg)
+    index = files["seurat_k10:12.5:cci_index"]
+    original = index.read_bytes()
+    pd.DataFrame({"unit_id": ["d1", "d0"]}).to_csv(index, sep="\t", index=False)
+    report = natural.inspect_source_inputs(cfg)
+    assert not report["ready"] and "row order" in report["issues"][0]
+    index.write_bytes(original)
+    mapping = files["seurat_k10:12.5:map"]
+    frame = pd.read_csv(mapping)
+    frame.drop(columns=["x"]).to_csv(mapping, index=False)
+    report = natural.inspect_source_inputs(cfg, figure_pair=PAIRS[1])
+    assert not report["ready"] and "coordinates" in report["issues"][0]
+    frame.to_csv(mapping, index=False)
+    bad = frame.copy()
+    bad.loc[0, "spot_id"] = "wrong_spot"
+    bad.to_csv(mapping, index=False)
+    assert "mapping mismatch" in natural.inspect_source_inputs(cfg)["issues"][0]
+    frame.to_csv(mapping, index=False)
+    missing = files["seurat_k10:13.5:grn"]
+    missing.rename(missing.with_suffix(".held_for_test"))
+    report = natural.inspect_source_inputs(cfg)
+    assert not report["ready"] and not report["k10_input_present"]
+    assert str(missing) in report["missing_inputs"]
+    assert not cfg.output_root.exists()
+
+
+def test_fixed_natural_collector_renders_five_tables_and_two_figures_without_sensitivity(natural_inputs, tmp_path):
+    from mignet_ce.downstream.formal_core_analysis.__main__ import main
+    from mignet_ce.downstream.formal_core_analysis.preflight import inspect_inputs
+    from mignet_ce.downstream.formal_core_analysis import natural_analysis as natural
+    _write_synthetic_checkpoints(tmp_path / "runs", spot_count=9)
+    cfg = natural_inputs
+    natural.run(cfg)
+    report = inspect_inputs(None, cfg.data_root, tmp_path / "runs", .2, "legacy_nmf", PAIRS[1], False,
+                            natural_root=cfg.output_root)
+    assert report["ready_for_publication_candidate"] and report["ready_for_execution"]
+    out = tmp_path / "fixed_natural_full_report"
+    main(["--data-root", str(cfg.data_root), "--natural-root", str(cfg.output_root),
+          "--optimal-runs-root", str(tmp_path / "runs"), "--output-root", str(out)])
+    manifest = json.loads((out / "output_manifest.json").read_text())
+    assert manifest["status"] == "complete" and manifest["sensitivity_required"] is False
+    assert manifest["optimal_trained_runs_verified"] == 27
+    assert len(list((out / "tables").glob("*.csv"))) == 5
+    assert len(list((out / "tables").glob("*.png"))) == 5
+    assert len(list((out / "figures").glob("*.png"))) == 2
+    assert len(list((out / "figures").glob("*.pdf"))) == 2
+
+
+def test_pipeline_all_plans_fixed_natural_first_and_preflights_real_sources(natural_inputs, tmp_path, capsys):
+    from mignet_ce.downstream.formal_core_analysis.preflight import inspect_inputs
+    cfg = natural_inputs
+    argv = [
+        "--data-root", str(cfg.data_root), "--grn-root", str(cfg.data_root / "grn"),
+        "--cci-root", str(cfg.data_root / "cci"), "--developmental-root", str(tmp_path / "dev"),
+        "--organs", "heart", "--output-root", str(tmp_path / "out"), "--resume"]
+    args = run_pipeline.build_argparser().parse_args(argv)
+    for scale, stage in product(SCALES, run_pipeline.TIMES):
+        path = args.developmental_root / scale / f"heart_{stage}_features.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("input-existence fixture only")
+    report = run_pipeline.inspect_inputs(args)
+    assert report["missing_input_count"] == 0 and report["sensitivity_required"] is False
+    assert report["natural_k150_k40_js_ready"] is False  # inputs present != measurements calculated
+    jobs = run_pipeline.make_commands(args, None)
+    assert jobs[0]["stage"] == "natural_fixed_alpha"
+    assert [job["stage"] for job in jobs[1:]] == ["train_formal_two_stage_heart", "formal_core_collect_and_plot"]
+    assert all("--sensitivity-root" not in job["command"] for job in jobs)
+    assert "--natural-root" in jobs[-1]["command"]
+    assert run_pipeline.main([*argv, "--dry-run"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["status"] == "dry_run" and plan["commands"][0]["stage"] == "natural_fixed_alpha"
+    report = inspect_inputs(None, cfg.data_root, None, .2, "legacy_nmf", PAIRS[1], False,
+                            stage="natural", natural_root=cfg.output_root)
+    assert report["ready_for_execution"] and report["natural_computation_pending"]
+    assert not report["ready_for_publication_candidate"]
+    assert not args.output_root.exists()
+    assert not cfg.output_root.exists()
 
 
 def test_missing_or_duplicate_conditions_are_not_silently_accepted():
@@ -93,11 +252,19 @@ def test_formal_triplet_renderer_rejects_missing_values_or_wrong_order(tmp_path)
     assert not list(tmp_path.glob("*.png"))
 
 
-def _write_synthetic_checkpoints(root, methods=METHODS, organs=ORGANS):
+def _write_synthetic_checkpoints(root, methods=METHODS, organs=ORGANS, *, graph_mode="all_features", knn_k=30, local_dims=2,
+                                 spot_count=None):
     micro = np.array([[.5, .1, .3, .1], [.1, .4, .2, .3], [.2, .2, .5, .1]])
     source = np.array([[.8, .2], [.5, .5], [.1, .9]])
     target = np.array([[.9, .1], [.6, .4], [.3, .7], [.2, .8]])
     macro = np.array([[.8, .2], [.3, .7]])
+    if spot_count is not None:
+        rng = np.random.default_rng(704)
+        micro = rng.uniform(.1, 1., size=(spot_count, spot_count))
+        micro /= micro.sum(axis=1, keepdims=True)
+        weights = np.linspace(.9, .1, spot_count)
+        source = np.column_stack([weights, 1 - weights])
+        target = source[::-1].copy()
 
     def keff(assignment):
         usage = assignment.mean(0)
@@ -108,6 +275,10 @@ def _write_synthetic_checkpoints(root, methods=METHODS, organs=ORGANS):
         run.mkdir(parents=True)
         for name, value in (("PIJ_micro_train", micro), ("S_t", source), ("S_tp", target), ("PIJ_macro_train", macro)):
             np.save(run / f"{name}.npy", value)
+        if spot_count is not None:
+            for name, value in (("t", source), ("tp", target)):
+                pd.DataFrame({"spot_id": [f"s{i}" for i in range(spot_count)],
+                              "hard_cluster": value.argmax(1)}).to_csv(run / f"assignments_{name}.csv", index=False)
         summary = {"method": method, "organ":organ, "input_scale": scale, "time_pair": pair,
                    "loss_protocol":"formal_two_stage_main", "selected_checkpoint":"best_joint.pt",
                    "checkpoint_metric_state_consistent":True,
@@ -119,7 +290,7 @@ def _write_synthetic_checkpoints(root, methods=METHODS, organs=ORGANS):
             proportions = counts / counts.sum()
             summary[f"hardK_{label}"] = len(counts)
             summary[f"KeffHard_{label}"] = float(np.exp(-(proportions * np.log(proportions)).sum()))
-        (run / "config.json").write_text(json.dumps({"objective_version":"formal_two_stage_main"}), encoding="utf-8")
+        (run / "config.json").write_text(json.dumps({"objective_version":"formal_two_stage_main", "local_graph_mode":graph_mode, "knn_k":knn_k, "local_dims":local_dims}), encoding="utf-8")
         (run / "best_joint.pt").write_bytes(b"synthetic-test-checkpoint")
         (run / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
         (run / "feature_manifest.json").write_text(json.dumps({"provenance": {
@@ -371,6 +542,73 @@ def test_multiscale_runner_accepts_formal_method_and_uses_native_formal_config(t
         "--method", "formal_two_stage", "--k", "40", "--out-dir", str(tmp_path / "run"),
         "--h5ad-t", "t.h5ad", "--h5ad-tp", "tp.h5ad", "--cci-t", "t.npz", "--cci-tp", "tp.npz",
         "--grn-t", "t.csv", "--grn-tp", "tp.csv", "--maturity-t", "t.csv", "--maturity-tp", "tp.csv"]))
+    assert config.local_graph_mode == "all_features"
     assert config.objective_version == "formal_two_stage_main"
     assert config.lambda_gap == 1. and config.lambda_keff == 0. and config.lambda_dev == 2.
     assert jobs[-1]["command"][-1] == "lung"
+
+
+def test_collector_selects_graph_protocol_and_preserves_old_results(tmp_path):
+    _write_synthetic_checkpoints(tmp_path / "current")
+    _write_synthetic_checkpoints(tmp_path / "historical", graph_mode="legacy_features")
+    historical = next((tmp_path / "historical").rglob("config.json"))
+    before = historical.read_bytes()
+    runs, rejected = collect_optimal_runs(tmp_path)
+    assert len(runs) == 27 and len(rejected) == 27
+    assert set(runs.local_graph_mode) == {"all_features"}
+    assert set(runs.knn_k) == {30} and set(runs.local_dims) == {2}
+    assert all("KNN graph configuration mismatch" in error for error in rejected)
+    old, rejected_old = collect_optimal_runs(tmp_path, local_graph_mode="legacy_features")
+    assert len(old) == 27 and len(rejected_old) == 27
+    assert set(old.local_graph_mode) == {"legacy_features"}
+    assert historical.read_bytes() == before
+
+
+@pytest.mark.parametrize("field,value", [("local_graph_mode", "legacy_features"), ("knn_k", 15)])
+def test_report_rejects_mixed_graph_settings(field, value):
+    frame = _measurements()
+    frame.loc[0, field] = value
+    with pytest.raises(ValueError, match="KNN graph configuration mismatch"):
+        build_optimal_report_grid(frame, OPTIMAL_TABLES["table_optimal_deltaei_cq"])
+
+
+def test_saved_graph_is_never_inferred_from_new_defaults(tmp_path):
+    _write_synthetic_checkpoints(tmp_path / "runs", organs=("heart",))
+    path = next((tmp_path / "runs").rglob("config.json"))
+    data = json.loads(path.read_text())
+    data.pop("local_graph_mode")
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="Missing saved KNN graph configuration"):
+        inspect_optimal_run(path.parent)
+
+
+def test_legacy_graph_requires_explicit_selection_in_cli_and_preflight(tmp_path):
+    from mignet_ce.downstream.formal_core_analysis.__main__ import main
+    from mignet_ce.downstream.formal_core_analysis.preflight import inspect_inputs
+    _write_synthetic_checkpoints(tmp_path / "runs", graph_mode="legacy_features")
+    report = inspect_inputs(None, tmp_path, tmp_path / "runs", .2, "legacy_nmf", PAIRS[0], True, stage="optimal")
+    assert not report["ready_for_publication_candidate"] and report["trained_optimal_runs"] == 0
+    assert len(report["rejected_runs"]) == 27
+    report = inspect_inputs(None, tmp_path, tmp_path / "runs", .2, "legacy_nmf", PAIRS[0], True,
+                            stage="optimal", local_graph_mode="legacy_features")
+    assert report["ready_for_publication_candidate"]
+    main(["--stage", "optimal", "--local-graph-mode", "legacy_features", "--data-root", str(tmp_path),
+          "--optimal-runs-root", str(tmp_path / "runs"), "--output-root", str(tmp_path / "out"), "--skip-figures"])
+    manifest = json.loads((tmp_path / "out" / "output_manifest.json").read_text())
+    assert manifest["local_graph_mode"] == "legacy_features" and manifest["knn_k"] == 30
+    inventory = pd.read_csv(tmp_path / "out" / "audit" / "trained_optimal_run_inventory.csv")
+    assert set(inventory.local_graph_mode) == {"legacy_features"}
+
+
+@pytest.mark.parametrize("mode,k,dims", [("all_features", 30, 2), ("coords", 7, 0), ("legacy_features", 8, 3)])
+def test_pipeline_passes_matching_graph_options_to_training_and_collection(tmp_path, mode, k, dims):
+    args = run_pipeline.build_argparser().parse_args([
+        "--stage", "optimal", "--data-root", str(tmp_path), "--grn-root", str(tmp_path),
+        "--cci-root", str(tmp_path), "--developmental-root", str(tmp_path), "--output-root", str(tmp_path / "out"),
+        "--local-graph-mode", mode, "--knn-k", str(k), "--local-dims", str(dims)])
+    jobs = run_pipeline.make_commands(args, None)
+    for job in jobs:
+        command = job["command"]
+        assert command[command.index("--local-graph-mode") + 1] == mode
+        assert command[command.index("--knn-k") + 1] == str(k)
+        assert command[command.index("--local-dims") + 1] == str(dims)
