@@ -72,8 +72,8 @@ def read_optimal_direct_js(run_dir: Path) -> float:
 
 
 def natural_js_grid(cq: pd.DataFrame, *, pairs: tuple[str, ...],
-                    allow_missing_k10: bool = False) -> pd.DataFrame:
-    """Read measured natural results, preserving the fixed 4-column layout.
+                    allow_missing_k10: bool = False, include_k10: bool = True) -> pd.DataFrame:
+    """Read current three-layer or explicitly selected historical K10 results.
 
     With allow_missing_k10, *only* truly absent K10 can be blank; all other
     scientific measurements remain mandatory. Exploratory output must be labeled.
@@ -81,10 +81,11 @@ def natural_js_grid(cq: pd.DataFrame, *, pairs: tuple[str, ...],
     required = {"time_pair", "hierarchy", "closure_JS_direct_bits"}
     if not required.issubset(cq.columns):
         raise ValueError(f"Missing natural direct JS columns {sorted(required - set(cq))}")
+    columns = NATURAL_JS_COLUMNS if include_k10 else NATURAL_JS_COLUMNS[:3]
     records = []
     for pair in pairs:
         row: dict[str, str | float] = {"Time pair": pair}
-        for heading, hierarchy in NATURAL_JS_COLUMNS:
+        for heading, hierarchy in columns:
             matches = cq.loc[cq.time_pair.eq(pair) & cq.hierarchy.eq(hierarchy)]
             if len(matches) == 0 and hierarchy == "spot->seurat_k10" and allow_missing_k10:
                 row[heading] = float("nan")
@@ -100,4 +101,4 @@ def natural_js_grid(cq: pd.DataFrame, *, pairs: tuple[str, ...],
                     raise ValueError(f"K150->K40 requires actual soft-overlap mapping provenance at {pair}")
             row[heading] = number
         records.append(row)
-    return pd.DataFrame.from_records(records, columns=["Time pair", *(x[0] for x in NATURAL_JS_COLUMNS)])
+    return pd.DataFrame.from_records(records, columns=["Time pair", *(x[0] for x in columns)])

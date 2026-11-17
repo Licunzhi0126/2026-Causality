@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from .methods import METHODS, METHOD_LABELS, ORGANS, expected_conditions
-from .tables import PAIRS, SCALES, LEVELS, OPTIMAL_TABLES
-from .plots import save_optimal_table, draw_natural_figure, draw_optimal_figure
+from .tables import PAIRS, SCALES, LEVELS, OPTIMAL_TABLES, NATURAL_TABLE, NATURAL_HIERARCHIES, NATURAL_METRICS
+from .plots import save_optimal_table, save_natural_table, draw_natural_figure, draw_optimal_figure
 
 
 def generate_preview(output_root: Path, *, data_root: Path | None = None,
@@ -20,6 +20,12 @@ def generate_preview(output_root: Path, *, data_root: Path | None = None,
         raise ValueError("Checkpoint figure preview requires --data-root")
     output_root.mkdir(parents=True, exist_ok=True)
     files = []
+    natural_columns = ["Organ", "Hierarchy"] + [f"{pair}::{metric}" for pair in PAIRS for metric in NATURAL_METRICS]
+    natural = pd.DataFrame([{"Organ": organ, "Hierarchy": hierarchy,
+                             **{column: "—" for column in natural_columns[2:]}}
+                            for organ in ORGANS for hierarchy in NATURAL_HIERARCHIES], columns=natural_columns)
+    save_natural_table(natural, output_root / NATURAL_TABLE, preview=True)
+    files.extend(NATURAL_TABLE + extension for extension in (".png", ".pdf"))
     for name, metrics in OPTIMAL_TABLES.items():
         columns = ["Organ", "Input scale"] + [f"{pair}::{metric}" for pair in PAIRS for metric in metrics]
         frame = pd.DataFrame([{"Organ":organ, "Input scale":scale,
@@ -31,16 +37,19 @@ def generate_preview(output_root: Path, *, data_root: Path | None = None,
                 "models_trained":False, "contains_experimental_measurements":False,
                 "methods":[METHOD_LABELS[m] for m in METHODS], "method_ids":list(METHODS),
                 "organs":list(ORGANS), "scales":list(SCALES), "pairs":list(PAIRS),
+                "natural_table_rows": len(natural), "natural_metrics": ["JS", "CQ", "deltaEI"],
                 "rows_per_table":len(ORGANS) * len(SCALES),
                 "expected_formal_conditions":expected_conditions(SCALES, PAIRS),
                 "table_values":"placeholders only; no scientific CSVs generated", "files":files}
     if data_root is not None:
-        grid = pd.DataFrame([{"Time pair":figure_pair, **{name:np.nan for name, _, _ in LEVELS}}])
+        grid = pd.DataFrame([{"Time pair":figure_pair, **{name:np.nan for name, _, _ in LEVELS[:3]}}])
         name = "figure1_natural"
         draw_natural_figure(data_root, grid, figure_pair, output_root / name,
+                            require_k10=False,
                             preview_notice="LAYOUT PREVIEW | Real heart coordinates | ΔEI not computed")
         files.extend(name + extension for extension in (".png", ".pdf"))
         manifest["figure1"] = {"data_root":str(Path(data_root).resolve()), "pair":figure_pair,
+                               "layers":["spot", "seurat_k150", "seurat_k40"],
                                "delta_ei":"not computed", "spatial_coordinates":"real local maps"}
     if optimal_run is not None:
         summary = json.loads((Path(optimal_run) / "summary.json").read_text(encoding="utf-8"))

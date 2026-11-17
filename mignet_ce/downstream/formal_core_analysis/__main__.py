@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import pandas as pd
 
 from .tables import (build_ei_grid, build_cq_grid, selected_candidate_sensitivity, selected_candidate_natural,
                      collect_optimal_runs, build_optimal_report_grid, OPTIMAL_TABLES, PAIRS, SCALES)
-from .plots import save_table, save_optimal_table, draw_natural_figure, draw_optimal_figure
+from .tables import NATURAL_TABLE, build_natural_report_grid
+from .plots import save_table, save_optimal_table, save_natural_table, draw_natural_figure, draw_optimal_figure
 from .closure_js import natural_js_grid
 from .preflight import inspect_inputs
 from .methods import METHODS, ORGANS, expected_conditions
 from .natural_analysis import NaturalAnalysisConfig, run as run_natural
+from .natural_analysis import run_organs, load_organ_results, requested_organs, organ_configs
 from mignet_ce.coarse_frontends.method_specs import LOCAL_GRAPH_MODES, FORMAL_LOCAL_GRAPH_MODE, graph_configuration
 
 
@@ -41,6 +44,43 @@ def build_argparser():
 
 
 def _render_natural(a, out, status):
+    if a.sensitivity_root is not None:
+        return _render_legacy_natural(a, out, status)
+    source = a.natural_root or out / "natural_analysis"
+    cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=source,
+                                grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
+    organs = requested_organs(a.organs, include_heart_figure=not a.skip_figures)
+    if a.natural_root is None:
+        run_organs(cfg, organs, resume=a.resume)
+    measurements = load_organ_results(cfg, organs)
+    frame = pd.concat([cq.assign(organ=organ) for organ, (_, cq, _) in measurements.items()], ignore_index=True)
+    grid = build_natural_report_grid(frame, organs=a.organs)
+    tab = out / "tables"
+    tab.mkdir(exist_ok=True)
+    grid.to_csv(tab / (NATURAL_TABLE + ".csv"), index=False)
+    save_natural_table(grid, tab / NATURAL_TABLE, organs=a.organs)
+    configs = organ_configs(cfg, organs)
+    status.update(natural_source_type="fixed_alpha_from_original_inputs", sensitivity_required=False,
+                  natural_organs=list(a.organs), natural_tables=[NATURAL_TABLE],
+                  natural_table_rows=len(grid), natural_metrics_per_time_pair=["JS", "CQ", "deltaEI"],
+                  natural_layers=["spot", "seurat_k150", "seurat_k40"], k10_required=False,
+                  natural_sources={organ: {"root": str(configs[organ].output_root.resolve()),
+                                          "protocol": manifest["protocol"],
+                                          "cci_order_provenance": manifest["cci_order_provenance"]}
+                                   for organ, (_, _, manifest) in measurements.items()},
+                  cq_display_policy="raw_measured_values_without_low_signal_labels")
+    if not a.skip_figures:
+        # Current natural scope is three complete layers, with three EI braces.
+        ei_grid = build_ei_grid(measurements["heart"][0], require_k10=False)
+        draw_natural_figure(a.data_root, ei_grid, a.figure_pair, out / "figures" / "figure1_natural",
+                            require_k10=False)
+        status["figure1"] = "generated_from_real_spot_domain_coordinates"
+        status["figure1_organ"] = "heart"
+    return True
+
+
+def _render_legacy_natural(a, out, status):
+    """Preserve the explicitly requested historical three-table interface."""
     if a.sensitivity_root is not None:
         # Historical explicit source remains supported, never selected implicitly.
         source = a.sensitivity_root
@@ -133,7 +173,7 @@ def main(argv=None):
     tab.mkdir(exist_ok=True)
     status = {"status":"processing", "stage":a.stage, "methods":list(METHODS),
               "loss_protocol":"formal_two_stage_main", "organs":a.organs,
-              "expected_optimal_runs":expected_conditions(SCALES, PAIRS, a.organs),
+              "expected_optimal_runs":0 if a.stage == "natural" else expected_conditions(SCALES, PAIRS, a.organs),
               "alpha":a.alpha, "grn_feature":a.grn_method, **graph,
               "delta_EI_protocol":"selected checkpoint + persisted training macro PIJ",
               "closure_JS_protocol":"uniform mean of JS_rows(P_micro_train @ S_tp, S_t @ P_macro_train), bits",
@@ -190,7 +230,8 @@ def main(argv=None):
                     status["figure2_error"] = str(exc)
     status["status"] = (("natural_complete" if a.stage == "natural" else "complete")
                         if natural_complete and optimal_complete else "incomplete_exploratory")
-    (out / "output_manifest.json").write_text(json.dumps(status,ensure_ascii=False,indent=2)+"\n", encoding="utf-8")
+    manifest_name = "output_manifest.json" if a.stage == "all" else f"{a.stage}_output_manifest.json"
+    (out / manifest_name).write_text(json.dumps(status,ensure_ascii=False,indent=2)+"\n", encoding="utf-8")
     print(json.dumps(status,ensure_ascii=False,indent=2))
 
 

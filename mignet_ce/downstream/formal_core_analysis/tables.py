@@ -32,6 +32,40 @@ OPTIMAL_TABLES = {
     "table_optimal_js_hardk_keffhard": (
         "closure_JS_direct_bits", "HardK_minus_KeffHard_t", "HardK_minus_KeffHard_tp"),
 }
+NATURAL_TABLE = "table_natural_js_cq_deltaei"
+LEGACY_NATURAL_HIERARCHIES = ("spot->seurat_k150", "seurat_k150->seurat_k40",
+                              "spot->seurat_k40", "spot->seurat_k10")
+NATURAL_HIERARCHIES = LEGACY_NATURAL_HIERARCHIES[:3]
+NATURAL_METRICS = ("closure_JS_direct_bits", "CQ", "delta_EI_direct_bits")
+
+
+def build_natural_report_grid(frame: pd.DataFrame, *, organs=ORGANS) -> pd.DataFrame:
+    """One organ/hierarchy row; numeric JS, CQ and Delta EI for each time pair."""
+    from .natural_analysis import requested_organs
+    organs = requested_organs(organs)
+    required = {"organ", "hierarchy", "time_pair", "mapping_method", *NATURAL_METRICS}
+    if not required <= set(frame):
+        raise ValueError(f"Missing natural report fields: {sorted(required - set(frame))}")
+    rows = []
+    for organ in organs:
+        for hierarchy in NATURAL_HIERARCHIES:
+            row = {"Organ": organ, "Hierarchy": hierarchy}
+            for pair in PAIRS:
+                hit = frame.loc[frame.organ.eq(organ) & frame.hierarchy.eq(hierarchy) & frame.time_pair.eq(pair)]
+                if len(hit) != 1:
+                    raise ValueError(f"{'Missing' if hit.empty else 'Duplicate'} natural condition: {organ}/{hierarchy}/{pair}")
+                record = hit.iloc[0]
+                if hierarchy == "seurat_k150->seurat_k40" and record.mapping_method != "spot_overlap_soft_contingency":
+                    raise ValueError(f"Natural K150->K40 requires soft-overlap provenance: {organ}/{pair}")
+                for metric in NATURAL_METRICS:
+                    value = float(record[metric])
+                    if not np.isfinite(value):
+                        raise ValueError(f"Non-finite natural {metric}: {organ}/{hierarchy}/{pair}")
+                    if metric != "delta_EI_direct_bits" and not -.00000001 <= value <= 1.00000001:
+                        raise ValueError(f"Out-of-range natural {metric}: {organ}/{hierarchy}/{pair}")
+                    row[f"{pair}::{metric}"] = value
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, organs=ORGANS,

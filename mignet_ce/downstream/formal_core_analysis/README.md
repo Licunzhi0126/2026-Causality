@@ -56,12 +56,12 @@ python -m mignet_ce.downstream.formal_core_analysis.run_pipeline --stage optimal
 先加 `--dry-run` 可只读检查并打印训练命令。不同器官结果隔离在
 `optimal_runs/<organ>/formal_two_stage/<scale>/K<k>/<source>_to_<target>/`。
 GRN/CCI/发育输入仍使用项目已有的按器官命名规则。
-`--stage all` 从原始输入直接计算固定 alpha=.20 的心脏自然指标，并生成自然层级表与 Figure 1；不需要 sensitivity 目录。
+`--stage all` 从原始输入直接计算固定 alpha=.20 的三器官自然指标，并生成自然层级表与 Figure 1；不需要 sensitivity 目录。
 Figure 2 明确选择 `--figure-organ heart --figure-input-scale spot --figure-pair '12.5->13.5'`，不按方法名排序选结果。
 
 ## 图形与预览
 
-括弧为连续圆滑曲线；Spot→K40、K150→K10、Spot→K10 使用独立横向位置。
+当前 Figure 1 为 Spot/K150/K40 三层，使用连续圆滑括弧展示三种 EI 比较；四层 K10 绘图函数保留为历史接口。
 每个低层级 spot 均连接到其所属高层级分组的空间质心；高层级保留淡色组织轮廓并突出质心。
 自然层级按 spot_id 对齐各尺度标签，不假定分组严格嵌套。Figure 2 使用训练硬分配展开到 spot 后计算空间质心。
 空间质心只用于绘图；指标按真实训练输入节点计算，不能用展开后的 spot 数量重算占用指标。
@@ -70,29 +70,61 @@ Figure 2 明确选择 `--figure-organ heart --figure-input-scale spot --figure-p
 python -m mignet_ce.downstream.formal_core_analysis.preview --output-root /path/to/new_empty_preview --data-root /path/to/E1S1_domain_factory
 ```
 
-省略 `--data-root` 仅预览两张表；表格以 `—` 占位，不产生科学 CSV。
+省略 `--data-root` 仅预览当前三张表；表格以 `—` 占位，不产生科学 CSV。
 可附加 `--optimal-run /path/to/run --optimal-scale seurat_k150 --optimal-pair '11.5->12.5'` 预览指定 checkpoint。
 旧 checkpoint 会明确标为历史方法，不会作为正式表输入。已有非空预览目录拒绝覆盖。
 所有历史结果保留；收集器不执行自动清理。
 
----
 
-以下为历史五方法版本说明，命令、输出名称和条件数量以以上当前流程为准。
+## 分阶段运行：自然 / 最优 / 全部
 
-# Formal Core Analysis：五方法与 Closure JS Direct Bits（2026-11 增量）
+| stage | 输入要求 | 执行及输出 |
+|---|---|---|
+| `natural` | 所选器官 Spot/K150/K40 的原始 H5AD、GRN、CCI、index、map | 不训练模型；一张九行自然组合表 + 心脏三层 Figure 1 |
+| `optimal` | 所选器官 Spot/K150/K40 的训练输入及发育特征 CSV | 27 组（默认三器官）formal_two_stage；原有两张最优表 + Figure 2 |
+| `all` | 上述两部分输入 | 自然 → 最优 → 当前三表两图 |
 
-本模块保留原 single-stage / two-stage 方法，增加三个项目内实现的对照方法，统一生成 ΔEI / Keff、CQ 和 Closure JS Direct（bits）表。两种来源的 JS 口径相同，但输入来源不同，不与 CQ 或 Strict Reconstruction 混同。
+`natural` 不要求 `--developmental-root`，不传训练的 epochs/device 参数，也不检查或改写 optimal_runs。
+自然表为 Organ × Hierarchy 行，层级依次为 Spot→K150、K150→K40、Spot→K40，共 9 行；采用两层表头，每个时间对下竖分为 JS、CQ、ΔEI 三个子列，数据行只显示数值。
+CSV 中每个指标保留独立数值列。JS 和 ΔEI 单位为 bits，CQ 无量纲，ΔEI 保留正负号。
+默认不再导出原来的三张自然表；历史函数、显式 legacy 入口和已有文件保留。
+Figure 1 为心脏 Spot/K150/K40 三层图；如只选择其他器官且输出图，则额外读取/计算心脏以保留该图。
+
+在当前服务器任务结束后，同步新源码，单独补跑自然部分：
+
+```bash
+cd "/home/jovyan/work/2026 Causality"
+python -u -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
+  --stage natural \
+  --organs lung brain heart \
+  --data-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory" \
+  --cci-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/cci" \
+  --grn-root "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/grn" \
+  --output-root "output/nature_output" \
+  --resume
+```
+
+同一命令追加 `--dry-run` 可预检三器官原始输入（仅 Spot/K150/K40，不检查 K10）及缓存，不启动任务、不创建输出。
+三层结果协议为 `formal_core_natural_fixed_alpha_v2_three_layers`。层级、配置、输入及结果哈希均匹配的缓存才会复用。
+旧四层 K10 缓存与代码保留，不直接当作三层结果。原根目录若是旧四层心脏结果，新三层结果放入 heart 子目录；
+若 `<organ>` 目录已有旧四层缓存，新三层结果放入该目录的 `spot_k150_k40/`，旧文件不改写。
+同一层级配置若在根目录和器官目录同时存在，则报告歧义并停止。
+
+单阶段执行分别保存 `formal_natural_pipeline_execution.json` / `formal_optimal_pipeline_execution.json`，
+收集分别保存 `natural_output_manifest.json` / `optimal_output_manifest.json`。
+`all` 保持 `formal_full_pipeline_execution.json` / `output_manifest.json`；自然单跑不会覆盖这些已有执行记录或最优记录。
 
 ## 独立完整流程：固定 alpha=.20，不需要 sensitivity
 
-`run_pipeline --stage all` 的当前顺序为：只读输入预检 → 可选原生发育特征生成 → 心脏自然指标计算 → 三器官 27 组 formal_two_stage 训练 → 汇总五表两图。
+`run_pipeline --stage all` 的当前顺序为：只读输入预检 → 可选原生发育特征生成 → 三器官自然指标计算 → 三器官 27 组 formal_two_stage 训练 → 汇总三表两图。
 不启动 alpha 扫描，不读取 sensitivity 结果目录。旧 `--sensitivity-root` 参数在完整流水线中仅为命令兼容保留，不参与计算。
 单独收集器仍允许显式指定该参数读取历史自然结果；当前默认流程不走历史分支。
 
-自然指标由 `natural_analysis.py` 负责，直接读取心脏三个时间点的 Spot/K150/K40/K10 H5AD、CCI NPZ、CCI index TSV、GRN edges 和三个 domain 层的 spot-domain map。
+自然指标由 `natural_analysis.py` 负责，按所选器官分别读取三个时间点的 Spot/K150/K40 H5AD、CCI NPZ、CCI index TSV、GRN edges 和 K150/K40 两个 domain 层的 spot-domain map。
 索引顺序必须匹配 H5AD；domain map 必须覆盖同一组 spot 和 domain。完整图表还要求图示时间点的 map 包含有限 x/y 坐标。
-真实 K10 的原始数据仍然必需；缺失时在训练之前停止，不填补或推算 K10。
-自然部分不使用 K10 发育特征 CSV。
+当前自然计算、预检、表格和 Figure 1 均不请求 K10。没有任何 K10 H5AD/GRN/CCI/index/map 也能形成完整的三层结果。
+预检中的 `k10_required=false` 表示不需要 K10，`k10_input_present=null` 表示未请求该层，均不是缺失输入。
+自然部分也不使用发育特征 CSV；最优流程及其 K 设置保持原样。
 
 沿用原自然报告的 GRN=legacy_nmf、CCI=laplacian_hks、KL+OT、alpha=.20、beta=.05、tau=.8、HKS 5 维、投影 64 维/seed=20260713、GRN top-k=50。
 HKS 在每层三个时间点联合标准化；GRN 表示按时间对拟合。K150→K40 使用 spot 共归属的行归一化软映射。
@@ -103,15 +135,13 @@ CQ 采用现有 induced 信息预算；direct JS 比较 P_lower @ S_tp 与 S_t @
 
 | 输出 | 内容 |
 |---|---|
-| `natural_analysis/natural_layer_ei.csv` | 心脏四层 × 三时间对的 12 行 EI |
-| `natural_analysis/natural_hierarchy_metrics.csv` | 四种自然映射 × 三时间对的 CQ、JS 等测量明细 |
-| `natural_analysis/manifest.json` | 固定协议、配置、原始输入路径/SHA256、结果 CSV SHA256 |
-| `tables/table_ei_hierarchy.*` | 心脏三时间对的六种自然层级 Delta EI |
-| `tables/table_cq_hierarchy.*` | 心脏 Spot→K150/K40/K10 的 CQ |
-| `tables/table_natural_closure_js_direct_bits.*` | 心脏 Spot→K150/K40/K10、K150→K40 的 direct JS |
+| `natural_analysis/<organ>/natural_layer_ei.csv` | 每器官三层 × 三时间对的 9 行 EI |
+| `natural_analysis/<organ>/natural_hierarchy_metrics.csv` | 每器官三种自然映射 × 三时间对的 CQ、JS、Delta EI 明细 |
+| `natural_analysis/<organ>/manifest.json` | 每器官固定协议、配置、原始输入路径/SHA256、结果 CSV SHA256 |
+| `tables/table_natural_js_cq_deltaei.*` | 肺/脑/心 × 三自然比较，共 9 行；每个时间对下为 JS、CQ、Delta EI 三个数值子列 |
 | `tables/table_optimal_deltaei_cq.*` | 肺/脑/心 × 三输入尺度，三个时间对的 Delta EI 与 CQ |
 | `tables/table_optimal_js_hardk_keffhard.*` | 同上，JS 和源/目标时间点的 HardK−KeffHard |
-| `figures/figure1_natural.*` | 心脏自然四层，默认 E12.5→E13.5 |
+| `figures/figure1_natural.*` | 心脏自然三层，默认 E12.5→E13.5 |
 | `figures/figure2_optimal_NO_ROI_ENLARGE.*` | 默认心脏 Spot 输入、E12.5→E13.5 的正式训练结果 |
 
 表格的 `.*` 为 CSV/PNG/PDF，空间图为 PNG/PDF。另有 `optimal_runs/` 训练产物、`audit/` 收集审计、`formal_full_pipeline_execution.json` 和 `output_manifest.json`。
@@ -135,9 +165,9 @@ python -u -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
   --resume
 ```
 
-先在同一命令末尾追加 `--dry-run`，可只读检查原始输入、K10、发育 CSV、已有自然缓存及打印全部命令，不训练、不产生输出文件。
+先在同一命令末尾追加 `--dry-run`，可只读检查三层原始输入、训练所需发育 CSV、已有自然缓存及打印全部命令，不训练、不产生输出文件。
 输入齐全不等于自然指标已经计算；预检分别报告 `natural_inputs.ready` 和 `natural_k150_k40_js_ready`。
-`--skip-render` 只训练；`--stage optimal` 只训练/汇总最优部分，不要求自然/K10 输入。
+`--skip-render` 只训练；`--stage optimal` 只训练/汇总最优部分，不要求自然分析输入。
 
 `--resume` 只复用配置、输入哈希和结果哈希均匹配的完整自然结果。数据变化、结果被修改或缓存不完整时停止；使用新 output-root 保留旧结果。
 训练部分继续使用已有逐条件 resume / resume-incomplete 规则。`--resume-incomplete` 不覆盖不合格的自然缓存。
@@ -148,7 +178,7 @@ python -u -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
 python -u -m mignet_ce.downstream.formal_core_analysis.natural_analysis \
   --data-root /path/to/E1S1_domain_factory \
   --grn-root /path/to/grn --cci-root /path/to/cci \
-  --output-root /path/to/formal_analysis/natural_analysis --resume
+  --output-root /path/to/formal_analysis/natural_analysis --organs lung brain heart --resume
 ```
 
 单独收集时可用 `--natural-root` 指向上述测量目录；不提供时从原始输入计算到 output-root/natural_analysis，可配合 `--resume` 复用。
@@ -160,10 +190,17 @@ python -u -m mignet_ce.downstream.formal_core_analysis.natural_analysis \
 python -B -m pytest -q tests/test_formal_core_analysis.py tests/test_multiscale_maturity_orchestrator.py tests/test_formal_two_stage_loss_ablation.py -p no:cacheprovider
 ```
 
-测试使用显式合成夹具验证固定 alpha 数值与共享数学的一致性、K10/索引/映射预检、缓存防串用和五表两图产物；合成数值不能用于论文。
+测试使用显式合成夹具验证固定 alpha 数值与共享数学的一致性、三层输入/索引/映射预检、无 K10 的完整运行、缓存防串用、三表两图产物和阶段隔离；合成数值不能用于论文。
 
 <details>
 <summary>历史接口与旧方法记录（以下不是当前运行说明，命令和组数已退役）</summary>
+
+以下为历史五方法版本说明，命令、输出名称和条件数量以以上当前流程为准。
+
+# Formal Core Analysis：五方法与 Closure JS Direct Bits（2026-11 增量）
+
+本模块保留原 single-stage / two-stage 方法，增加三个项目内实现的对照方法，统一生成 ΔEI / Keff、CQ 和 Closure JS Direct（bits）表。两种来源的 JS 口径相同，但输入来源不同，不与 CQ 或 Strict Reconstruction 混同。
+
 
 ## 1. 两张表与准确的数据口径
 

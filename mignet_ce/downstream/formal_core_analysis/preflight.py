@@ -9,7 +9,7 @@ from .tables import PAIRS, SCALES, METHODS, selected_candidate_sensitivity, coll
 from .plots import _coordinates
 from .closure_js import natural_js_grid
 from .methods import expected_conditions
-from .natural_analysis import NaturalAnalysisConfig, inspect_source_inputs, load_natural_results
+from .natural_analysis import NaturalAnalysisConfig, inspect_organ_inputs, requested_organs
 from mignet_ce.coarse_frontends.method_specs import FORMAL_LOCAL_GRAPH_MODE, graph_configuration
 
 
@@ -100,27 +100,24 @@ def _inspect_natural_inputs(sensitivity_root: Path, data_root: Path, optimal_roo
 
 
 def _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
-                                  alpha, figure_pair, skip_figures):
+                                  alpha, figure_pair, skip_figures, organs):
     cfg = NaturalAnalysisConfig(data_root=Path(data_root),
                                 output_root=Path(natural_root) if natural_root else Path(data_root) / "unused_natural_preflight",
                                 grn_root=grn_root, cci_root=cci_root, alpha=alpha)
-    source = inspect_source_inputs(cfg, figure_pair=None if skip_figures else figure_pair)
+    natural_organs = requested_organs(organs, include_heart_figure=not skip_figures)
+    source = inspect_organ_inputs(cfg, natural_organs, figure_pair=None if skip_figures else figure_pair)
     issues = list(source["issues"]) + list(source["missing_inputs"])
-    measured = False
-    if natural_root and Path(natural_root).exists() and any(Path(natural_root).iterdir()):
-        try:
-            load_natural_results(natural_root, cfg)
-            measured = True
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            issues.append(f"Cannot reuse natural results: {exc}")
+    measured = source["measurements_ready"]
     return {"pipeline": "formal_core_analysis", "issues": issues, "cautions": [],
             "natural_source_type": "fixed_alpha_from_original_inputs", "sensitivity_required": False,
-            "natural_inputs": source, "has_k10": source["k10_input_present"],
+            "natural_inputs": source, "has_k10": False, "k10_required": False,
             "natural_measurements_ready": measured,
             "natural_computation_pending": not measured,
-            "missing_ei_conditions": [] if measured else [f"{pair}/{layer}" for pair in PAIRS for layer in (*SCALES, "seurat_k10")],
-            "missing_natural_direct_js": [] if measured else [f"{pair}/{hierarchy}" for pair in PAIRS for hierarchy in (
-                "spot->seurat_k150", "spot->seurat_k40", "seurat_k150->seurat_k40", "spot->seurat_k10")],
+            "missing_ei_conditions": [] if measured else [f"{organ}/{pair}/{layer}" for organ in natural_organs
+                                                          for pair in PAIRS for layer in SCALES],
+            "missing_natural_direct_js": [] if measured else [f"{organ}/{pair}/{hierarchy}" for organ in natural_organs
+                                                               for pair in PAIRS for hierarchy in (
+                "spot->seurat_k150", "spot->seurat_k40", "seurat_k150->seurat_k40")],
             "missing_spatial_maps": [], "ready_for_execution": not issues,
             "ready_for_publication_candidate": measured and not issues,
             "ready_for_incomplete_preview": not issues,
@@ -150,14 +147,14 @@ def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
             report["ready_for_execution"] = report["ready_for_publication_candidate"]
         else:
             report = _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
-                                                   alpha, figure_pair, skip_figures)
+                                                   alpha, figure_pair, skip_figures, organs)
     else:
         report = {"pipeline":"formal_core_analysis", "issues":[], "cautions":[],
                   "missing_ei_conditions":[], "missing_natural_direct_js":[],
                   "missing_spatial_maps":[], "ready_for_publication_candidate":True,
                   "ready_for_incomplete_preview":True, "ready_for_execution":True}
     report.update(stage=stage, organs=list(organs), methods=list(METHODS),
-                  expected_optimal_runs=expected_conditions(SCALES, PAIRS, organs),
+                  expected_optimal_runs=0 if stage == "natural" else expected_conditions(SCALES, PAIRS, organs),
                   does_not_train_optimal_models=True)
     report.update(graph)
     if stage == "natural":

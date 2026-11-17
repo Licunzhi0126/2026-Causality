@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from .methods import METHODS, ORGANS, expected_conditions
-from .natural_analysis import NaturalAnalysisConfig, inspect_source_inputs, load_natural_results
+from .natural_analysis import NaturalAnalysisConfig, inspect_organ_inputs, requested_organs, LAYERS, PROTOCOL
 from mignet_ce.coarse_frontends.method_specs import (
     LOCAL_GRAPH_MODES, FORMAL_LOCAL_GRAPH_MODE, graph_configuration, validate_graph_configuration,
 )
@@ -35,10 +35,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--data-root", type=Path, required=True, help="Factory root with spot/seurat_k150/seurat_k40")
     p.add_argument("--grn-root", type=Path, required=True)
     p.add_argument("--cci-root", type=Path, required=True, help="True CCI matrices AND corresponding *_index.tsv")
-    p.add_argument("--developmental-root", type=Path, required=True,
-                   help="Source/output of native per-layer developmental feature CSV files")
+    p.add_argument("--developmental-root", type=Path,
+                   help="Required for all/optimal; unused by natural")
     p.add_argument("--sensitivity-root", type=Path, help="Legacy argument retained; ignored by this fixed-alpha pipeline")
-    p.add_argument("--stage", choices=("all", "optimal"), default="all")
+    p.add_argument("--stage", choices=("all", "natural", "optimal"), default="all")
     p.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--maturity-mode", choices=("existing", "native"), default="existing",
@@ -227,7 +227,7 @@ def _inspect_legacy_sensitivity_inputs(a: argparse.Namespace, missing: list[str]
 
 def inspect_inputs(a: argparse.Namespace) -> dict:
     missing: list[str] = []
-    for organ in a.organs:
+    for organ in (() if a.stage == "natural" else a.organs):
         for t in TIMES:
             for scale in SCALES:
                 sample = f"{STEMS[scale]}_{organ}_{t}"
@@ -242,29 +242,23 @@ def inspect_inputs(a: argparse.Namespace) -> dict:
                 for path in paths:
                     if not path.is_file():
                         missing.append(str(path))
-    builder, to_generate, maturity_issues = _maturity_plan(a)
+    builder, to_generate, maturity_issues = (None, [], []) if a.stage == "natural" else _maturity_plan(a)
     missing.extend(maturity_issues)
     natural = None
-    if not a.skip_render and a.stage == "all":
+    if not a.skip_render and a.stage != "optimal":
         cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=a.output_root / "natural_analysis",
                                     grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
-        natural = inspect_source_inputs(cfg, figure_pair=a.figure_pair)
+        natural = inspect_organ_inputs(cfg, requested_organs(a.organs, include_heart_figure=True),
+                                       figure_pair=a.figure_pair, resume=a.resume)
         missing.extend(natural["missing_inputs"])
         missing.extend(natural["issues"])
-        if cfg.output_root.exists() and any(cfg.output_root.iterdir()):
-            try:
-                if not a.resume:
-                    raise FileExistsError("Natural output exists; use --resume or a new output-root")
-                load_natural_results(cfg.output_root, cfg)
-                natural["measurements_ready"] = True
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                missing.append(f"Cannot reuse natural results: {exc}")
-        else:
-            natural["measurements_ready"] = False
     missing = list(dict.fromkeys(missing))
     return {
         "missing_input_count": len(missing),
         "sensitivity_required": False,
+        "natural_protocol": PROTOCOL if natural is not None else None,
+        "natural_layers": list(LAYERS) if natural is not None else [],
+        "k10_required": False,
         "natural_inputs": natural,
         "missing_inputs": missing,
         "natural_k150_k40_js_ready": bool(natural and natural.get("measurements_ready")),
@@ -285,16 +279,17 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
     jobs: list[dict] = []
     if native_builder:
         jobs.append({"stage": "native_developmental_builder", "command": native_builder})
-    if not a.skip_render and a.stage == "all":
+    if not a.skip_render and a.stage != "optimal":
         natural_command = [sys.executable, "-m", "mignet_ce.downstream.formal_core_analysis.natural_analysis",
                            "--data-root", str(a.data_root), "--grn-root", str(a.grn_root),
                            "--cci-root", str(a.cci_root),
-                           "--output-root", str(a.output_root / "natural_analysis"), "--alpha", "0.20"]
+                           "--output-root", str(a.output_root / "natural_analysis"), "--alpha", "0.20",
+                           "--organs", *requested_organs(a.organs, include_heart_figure=True)]
         if a.resume:
             natural_command.append("--resume")
         jobs.append({"stage": "natural_fixed_alpha", "command": natural_command})
     run_root = a.output_root / "optimal_runs"
-    for organ in a.organs:
+    for organ in (() if a.stage == "natural" else a.organs):
         for method in METHODS:
             command = [
                 sys.executable, str(REPO / "scripts" / "run_multiscale_maturity_cci_grn.py"),
@@ -329,10 +324,10 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
             "stage": "formal_core_collect_and_plot",
             "command": [sys.executable, "-m", "mignet_ce.downstream.formal_core_analysis",
                         "--stage", a.stage, "--organs", *a.organs,
-                        *(["--natural-root", str(a.output_root / "natural_analysis")] if a.stage == "all" else []),
+                        *(["--natural-root", str(a.output_root / "natural_analysis")] if a.stage != "optimal" else []),
                         "--grn-root", str(a.grn_root), "--cci-root", str(a.cci_root),
                         "--data-root", str(a.data_root),
-                        "--optimal-runs-root", str(run_root),
+                        *(["--optimal-runs-root", str(run_root)] if a.stage != "natural" else []),
                         "--output-root", str(a.output_root),
                         "--alpha", "0.20", "--grn-method", "legacy_nmf",
                         "--local-graph-mode", graph["local_graph_mode"],
@@ -377,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
                                  knn_k=a.knn_k, local_dims=a.local_dims)
     if len(a.organs) != len(set(a.organs)):
         raise SystemExit("--organs must be unique")
+    if a.stage != "natural" and a.developmental_root is None:
+        raise SystemExit("--developmental-root is required for --stage all/optimal")
+    if a.stage == "natural" and a.skip_render:
+        raise SystemExit("--skip-render is for model training; omit it for --stage natural")
     if a.resume_incomplete and not a.resume:
         raise SystemExit("--resume-incomplete requires --resume")
     if a.epochs <= 0:
@@ -387,17 +386,19 @@ def main(argv: list[str] | None = None) -> int:
     jobs = make_commands(a, report["native_maturity_builder_command"])
     plan = {
         "status": "dry_run" if a.dry_run else "preflight",
-        "schema_version": 3,
+        "schema_version": 4,
         "output_root": str(a.output_root),
-        "optimal_runs_root": str(a.output_root / "optimal_runs"),
-        "training_conditions": expected_conditions(SCALES, PAIRS, a.organs),
-        "methods": list(METHODS), "organs": a.organs, "stage": a.stage, "scales": list(SCALES), "pairs": list(PAIRS),
+        "optimal_runs_root": str(a.output_root / "optimal_runs") if a.stage != "natural" else None,
+        "training_conditions": 0 if a.stage == "natural" else expected_conditions(SCALES, PAIRS, a.organs),
+        "methods": [] if a.stage == "natural" else list(METHODS), "organs": a.organs, "stage": a.stage, "scales": list(SCALES), "pairs": list(PAIRS),
         "grn_feature": "legacy_nmf", "cci_feature": "laplacian_hks",
         "transition": "KL+OT", "alpha_cci": 0.20,
         **graph,
         "epochs": a.epochs, "seed": a.seed, "resume": a.resume,
         "resume_incomplete": a.resume_incomplete,
-        "provenance_note": "Training K150/K40 uses native per-layer CSV paths. No bespoke maturity aggregator.",
+        "provenance_note": ("Fixed-alpha natural analysis of Spot/K150/K40; no K10 or developmental CSV inputs."
+                            if a.stage == "natural" else
+                            "Training K150/K40 uses native per-layer CSV paths. No bespoke maturity aggregator."),
         **report,
         "commands": jobs,
     }
@@ -405,7 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
         return 0 if not report["missing_input_count"] else 2
     a.output_root.mkdir(parents=True, exist_ok=True)
-    audit = a.output_root / "formal_full_pipeline_execution.json"
+    audit = a.output_root / ("formal_full_pipeline_execution.json" if a.stage == "all"
+                             else f"formal_{a.stage}_pipeline_execution.json")
     plan["status"] = "running"
     audit.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     for idx, job in enumerate(jobs, 1):

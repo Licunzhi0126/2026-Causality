@@ -12,6 +12,76 @@ import matplotlib.pyplot as plt
 from .methods import METHOD_LABELS
 
 
+def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview: bool = False) -> None:
+    """Two-level headers: each time pair spans JS, CQ and Delta EI columns."""
+    from matplotlib.patches import Rectangle
+    from .methods import ORGANS, ORGAN_LABELS
+    from .tables import PAIRS, NATURAL_HIERARCHIES, NATURAL_METRICS
+    organs = tuple(ORGANS if organs is None else organs)
+    columns = ["Organ", "Hierarchy"] + [f"{pair}::{metric}" for pair in PAIRS for metric in NATURAL_METRICS]
+    if (list(frame.columns) != columns or list(zip(frame.Organ, frame.Hierarchy)) != [
+            (organ, hierarchy) for organ in organs for hierarchy in NATURAL_HIERARCHIES]):
+        raise ValueError("Expected canonical natural organ/hierarchy layout")
+    rendered = {}
+    for column in columns[2:]:
+        if preview:
+            if not frame[column].eq("—").all():
+                raise ValueError("Natural layout previews must use placeholders only")
+            rendered[column] = ["—"] * len(frame)
+        else:
+            values = pd.to_numeric(frame[column], errors="raise")
+            if not np.isfinite(values).all():
+                raise ValueError("No missing/invalid natural metric may be rendered")
+            rendered[column] = [("{:+.4f}" if column.endswith("::delta_EI_direct_bits") else "{:.4f}").format(v)
+                                for v in values]
+    widths = [1.10, 1.70] + [1.08, 1.08, 1.22] * len(PAIRS)
+    xs = np.r_[0, np.cumsum(widths)]
+    n = len(frame)
+    fig, ax = plt.subplots(figsize=(float(xs[-1]) + .6, .43 * (n + 2) + 1.9))
+    fig.subplots_adjust(left=.025, right=.975, bottom=.10, top=.80)
+    ax.set_xlim(0, xs[-1]); ax.set_ylim(0, n + 2); ax.axis("off")
+    ink, border = "#203A50", "#CED7DE"
+    def cell(col, bottom, label="", *, height=1., span=1, fill="white", bold=False, size=10.5):
+        width = sum(widths[col:col + span])
+        ax.add_patch(Rectangle((xs[col], bottom), width, height,
+                               facecolor=fill, edgecolor=border, linewidth=.65))
+        if label:
+            ax.text(xs[col] + width/2, bottom + height/2, label,
+                    ha="center", va="center", fontsize=size, color=ink,
+                    weight="bold" if bold else "normal")
+    for col, label in enumerate(("Organ", "Natural hierarchy")):
+        cell(col, n, label, height=2., fill="#E3EDF4", bold=True, size=10.7)
+    for index, pair in enumerate(PAIRS):
+        start = 2 + index * len(NATURAL_METRICS)
+        cell(start, n + 1, "E" + pair.replace("->", " → E"), span=3,
+             fill="#E3EDF4", bold=True, size=11.)
+        for offset, label in enumerate(("JS (bits)", "CQ", "ΔEI (bits)")):
+            cell(start + offset, n, label, fill="#F2F6F9", size=10.)
+    labels = {"spot->seurat_k150":"Spot → K150", "seurat_k150->seurat_k40":"K150 → K40",
+              "spot->seurat_k40":"Spot → K40", "spot->seurat_k10":"Spot → K10"}
+    group_size = len(NATURAL_HIERARCHIES)
+    for index, (_, row) in enumerate(frame.iterrows()):
+        bottom = n - index - 1
+        fill = "white" if (index // group_size) % 2 == 0 else "#F8FAFC"
+        cell(1, bottom, labels[row.Hierarchy], fill=fill)
+        for col, column in enumerate(columns[2:], 2):
+            cell(col, bottom, rendered[column][index], fill=fill, size=10.5)
+    for index, organ in enumerate(organs):
+        cell(0, n - (index + 1)*group_size, ORGAN_LABELS[organ], height=group_size,
+             fill="#F0F5F8", bold=True, size=12.)
+    fig.text(.025, .975, ("LAYOUT PREVIEW · " if preview else "") + "Natural coarse graining | JS · CQ · ΔEI",
+             fontsize=17., color=ink, va="top")
+    fig.text(.025, .91, "Fixed α = 0.20 · Three developmental time pairs",
+             fontsize=10.5, color="#526778", va="top")
+    fig.text(.025, .03, "Layout only · — = not computed · no experimental values" if preview else
+             "GRN: legacy_nmf · CCI: laplacian_hks · KL+OT · K150→K40: soft spot-overlap",
+             fontsize=9.5, color="#8A5529" if preview else "#526778")
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path.with_suffix(".png"), dpi=200, bbox_inches="tight", facecolor="white")
+    fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def save_optimal_table(frame: pd.DataFrame, path: Path, *, metrics: tuple[str, ...],
                        organs=None, preview: bool = False) -> None:
     """Two-level time-pair headers; organ groups and explicit endpoint labels."""
