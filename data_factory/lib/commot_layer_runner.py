@@ -62,21 +62,22 @@ def build_config(
     unit_kind: str,
     commot_reference_dir: Path,
     dis_thr: float,
+    *, species="mouse", lr_table=None, min_cell_pct=.05, expression_layer=None,
 ) -> object:
     return CommotRunConfig(
         dataset_dir=input_root,
         output_dir=output_root,
         unit_kind=unit_kind,
         index_column_name="spot_id" if unit_kind == "spot" else "domain_id",
-        database_name="cellphonedb_v4_mouse",
+        database_name="custom_" + species if lr_table else "cellphonedb_v4_mouse",
         lr_database="CellPhoneDB_v4.0",
-        species="mouse",
+        species=species, lr_table=lr_table, expression_layer=expression_layer,
         signaling_type=None,
         heteromeric=True,
         heteromeric_rule="min",
         heteromeric_delimiter="_",
         filter_criteria="min_cell_pct",
-        min_cell_pct=0.05,
+        min_cell_pct=min_cell_pct,
         dis_thr=dis_thr,
         pathway_sum=True,
         cost_type="euc",
@@ -112,6 +113,7 @@ def run_commot_layer(
     lr_chunk_size: int = DEFAULT_LR_CHUNK_SIZE,
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
     manifest_root: Path | None = None,
+    species="mouse", lr_table=None, min_cell_pct=.05, expression_layer=None,
 ) -> None:
     ensure_dir(output_root)
 
@@ -155,7 +157,8 @@ def run_commot_layer(
     if runnable:
         from CCI_IO_COMMOT import CommotRunConfig, configure_logging, ensure_environment, load_commot, process_sample_parallel_lr
 
-        cfg = build_config(CommotRunConfig, input_root, output_root, unit_kind, commot_reference_dir, dis_thr=dis_thr)
+        cfg = build_config(CommotRunConfig, input_root, output_root, unit_kind, commot_reference_dir, dis_thr=dis_thr, species=species,
+                           lr_table=lr_table, min_cell_pct=min_cell_pct, expression_layer=expression_layer)
         configure_logging()
         ensure_environment()
         ct = load_commot(commot_reference_dir)

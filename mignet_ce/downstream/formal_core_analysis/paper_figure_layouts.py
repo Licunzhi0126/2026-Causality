@@ -205,7 +205,7 @@ def _stack_stage(
     ax.set_xlim(-0.14, 1.04)
     ax.set_ylim(-0.12, 2.46)
     _clean(ax)
-    ax.set_title(f"E{stage}", fontsize=12.0, fontweight="bold", color=TEAL_DARK, pad=4)
+    ax.set_title(stage_title(stage), fontsize=12.0, fontweight="bold", color=TEAL_DARK, pad=4)
 
 
 def _draw_pij_arrows(ax: plt.Axes, labels: tuple[str, ...] = ("Pij", "Pij", "Pij")) -> None:
@@ -264,6 +264,10 @@ def _inward_brace(
         linespacing=1.20,
     )
 
+def stage_title(stage):
+    return "E" + str(stage) if str(stage).replace(".", "", 1).isdigit() else str(stage)
+
+
 def render_figure1(
     *,
     source_stage: str,
@@ -280,6 +284,7 @@ def render_figure1(
     demo: bool = False,
     dpi: int = 300,
     preview_notice: str | None = None,
+    organ: str = "heart",
 ) -> None:
     set_asset_style()
     fig = plt.figure(figsize=(18.6, 7.0))
@@ -290,7 +295,7 @@ def render_figure1(
     ax_target = fig.add_subplot(gs[0, 3])
     ax_gain = fig.add_subplot(gs[0, 4])
 
-    draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample")
+    draw_context(ax_context, full_slice_source, source_spot, f"{stage_title(source_stage)} sample", organ=organ)
     _stack_stage(ax_source, source_spot, source_k150, source_k40, stage=source_stage)
     _draw_pij_arrows(ax_arrow)
     _stack_stage(ax_target, target_spot, target_k150, target_k40, stage=target_stage)
@@ -374,7 +379,7 @@ def render_figure1_k10(
     ax_context, ax_source, ax_arrow, ax_target, ax_gain = (
         fig.add_subplot(gs[0, index]) for index in range(5)
     )
-    draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample")
+    draw_context(ax_context, full_slice_source, source_spot, f"{stage_title(source_stage)} sample")
     _stack_stage_k10(ax_source, source_spot, source_k150, source_k40, source_k10, stage=source_stage)
     _stack_stage_k10(ax_target, target_spot, target_k150, target_k40, target_k10, stage=target_stage)
     _draw_pij_arrows(ax_arrow)
@@ -440,7 +445,7 @@ def _draw_optimal_stage(
     ax.set_xlim(-0.18 if show_layer_labels else -0.02, 1.04)
     ax.set_ylim(-0.08, 2.00)
     _clean(ax)
-    ax.set_title(f"E{stage}", fontsize=12.0, fontweight="bold", color=TEAL_DARK, pad=4)
+    ax.set_title(stage_title(stage), fontsize=12.0, fontweight="bold", color=TEAL_DARK, pad=4)
     return hardk
 
 
@@ -473,7 +478,7 @@ def render_figure2(
     ax_target = fig.add_subplot(gs[0, 3])
     ax_metric = fig.add_subplot(gs[0, 4])
 
-    draw_context(ax_context, full_slice_source, source_spot, f"E{source_stage} sample", organ=organ)
+    draw_context(ax_context, full_slice_source, source_spot, f"{stage_title(source_stage)} sample", organ=organ)
     kt = _draw_optimal_stage(ax_source, source_spot, source_assignments, source_stage, show_layer_labels=True)
     ktp = _draw_optimal_stage(ax_target, target_spot, target_assignments, target_stage, show_layer_labels=False)
 
@@ -500,7 +505,7 @@ def render_figure2(
     )
     ax_metric.text(
         0.47, 1.94,
-        f"K(E{source_stage}) = {kt}     K(E{target_stage}) = {ktp}",
+        f"K({stage_title(source_stage)}) = {kt}     K({stage_title(target_stage)}) = {ktp}",
         ha="left", va="top", fontsize=8.2, fontweight="bold", color=TEXT,
     )
 

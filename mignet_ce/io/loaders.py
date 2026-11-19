@@ -18,6 +18,7 @@ import pandas as pd
 import scipy.sparse as sp
 
 from mignet_ce.config import LAYER_SPECS, LayerSpec
+from mignet_ce.io.organ_paths import organ_h5ad_dir
 from mignet_ce.io.h5ad_h5py import read_h5ad_axis_names, read_h5ad_csr_matrix, read_h5ad_spatial
 
 
@@ -58,14 +59,14 @@ class LayerDataResolver:
         sample = self._select_sample_stem(layer, organ, stage, candidates)
         spot_map = None
         if layer != "spot":
-            spot_map = self.data_root / layer / organ / f"{sample}_spot_domain_map.csv"
+            spot_map = organ_h5ad_dir(self.data_root / layer, organ, f"{sample}_spot_domain_map.csv")
         return LayerPaths(
             layer=layer,
             organ=organ,
             stage=stage,
             sample_stem=sample,
             candidate_sample_stems=candidates,
-            h5ad=self.data_root / layer / organ / f"{sample}.h5ad",
+            h5ad=organ_h5ad_dir(self.data_root / layer, organ, f"{sample}.h5ad"),
             grn_edges=self.data_root / "grn" / layer / sample / "grn_edges.csv",
             cci_total=self.data_root / "cci" / layer / f"{sample}_CCI_total.npz",
             cci_manifest=self.data_root / "cci" / layer / f"{sample}_COMMOT_lr_pairs.tsv",
@@ -76,13 +77,13 @@ class LayerDataResolver:
             spots_with_domain_h5ad=(
                 None
                 if layer == "spot"
-                else self.data_root / layer / organ / f"{sample}_spots_with_domain.h5ad"
+                else organ_h5ad_dir(self.data_root / layer, organ, f"{sample}_spots_with_domain.h5ad")
             ),
         )
 
     def _select_sample_stem(self, layer: str, organ: str, stage: str, candidates: Sequence[str]) -> str:
         for sample in candidates:
-            if (self.data_root / layer / organ / f"{sample}.h5ad").exists():
+            if organ_h5ad_dir(self.data_root / layer, organ, f"{sample}.h5ad").exists():
                 return sample
         return candidates[0]
 

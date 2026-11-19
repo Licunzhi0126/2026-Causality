@@ -1,0 +1,43 @@
+{
+  "dataset_id": "zebrafish_hpf_10_12_18",
+  "species": "zebrafish",
+  "organs": [
+    "section"
+  ],
+  "time_points": [
+    "10",
+    "12",
+    "18"
+  ],
+  "pairs": [
+    [
+      "10",
+      "12"
+    ],
+    [
+      "12",
+      "18"
+    ],
+    [
+      "10",
+      "18"
+    ]
+  ],
+  "organ_labels": {
+    "section": "Zebrafish section"
+  },
+  "stage_labels": {
+    "10": "10 hpf",
+    "12": "12 hpf",
+    "18": "18 hpf"
+  },
+  "raw_files": {
+    "10": "10hpf/10hpf_slice.h5ad",
+    "12": "12hpf/12hpf_slice.h5ad",
+    "18": "18hpf/18hpf_slice.h5ad"
+  },
+  "gene_column": "Gene",
+  "output_layout": "flat",
+  "min_cell_pct": 0.01,
+  "distance_threshold": 200
+}

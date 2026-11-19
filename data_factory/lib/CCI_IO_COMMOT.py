@@ -62,6 +62,8 @@ class CommotRunConfig:
     database_name: str = "cellphonedb_v4_mouse"
     lr_database: str = "CellPhoneDB_v4.0"
     species: str = "mouse"
+    lr_table: Path | None = None
+    expression_layer: str | None = None
     signaling_type: Optional[str] = None
     heteromeric: bool = True
     heteromeric_rule: str = "min"
@@ -178,18 +180,28 @@ def prepare_commot_work(file_path: Path, cfg: CommotRunConfig, ct) -> Tuple[str,
 
     unit_ids = _extract_unit_ids(adata, cfg.unit_kind)
     work = adata.copy()
+    if cfg.expression_layer is not None:
+        if cfg.expression_layer not in work.layers:
+            raise ValueError(f"Missing requested expression layer {cfg.expression_layer}")
+        work.X = work.layers[cfg.expression_layer].copy()
     work.obs_names = pd.Index(unit_ids)
     work.obsm["spatial"] = _coerce_spatial_matrix(work.obsm["spatial"], expected_rows=work.n_obs)
     work.var_names_make_unique()
     _ensure_nonnegative_expression(work)
     _apply_official_preprocessing(work, cfg)
 
-    df_ligrec = ct.pp.ligand_receptor_database(
-        database=cfg.lr_database,
-        species=cfg.species,
-        heteromeric_delimiter=cfg.heteromeric_delimiter,
-        signaling_type=cfg.signaling_type,
-    )
+    if cfg.lr_table is not None:
+        df_ligrec = pd.read_csv(cfg.lr_table, sep="\t")
+        if not {"ligand", "receptor", "pathway"} <= set(df_ligrec):
+            raise ValueError("Custom LR TSV requires ligand, receptor, pathway")
+        if df_ligrec[["ligand", "receptor", "pathway"]].isna().any().any():
+            raise ValueError("Custom LR table contains missing values")
+        df_ligrec = df_ligrec[["ligand", "receptor", "pathway"]].drop_duplicates()
+    else:
+        df_ligrec = ct.pp.ligand_receptor_database(
+            database=cfg.lr_database, species=cfg.species,
+            heteromeric_delimiter=cfg.heteromeric_delimiter, signaling_type=cfg.signaling_type,
+        )
     df_ligrec = ct.pp.filter_lr_database(
         df_ligrec,
         work,
@@ -511,6 +523,9 @@ def export_commot_outputs_from_lr_files(
         "database_name": cfg.database_name,
         "lr_database": cfg.lr_database,
         "species": cfg.species,
+        "expression_source": cfg.expression_layer or "X",
+        "min_cell_pct": cfg.min_cell_pct,
+        "lr_table": str(cfg.lr_table) if cfg.lr_table else None,
         "signaling_type": cfg.signaling_type,
         "distance_threshold": cfg.dis_thr,
         "n_units": int(work.n_obs),
@@ -591,6 +606,9 @@ def export_commot_outputs(adata: AnnData, sample_name: str, cfg: CommotRunConfig
         "database_name": cfg.database_name,
         "lr_database": cfg.lr_database,
         "species": cfg.species,
+        "expression_source": cfg.expression_layer or "X",
+        "min_cell_pct": cfg.min_cell_pct,
+        "lr_table": str(cfg.lr_table) if cfg.lr_table else None,
         "signaling_type": cfg.signaling_type,
         "distance_threshold": cfg.dis_thr,
         "n_units": int(adata.n_obs),

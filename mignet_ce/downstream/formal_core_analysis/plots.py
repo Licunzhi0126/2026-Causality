@@ -12,12 +12,14 @@ import matplotlib.pyplot as plt
 from .methods import METHOD_LABELS
 
 
-def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview: bool = False) -> None:
+def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview: bool = False, experiment=None) -> None:
     """Two-level headers: each time pair spans JS, CQ and Delta EI columns."""
     from matplotlib.patches import Rectangle
     from .methods import ORGANS, ORGAN_LABELS
     from .tables import PAIRS, NATURAL_HIERARCHIES, NATURAL_METRICS
-    organs = tuple(ORGANS if organs is None else organs)
+    PAIRS = experiment.pair_labels if experiment else PAIRS
+    ORGAN_LABELS = experiment.organ_labels if experiment else ORGAN_LABELS
+    organs = tuple((experiment.organs if experiment else ORGANS) if organs is None else organs)
     columns = ["Organ", "Hierarchy"] + [f"{pair}::{metric}" for pair in PAIRS for metric in NATURAL_METRICS]
     if (list(frame.columns) != columns or list(zip(frame.Organ, frame.Hierarchy)) != [
             (organ, hierarchy) for organ in organs for hierarchy in NATURAL_HIERARCHIES]):
@@ -34,7 +36,7 @@ def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview:
                 raise ValueError("No missing/invalid natural metric may be rendered")
             rendered[column] = [("{:+.4f}" if column.endswith("::delta_EI_direct_bits") else "{:.4f}").format(v)
                                 for v in values]
-    widths = [1.10, 1.70] + [1.08, 1.08, 1.22] * len(PAIRS)
+    widths = [2.0 if experiment else 1.10, 1.70] + [1.08, 1.08, 1.22] * len(PAIRS)
     xs = np.r_[0, np.cumsum(widths)]
     n = len(frame)
     fig, ax = plt.subplots(figsize=(float(xs[-1]) + .6, .43 * (n + 2) + 1.9))
@@ -49,11 +51,11 @@ def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview:
             ax.text(xs[col] + width/2, bottom + height/2, label,
                     ha="center", va="center", fontsize=size, color=ink,
                     weight="bold" if bold else "normal")
-    for col, label in enumerate(("Organ", "Natural hierarchy")):
+    for col, label in enumerate(("Scope" if experiment else "Organ", "Natural hierarchy")):
         cell(col, n, label, height=2., fill="#E3EDF4", bold=True, size=10.7)
     for index, pair in enumerate(PAIRS):
         start = 2 + index * len(NATURAL_METRICS)
-        cell(start, n + 1, "E" + pair.replace("->", " → E"), span=3,
+        cell(start, n + 1, " → ".join(experiment.stage_labels[t] for t in pair.split("->")) if experiment else "E" + pair.replace("->", " → E"), span=3,
              fill="#E3EDF4", bold=True, size=11.)
         for offset, label in enumerate(("JS (bits)", "CQ", "ΔEI (bits)")):
             cell(start + offset, n, label, fill="#F2F6F9", size=10.)
@@ -83,12 +85,14 @@ def save_natural_table(frame: pd.DataFrame, path: Path, *, organs=None, preview:
 
 
 def save_optimal_table(frame: pd.DataFrame, path: Path, *, metrics: tuple[str, ...],
-                       organs=None, preview: bool = False) -> None:
+                       organs=None, preview: bool = False, experiment=None) -> None:
     """Two-level time-pair headers; organ groups and explicit endpoint labels."""
     from .methods import ORGANS, ORGAN_LABELS
     from .tables import PAIRS, SCALES
     from matplotlib.patches import Rectangle
-    organs = tuple(ORGANS if organs is None else organs)
+    PAIRS = experiment.pair_labels if experiment else PAIRS
+    ORGAN_LABELS = experiment.organ_labels if experiment else ORGAN_LABELS
+    organs = tuple((experiment.organs if experiment else ORGANS) if organs is None else organs)
     columns = ["Organ", "Input scale"] + [f"{pair}::{metric}" for pair in PAIRS for metric in metrics]
     if list(frame.columns) != columns or list(zip(frame.Organ, frame["Input scale"])) != [
             (organ, scale) for organ in organs for scale in SCALES]:
@@ -105,7 +109,7 @@ def save_optimal_table(frame: pd.DataFrame, path: Path, *, metrics: tuple[str, .
             pattern = "{:+.4f}" if col.endswith("::trained_delta_EI") else "{:.4f}"
             rendered[col] = values.map(pattern.format)
     occupancy = len(metrics) == 3
-    widths = [1.35, 1.30] + ([1.28, 1.72, 1.72] if occupancy else [1.65, 1.45]) * len(PAIRS)
+    widths = [2.0 if experiment else 1.35, 1.30] + ([1.28, 1.72, 1.72] if occupancy else [1.65, 1.45]) * len(PAIRS)
     xs = np.r_[0, np.cumsum(widths)]
     n = len(frame)
     fig, ax = plt.subplots(figsize=(float(xs[-1]) + .6, .47 * (n + 2) + 1.8))
@@ -118,13 +122,13 @@ def save_optimal_table(frame: pd.DataFrame, path: Path, *, metrics: tuple[str, .
                                edgecolor=border, linewidth=.6))
         ax.text(xs[col] + width / 2, bottom + height / 2, text, ha="center", va="center",
                 fontsize=size, color=ink, weight="bold" if bold else "normal")
-    for col, label in enumerate(("Organ", "Input scale")):
+    for col, label in enumerate(("Scope" if experiment else "Organ", "Input scale")):
         cell(col, n, label, height=2, fill="#EDF3F7", bold=True)
     for i, pair in enumerate(PAIRS):
         start = 2 + i * len(metrics)
-        cell(start, n + 1, "E" + pair.replace("->", " → E"), span=len(metrics), fill="#E3EDF4", bold=True, size=11)
+        cell(start, n + 1, " → ".join(experiment.stage_labels[t] for t in pair.split("->")) if experiment else "E" + pair.replace("->", " → E"), span=len(metrics), fill="#E3EDF4", bold=True, size=11)
         source, target = pair.split("->")
-        labels = (["JS (bits)", f"Gap @ E{source}", f"Gap @ E{target}"] if occupancy else ["ΔEI (bits)", "CQ"])
+        labels = (["JS (bits)", f"Gap @ {experiment.stage_labels[source] if experiment else chr(69)+source}", f"Gap @ {experiment.stage_labels[target] if experiment else chr(69)+target}"] if occupancy else ["ΔEI (bits)", "CQ"])
         for j, label in enumerate(labels):
             cell(start + j, n, label, fill="#F2F6F9", size=10)
     scale_labels = {"spot": "Spot", "seurat_k150": "K150", "seurat_k40": "K40"}
@@ -340,7 +344,8 @@ def _save_triplet_layout(frame: pd.DataFrame, path: Path, *, title: str, subtitl
 
 def _coordinates(data_root: Path, scale: str, time: str, organ: str = "heart") -> pd.DataFrame:
     stem={"seurat_k150":"seurat150","seurat_k40":"seurat","seurat_k10":"seurat10"}[scale]
-    path=Path(data_root)/scale/organ/f"{stem}_{organ}_{time}_spot_domain_map.csv"
+    from mignet_ce.io.organ_paths import organ_h5ad_dir
+    path=organ_h5ad_dir(Path(data_root)/scale, organ, f"{stem}_{organ}_{time}_spot_domain_map.csv")
     if not path.is_file():
         raise FileNotFoundError(f"Real coordinate map is required: {path}")
     df=pd.read_csv(path, dtype={"spot_id":str,"domain_id":str})
@@ -369,23 +374,23 @@ def _stage_data(data_root:Path, stage:str, scale:str, organ: str = "heart") -> p
     return d[["spot_id","domain_id","x","y"]]
 
 
-def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, path: Path, *, require_k10: bool=True, draft: bool=False, preview_notice: str | None = None) -> None:
+def draw_natural_figure(data_root: Path, ei_grid: pd.DataFrame, time_pair: str, path: Path, *, require_k10: bool=True, draft: bool=False, preview_notice: str | None = None, organ: str = "heart", experiment=None) -> None:
     match=ei_grid[ei_grid["Time pair"].eq(time_pair)]
     if len(match)!=1:raise ValueError("Missing measured time pair " + time_pair)
     gains={col.replace(" -> "," -> "):float(match.iloc[0][col]) for col in match.columns if "->" in col and col!="Time pair"}
     t,tp=time_pair.split("->")
-    kw=dict(source_stage=t,target_stage=tp,
-            source_spot=_stage_data(data_root,t,"seurat_k40"),target_spot=_stage_data(data_root,tp,"seurat_k40"),
-            source_k150=_stage_data(data_root,t,"seurat_k150"),target_k150=_stage_data(data_root,tp,"seurat_k150"),
-            source_k40=_stage_data(data_root,t,"seurat_k40"),target_k40=_stage_data(data_root,tp,"seurat_k40"),
+    kw=dict(source_stage=experiment.stage_labels[t] if experiment else t,target_stage=experiment.stage_labels[tp] if experiment else tp,
+            source_spot=_stage_data(data_root,t,"seurat_k40",organ),target_spot=_stage_data(data_root,tp,"seurat_k40",organ),
+            source_k150=_stage_data(data_root,t,"seurat_k150",organ),target_k150=_stage_data(data_root,tp,"seurat_k150",organ),
+            source_k40=_stage_data(data_root,t,"seurat_k40",organ),target_k40=_stage_data(data_root,tp,"seurat_k40",organ),
             gains=gains,output_path=Path(path).with_suffix(".png"),demo=draft,preview_notice=preview_notice)
     if require_k10:
         kw.update(source_k10=_stage_data(data_root,t,"seurat_k10"),target_k10=_stage_data(data_root,tp,"seurat_k10"))
         render_figure1_k10(**kw)
-    else:render_figure1(**kw)
+    else:render_figure1(**kw, organ=experiment.organ_labels[organ] if experiment else organ)
 
 
-def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, trained_delta: float, path: Path, *, draft: bool=False, organ: str = "heart", method_label: str = "Formal two-stage", preview_notice: str | None = None) -> None:
+def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_dir: Path, trained_delta: float, path: Path, *, draft: bool=False, organ: str = "heart", method_label: str = "Formal two-stage", preview_notice: str | None = None, experiment=None) -> None:
     t,tp=time_pair.split("->")
     stage_assignments=[]
     for stage,filename in ((t,"assignments_t.csv"),(tp,"assignments_tp.csv")):
@@ -401,4 +406,4 @@ def draw_optimal_figure(data_root: Path, input_scale: str, time_pair: str, run_d
         if mapped.isna().any():raise ValueError(f"Missing {mapped.isna().sum()} assignments")
         stage_assignments.append(pd.DataFrame({"spot_id":d.spot_id,"hard_cluster":mapped.to_numpy()}))
     input_label = {"spot":"Spot", "seurat_k150":"K150", "seurat_k40":"K40"}[input_scale]
-    render_figure2(source_stage=t,target_stage=tp,source_spot=_stage_data(data_root,t,"seurat_k40",organ),target_spot=_stage_data(data_root,tp,"seurat_k40",organ),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=trained_delta,method_label=f"{method_label} · {input_label} input · saved trained PIJ",input_label=input_label,organ=organ,output_path=Path(path).with_suffix(".png"),demo=draft,preview_notice=preview_notice)
+    render_figure2(source_stage=experiment.stage_labels[t] if experiment else t,target_stage=experiment.stage_labels[tp] if experiment else tp,source_spot=_stage_data(data_root,t,"seurat_k40",organ),target_spot=_stage_data(data_root,tp,"seurat_k40",organ),source_assignments=stage_assignments[0],target_assignments=stage_assignments[1],delta_ei=trained_delta,method_label=f"{method_label} · {input_label} input · saved trained PIJ",input_label=input_label,organ=experiment.organ_labels[organ] if experiment else organ,output_path=Path(path).with_suffix(".png"),demo=draft,preview_notice=preview_notice)

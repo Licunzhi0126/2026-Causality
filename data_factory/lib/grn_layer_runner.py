@@ -29,7 +29,11 @@ def configure_grn_runtime(
     top_hvg: int = DEFAULT_TOP_HVG,
     top_edge_count: int = DEFAULT_TOP_EDGE_COUNT,
     tf_list: Path | None = None,
+    strict_tf: bool = False,
 ) -> None:
+    grn.STRICT_TF = bool(strict_tf)
+    if strict_tf and (tf_list is None or not Path(tf_list).is_file()):
+        raise FileNotFoundError("Strict mode requires an existing species TF list")
     grn.N_THREADS = int(threads)
     grn.N_TREES = int(n_trees)
     grn.TOP_HVG = int(top_hvg)
@@ -39,6 +43,8 @@ def configure_grn_runtime(
             Path(tf_list),
             *[path for path in grn.TF_CANDIDATE_FILES if Path(path) != Path(tf_list)],
         ]
+        if strict_tf:
+            grn.TF_CANDIDATE_FILES = [Path(tf_list)]
         grn.TF_SYMBOL_CACHE = None
 
 
@@ -138,6 +144,7 @@ def run_grn_layer(
     top_edge_count: int = DEFAULT_TOP_EDGE_COUNT,
     tf_list: Path | None = None,
     manifest_root: Path | None = None,
+    strict_tf: bool = False,
 ) -> None:
     import GRN_global as grn
 
@@ -148,7 +155,7 @@ def run_grn_layer(
         n_trees=n_trees,
         top_hvg=top_hvg,
         top_edge_count=top_edge_count,
-        tf_list=tf_list,
+        tf_list=tf_list, strict_tf=strict_tf,
     )
 
     allowed = set(map(str, sample_names))

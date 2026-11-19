@@ -1,0 +1,43 @@
+{
+  "dataset_id": "salamandrid_44_54_57",
+  "species": "salamandrid",
+  "organs": [
+    "telencephalon"
+  ],
+  "time_points": [
+    "44",
+    "54",
+    "57"
+  ],
+  "pairs": [
+    [
+      "44",
+      "54"
+    ],
+    [
+      "54",
+      "57"
+    ],
+    [
+      "44",
+      "57"
+    ]
+  ],
+  "organ_labels": {
+    "telencephalon": "Telencephalon"
+  },
+  "stage_labels": {
+    "44": "Stage44",
+    "54": "Stage54",
+    "57": "Stage57"
+  },
+  "raw_files": {
+    "44": "Stage44.h5ad",
+    "54": "Stage54.h5ad",
+    "57": "Stage57.h5ad"
+  },
+  "gene_column": "Gene",
+  "output_layout": "flat",
+  "min_cell_pct": 0.05,
+  "distance_threshold": 200
+}

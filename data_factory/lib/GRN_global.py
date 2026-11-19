@@ -215,21 +215,33 @@ def _load_tf_symbols() -> Optional[set]:
     return TF_SYMBOL_CACHE
 
 
+STRICT_TF = False
+
+
 def select_regulator_indices(gene_names: Sequence[str]) -> List[int]:
     tf_symbols = _load_tf_symbols()
     if not tf_symbols:
+        if STRICT_TF:
+            raise ValueError("Strict TF mode requires a nonempty curated TF list")
         return list(range(len(gene_names)))
 
     gene_to_idx = {gene.upper(): idx for idx, gene in enumerate(gene_names)}
     regulator_indices = [gene_to_idx[symbol] for symbol in tf_symbols if symbol in gene_to_idx]
 
     if len(regulator_indices) < MIN_REGULATORS:
-        warnings.warn(
-            f"Only matched {len(regulator_indices)} TFs, below MIN_REGULATORS={MIN_REGULATORS}. "
-            "Falling back to all genes as regulators.",
-            RuntimeWarning,
-        )
-        return list(range(len(gene_names)))
+        if STRICT_TF:
+            if not regulator_indices:
+                raise ValueError("No curated TFs match the selected GRN genes")
+            warnings.warn(
+                f"Matched {len(regulator_indices)} curated TFs, below the legacy fallback threshold "
+                f"{MIN_REGULATORS}; strict mode retains those TFs without all-gene fallback.", RuntimeWarning)
+        else:
+            warnings.warn(
+                f"Only matched {len(regulator_indices)} TFs, below MIN_REGULATORS={MIN_REGULATORS}. "
+                "Falling back to all genes as regulators.",
+                RuntimeWarning,
+            )
+            return list(range(len(gene_names)))
 
     regulator_indices.sort()
     print(f"Matched {len(regulator_indices)} TF regulators.")

@@ -18,6 +18,7 @@ import pandas as pd
 
 from mignet_ce.io.organ_paths import resolve_organ_paths
 from .methods import ORGANS
+from mignet_ce.io.experiment_spec import ExperimentSpec, validate_scopes, bind_experiment
 
 LEGACY_PROTOCOL = "formal_core_natural_fixed_alpha_v1"
 LEGACY_LAYERS = ("spot", "seurat_k150", "seurat_k40", "seurat_k10")
@@ -39,6 +40,7 @@ class NaturalAnalysisConfig:
     alpha: float = .20
     pairs: tuple[tuple[str, str], ...] = PAIRS
     layers: tuple[str, ...] = LAYERS
+    experiment: ExperimentSpec | None = None
     grn_residual_lambda: float = .15
     hks_components: int = 5
     projection_seed: int = 20260713
@@ -48,11 +50,11 @@ class NaturalAnalysisConfig:
     tau: float = .8
 
     def validate(self) -> None:
-        if self.organ not in ORGANS or tuple(self.layers) not in (LAYERS, LEGACY_LAYERS):
+        if self.organ not in (self.experiment.organs if self.experiment else ORGANS) or tuple(self.layers) not in (LAYERS, LEGACY_LAYERS):
             raise ValueError("Formal natural reports require a supported organ and Spot/K150/K40; explicit historical K10 configs remain readable")
         if not np.isfinite(self.alpha) or abs(self.alpha - .20) > 1e-12:
             raise ValueError("Formal natural analysis requires fixed alpha=.20")
-        if not self.pairs or len(set(self.pairs)) != len(self.pairs) or not set(self.pairs) <= set(PAIRS):
+        if not self.pairs or len(set(self.pairs)) != len(self.pairs) or not set(self.pairs) <= set(self.experiment.pairs if self.experiment else PAIRS):
             raise ValueError("Select unique formal developmental time pairs")
         if not (self.beta > 0 and self.tau > 0):
             raise ValueError("beta and tau must be positive")
@@ -65,6 +67,10 @@ class NaturalAnalysisConfig:
         fields = asdict(self)
         for key in ("data_root", "output_root", "grn_root", "cci_root", "cci_index_root"):
             fields.pop(key)
+        if self.experiment is None:
+            fields.pop("experiment")
+        else:
+            fields["experiment"] = self.experiment.metadata()
         # JSON round trip canonicalizes tuples for comparison with saved JSON.
         return json.loads(json.dumps({"protocol": self.protocol, "grn_feature": "legacy_nmf",
                                      "cci_feature": "laplacian_hks", "transition": "KL+OT", **fields}))
@@ -350,11 +356,9 @@ def run(cfg: NaturalAnalysisConfig, *, resume: bool = False) -> dict:
     return manifest
 
 
-def requested_organs(organs, *, include_heart_figure: bool = False) -> tuple[str, ...]:
-    organs = tuple(organs)
-    if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
-        raise ValueError("Select unique supported natural organs")
-    return organs + (("heart",) if include_heart_figure and "heart" not in organs else ())
+def requested_organs(organs, *, include_heart_figure: bool = False, experiment=None) -> tuple[str, ...]:
+    organs = validate_scopes(organs, experiment)
+    return organs + (("heart",) if include_heart_figure and experiment is None and "heart" not in organs else ())
 
 
 def organ_configs(cfg: NaturalAnalysisConfig, organs) -> dict[str, NaturalAnalysisConfig]:
@@ -363,12 +367,12 @@ def organ_configs(cfg: NaturalAnalysisConfig, organs) -> dict[str, NaturalAnalys
     root_manifest = None
     if (root / "manifest.json").is_file():
         root_manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        if root_manifest.get("protocol") not in (PROTOCOL, LEGACY_PROTOCOL) or root_manifest.get("organ") not in ORGANS:
+        if root_manifest.get("protocol") not in (PROTOCOL, LEGACY_PROTOCOL) or root_manifest.get("organ") not in (cfg.experiment.organs if cfg.experiment else ORGANS):
             raise ValueError(f"Unsupported existing natural manifest: {root}")
     elif any((root / name).exists() for name in (EI_FILE, CQ_FILE)):
         raise ValueError(f"Incomplete legacy natural results without manifest: {root}; use a new output-root")
     result = {}
-    for organ in requested_organs(organs):
+    for organ in requested_organs(organs, experiment=cfg.experiment):
         directory = root / organ
         child_manifest = None
         if (directory / "manifest.json").is_file():
@@ -404,7 +408,7 @@ def inspect_organ_inputs(cfg: NaturalAnalysisConfig, organs, *, figure_pair=None
                 "missing_inputs": [], "issues": [str(exc)],
                 "k10_required": "seurat_k10" in cfg.layers, "k10_input_present": None}
     for organ, current in configs.items():
-        report = inspect_source_inputs(current, figure_pair=figure_pair if organ == "heart" else None)
+        report = inspect_source_inputs(current, figure_pair=figure_pair if cfg.experiment or organ == "heart" else None)
         report["result_root"] = str(current.output_root)
         report["measurements_ready"] = False
         if current.output_root.exists() and any(current.output_root.iterdir()):
@@ -433,7 +437,7 @@ def load_organ_results(cfg: NaturalAnalysisConfig, organs) -> dict:
 
 
 def run_organs(cfg: NaturalAnalysisConfig, organs=ORGANS, *, resume: bool = False) -> dict:
-    organs = requested_organs(organs)
+    organs = requested_organs(organs, experiment=cfg.experiment)
     report = inspect_organ_inputs(cfg, organs, resume=resume)
     if not report["ready"]:
         raise ValueError(f"Natural organ preflight failed: {report}")
@@ -451,13 +455,16 @@ def main(argv=None) -> None:
     parser.add_argument("--cci-root", type=Path)
     parser.add_argument("--cci-index-root", type=Path)
     parser.add_argument("--alpha", type=float, default=.20)
-    parser.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
+    parser.add_argument("--organs", nargs="+", default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--preflight", action="store_true")
-    args = parser.parse_args(argv)
+    parser.add_argument("--experiment-config", type=Path)
+    args = bind_experiment(parser.parse_args(argv))
     cfg = NaturalAnalysisConfig(data_root=args.data_root, output_root=args.output_root,
                                grn_root=args.grn_root, cci_root=args.cci_root,
-                               cci_index_root=args.cci_index_root, alpha=args.alpha)
+                               cci_index_root=args.cci_index_root, alpha=args.alpha,
+                               experiment=args.experiment, organ=args.organs[0],
+                               pairs=args.experiment.pairs if args.experiment else PAIRS)
     if args.preflight:
         report = inspect_organ_inputs(cfg, args.organs, resume=args.resume)
         print(json.dumps(report, ensure_ascii=False, indent=2))

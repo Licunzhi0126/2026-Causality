@@ -12,6 +12,7 @@ from .plots import save_table, save_optimal_table, save_natural_table, draw_natu
 from .closure_js import natural_js_grid
 from .preflight import inspect_inputs
 from .methods import METHODS, ORGANS, expected_conditions
+from mignet_ce.io.experiment_spec import bind_experiment, guard_output_profile
 from .natural_analysis import NaturalAnalysisConfig, run as run_natural
 from .natural_analysis import run_organs, load_organ_results, requested_organs, organ_configs
 from mignet_ce.coarse_frontends.method_specs import LOCAL_GRAPH_MODES, FORMAL_LOCAL_GRAPH_MODE, graph_configuration
@@ -27,16 +28,17 @@ def build_argparser():
     p.add_argument("--data-root", type=Path, required=True)
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--optimal-runs-root", type=Path)
+    p.add_argument("--experiment-config", type=Path)
     p.add_argument("--stage", choices=("all", "natural", "optimal"), default="all")
-    p.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
+    p.add_argument("--organs", nargs="+", default=None)
     p.add_argument("--alpha", type=float, default=.20)
     p.add_argument("--grn-method", default="legacy_nmf")
     p.add_argument("--local-graph-mode", choices=LOCAL_GRAPH_MODES, default=FORMAL_LOCAL_GRAPH_MODE)
     p.add_argument("--knn-k", type=int, default=30)
     p.add_argument("--local-dims", type=int, default=2)
     p.add_argument("--allow-incomplete", action="store_true")
-    p.add_argument("--figure-pair", choices=PAIRS, default="12.5->13.5")
-    p.add_argument("--figure-organ", choices=ORGANS, default="heart")
+    p.add_argument("--figure-pair", default=None)
+    p.add_argument("--figure-organ", default=None)
     p.add_argument("--figure-input-scale", choices=SCALES, default="spot")
     p.add_argument("--skip-figures", action="store_true")
     p.add_argument("--preflight", action="store_true", help="Read-only audit; do not create output files")
@@ -48,17 +50,19 @@ def _render_natural(a, out, status):
         return _render_legacy_natural(a, out, status)
     source = a.natural_root or out / "natural_analysis"
     cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=source,
-                                grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
-    organs = requested_organs(a.organs, include_heart_figure=not a.skip_figures)
+                                grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha,
+                                experiment=a.experiment, organ=a.organs[0],
+                                pairs=a.experiment.pairs if a.experiment else NaturalAnalysisConfig.__dataclass_fields__["pairs"].default)
+    organs = requested_organs(a.organs, include_heart_figure=not a.skip_figures, experiment=a.experiment)
     if a.natural_root is None:
         run_organs(cfg, organs, resume=a.resume)
     measurements = load_organ_results(cfg, organs)
     frame = pd.concat([cq.assign(organ=organ) for organ, (_, cq, _) in measurements.items()], ignore_index=True)
-    grid = build_natural_report_grid(frame, organs=a.organs)
+    grid = build_natural_report_grid(frame, organs=a.organs, experiment=a.experiment)
     tab = out / "tables"
     tab.mkdir(exist_ok=True)
     grid.to_csv(tab / (NATURAL_TABLE + ".csv"), index=False)
-    save_natural_table(grid, tab / NATURAL_TABLE, organs=a.organs)
+    save_natural_table(grid, tab / NATURAL_TABLE, organs=a.organs, experiment=a.experiment)
     configs = organ_configs(cfg, organs)
     status.update(natural_source_type="fixed_alpha_from_original_inputs", sensitivity_required=False,
                   natural_organs=list(a.organs), natural_tables=[NATURAL_TABLE],
@@ -71,11 +75,13 @@ def _render_natural(a, out, status):
                   cq_display_policy="raw_measured_values_without_low_signal_labels")
     if not a.skip_figures:
         # Current natural scope is three complete layers, with three EI braces.
-        ei_grid = build_ei_grid(measurements["heart"][0], require_k10=False)
+        natural_figure_organ = a.figure_organ if a.experiment else "heart"
+        ei_grid = build_ei_grid(measurements[natural_figure_organ][0], require_k10=False,
+                                pairs=a.experiment.pair_labels if a.experiment else PAIRS)
         draw_natural_figure(a.data_root, ei_grid, a.figure_pair, out / "figures" / "figure1_natural",
-                            require_k10=False)
+                            require_k10=False, organ=natural_figure_organ, experiment=a.experiment)
         status["figure1"] = "generated_from_real_spot_domain_coordinates"
-        status["figure1_organ"] = "heart"
+        status["figure1_organ"] = natural_figure_organ
     return True
 
 
@@ -89,7 +95,9 @@ def _render_legacy_natural(a, out, status):
     else:
         source = a.natural_root or out / "natural_analysis"
         cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=source,
-                                    grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
+                                    grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha,
+                                experiment=a.experiment, organ=a.organs[0],
+                                pairs=a.experiment.pairs if a.experiment else NaturalAnalysisConfig.__dataclass_fields__["pairs"].default)
         if a.natural_root is None:
             run_natural(cfg, resume=a.resume)
         ei, cq, m = selected_candidate_natural(source, cfg)
@@ -143,7 +151,7 @@ def _render_legacy_natural(a, out, status):
 
 def main(argv=None):
     p = build_argparser()
-    a = p.parse_args(argv)
+    a = bind_experiment(p.parse_args(argv))
     graph = graph_configuration("formal_two_stage", local_graph_mode=a.local_graph_mode,
                                  knn_k=a.knn_k, local_dims=a.local_dims)
     if len(a.organs) != len(set(a.organs)):
@@ -156,25 +164,28 @@ def main(argv=None):
         raise ValueError("Formal core requires GRN=legacy_nmf / CCI=laplacian_hks / alpha=.20")
     if a.stage != "natural" and not a.skip_figures and a.figure_organ not in a.organs:
         p.error("--figure-organ must be included in --organs")
+    guard_output_profile(a.output_root, a.experiment)
     if a.preflight:
         report = inspect_inputs(a.sensitivity_root, a.data_root, a.optimal_runs_root,
                                 a.alpha, a.grn_method, a.figure_pair, a.skip_figures,
                                 stage=a.stage, organs=tuple(a.organs),
                                 figure_organ=a.figure_organ, figure_input_scale=a.figure_input_scale,
                                 natural_root=a.natural_root or a.output_root / "natural_analysis",
-                                grn_root=a.grn_root, cci_root=a.cci_root, **graph)
+                                grn_root=a.grn_root, cci_root=a.cci_root, experiment=a.experiment, **graph)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         if not report["ready_for_incomplete_preview" if a.allow_incomplete else "ready_for_execution"]:
             raise SystemExit(2)
         return
     out = a.output_root
+    guard_output_profile(out, a.experiment, write=True)
     out.mkdir(parents=True, exist_ok=True)
     tab = out / "tables"
     tab.mkdir(exist_ok=True)
     status = {"status":"processing", "stage":a.stage, "methods":list(METHODS),
               "loss_protocol":"formal_two_stage_main", "organs":a.organs,
-              "expected_optimal_runs":0 if a.stage == "natural" else expected_conditions(SCALES, PAIRS, a.organs),
+              "expected_optimal_runs":0 if a.stage == "natural" else expected_conditions(SCALES, a.experiment.pair_labels if a.experiment else PAIRS, a.organs),
               "alpha":a.alpha, "grn_feature":a.grn_method, **graph,
+              "experiment": a.experiment.metadata() if a.experiment else None,
               "delta_EI_protocol":"selected checkpoint + persisted training macro PIJ",
               "closure_JS_protocol":"uniform mean of JS_rows(P_micro_train @ S_tp, S_t @ P_macro_train), bits",
               "occupancy_protocol":"HardK - exp(entropy(argmax assignment counts)), separately at t and tp",
@@ -183,7 +194,7 @@ def main(argv=None):
     natural_complete = a.stage == "optimal" or _render_natural(a, out, status)
     optimal_complete = a.stage == "natural"
     if a.stage != "natural":
-        runs, rejected = collect_optimal_runs(a.optimal_runs_root, **graph) if a.optimal_runs_root else (None, ["No optimal root supplied"])
+        runs, rejected = collect_optimal_runs(a.optimal_runs_root, experiment=a.experiment, **graph) if a.optimal_runs_root else (None, ["No optimal root supplied"])
         audit = out / "audit"
         audit.mkdir(exist_ok=True)
         (audit / "optimal_rejected.json").write_text(json.dumps(rejected, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -193,7 +204,7 @@ def main(argv=None):
         try:
             if selected is None or selected.empty:
                 raise ValueError(f"No validated formal_two_stage_main results: {rejected[:5]}")
-            grids = {name:build_optimal_report_grid(selected, metrics, organs=a.organs, **graph)
+            grids = {name:build_optimal_report_grid(selected, metrics, organs=a.organs, experiment=a.experiment, **graph)
                      for name, metrics in OPTIMAL_TABLES.items()}
         except ValueError as exc:
             if not a.allow_incomplete:
@@ -202,7 +213,7 @@ def main(argv=None):
         else:
             for name, grid in grids.items():
                 grid.to_csv(tab / (name + ".csv"), index=False)
-                save_optimal_table(grid, tab / name, metrics=OPTIMAL_TABLES[name], organs=a.organs)
+                save_optimal_table(grid, tab / name, metrics=OPTIMAL_TABLES[name], organs=a.organs, experiment=a.experiment)
             optimal_complete = True
             status["optimal_tables"] = list(grids)
         status["optimal_trained_runs_verified"] = 0 if selected is None else len(selected)
@@ -222,7 +233,7 @@ def main(argv=None):
                     draw_optimal_figure(a.data_root, a.figure_input_scale, a.figure_pair,
                                         Path(row.run_dir), float(row.trained_delta_EI),
                                         out / "figures" / "figure2_optimal_NO_ROI_ENLARGE",
-                                        organ=a.figure_organ, draft=a.allow_incomplete)
+                                        organ=a.figure_organ, draft=a.allow_incomplete, experiment=a.experiment)
                     status["figure2"] = str(row.run_dir)
                 except (FileNotFoundError, ValueError) as exc:
                     if not a.allow_incomplete:

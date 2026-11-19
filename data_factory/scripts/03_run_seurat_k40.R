@@ -94,6 +94,8 @@ arg_values <- function(name, default = character()) {
 
 SPOT_ROOT <- arg_value("spot-root", "/home/jovyan/public/datasets/Mouse-embryo/E1S1_domain_factory/spot")
 OUT_DIR_BASE_RAW <- arg_value("output-root", NULL)
+OUTPUT_LAYOUT <- arg_value("output-layout", "nested")
+if (!OUTPUT_LAYOUT %in% c("flat", "nested")) stop("Invalid --output-layout")
 MODE <- arg_value("mode", "exact_k")
 if (!MODE %in% c("exact_k", "less_than_5")) stop("--mode must be exact_k or less_than_5")
 DOMAIN_K_RAW <- arg_value("k", if (MODE == "exact_k") "40" else NA)
@@ -194,7 +196,12 @@ plot_spot_clusters <- function(spatial, clusters, out_png, title = "") {
 }
 
 write_h5ad <- function(sce, path) {
-  zellkonverter::writeH5AD(sce, path)
+  if (OUTPUT_LAYOUT == "flat" && "counts" %in% assayNames(sce)) {
+    assay(sce, "X") <- assay(sce, "counts")
+    zellkonverter::writeH5AD(sce, path, X_name = "X")
+  } else {
+    zellkonverter::writeH5AD(sce, path)
+  }
   logi("[Write] h5ad saved: ", path)
 }
 
@@ -565,9 +572,10 @@ main <- function() {
   rows <- list()
   for (in_path in sort(files)) {
     sample <- parse_sample(in_path)
-    out_dir <- file.path(OUT_DIR_BASE, sample$organ)
+    out_dir <- if (OUTPUT_LAYOUT == "flat") OUT_DIR_BASE else file.path(OUT_DIR_BASE, sample$organ)
     dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
     out_path <- file.path(out_dir, sprintf("%s_%s_%s.h5ad", OUTPUT_PREFIX, sample$organ, sample$stage))
+    if (OUTPUT_LAYOUT == "flat" && any(file.exists(c(out_path, sub("\\.h5ad$", "_spot_domain_map.csv", out_path), sub("\\.h5ad$", "_spots_with_domain.h5ad", out_path))))) stop("Refusing to overwrite existing domain artifacts: ", out_path)
     row <- data.frame(
       input_file = in_path,
       output_file = out_path,

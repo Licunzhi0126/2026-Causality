@@ -1,0 +1,42 @@
+{
+  "dataset_id": "mouse_default",
+  "species": "mouse",
+  "organs": [
+    "lung",
+    "brain",
+    "heart"
+  ],
+  "time_points": [
+    "11.5",
+    "12.5",
+    "13.5"
+  ],
+  "pairs": [
+    [
+      "11.5",
+      "12.5"
+    ],
+    [
+      "12.5",
+      "13.5"
+    ],
+    [
+      "11.5",
+      "13.5"
+    ]
+  ],
+  "organ_labels": {
+    "lung": "Lung",
+    "brain": "Brain",
+    "heart": "Heart"
+  },
+  "stage_labels": {
+    "11.5": "E11.5",
+    "12.5": "E12.5",
+    "13.5": "E13.5"
+  },
+  "raw_files": {},
+  "output_layout": "nested",
+  "min_cell_pct": 0.05,
+  "distance_threshold": 200
+}

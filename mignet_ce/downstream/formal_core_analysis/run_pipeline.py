@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 
 from .methods import METHODS, ORGANS, expected_conditions
+from mignet_ce.io.experiment_spec import bind_experiment, guard_output_profile
+from mignet_ce.io.organ_paths import organ_h5ad_dir
 from .natural_analysis import NaturalAnalysisConfig, inspect_organ_inputs, requested_organs, LAYERS, PROTOCOL
 from mignet_ce.coarse_frontends.method_specs import (
     LOCAL_GRAPH_MODES, FORMAL_LOCAL_GRAPH_MODE, graph_configuration, validate_graph_configuration,
@@ -38,8 +40,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--developmental-root", type=Path,
                    help="Required for all/optimal; unused by natural")
     p.add_argument("--sensitivity-root", type=Path, help="Legacy argument retained; ignored by this fixed-alpha pipeline")
+    p.add_argument("--experiment-config", type=Path)
     p.add_argument("--stage", choices=("all", "natural", "optimal"), default="all")
-    p.add_argument("--organs", nargs="+", choices=ORGANS, default=list(ORGANS))
+    p.add_argument("--organs", nargs="+", default=None)
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--maturity-mode", choices=("existing", "native"), default="existing",
                    help="existing: read per-organ/per-layer CSVs; native: use scripts/build_developmental_features.py when missing")
@@ -50,7 +53,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--local-graph-mode", choices=LOCAL_GRAPH_MODES, default=FORMAL_LOCAL_GRAPH_MODE)
     p.add_argument("--knn-k", type=int, default=30)
     p.add_argument("--local-dims", type=int, default=2)
-    p.add_argument("--figure-pair", choices=("11.5->12.5", "12.5->13.5", "11.5->13.5"), default="12.5->13.5")
+    p.add_argument("--figure-pair", default=None)
     p.add_argument("--dry-run", action="store_true", help="Read-only checks and full command plan; exit nonzero if prerequisites missing")
     p.add_argument("--resume", action="store_true", help="Reuse valid completed runs")
     p.add_argument("--resume-incomplete", action="store_true",
@@ -59,16 +62,24 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
+def _times(a):
+    return a.experiment.time_points if getattr(a, "experiment", None) else TIMES
+
+
+def _pairs(a):
+    return tuple(":".join(p) for p in a.experiment.pairs) if getattr(a, "experiment", None) else PAIRS
+
+
 def maturity_files(a: argparse.Namespace) -> dict[tuple[str, str, str], Path]:
     return {(organ, scale, t): a.developmental_root / scale / f"{organ}_{t}_features.csv"
-            for organ in a.organs for scale in SCALES for t in TIMES}
+            for organ in a.organs for scale in SCALES for t in _times(a)}
 
 
 def _native_build_command(a: argparse.Namespace, layers: tuple[str, ...]) -> list[str]:
     return [sys.executable, str(REPO / "scripts" / "build_developmental_features.py"),
             "--data-root", str(a.data_root),
             "--output-root", str(a.developmental_root),
-            "--organs", *a.organs, "--time-points", *TIMES,
+            "--organs", *a.organs, "--time-points", *_times(a),
             "--layers", *layers,
             "--seed", str(a.seed)]
 
@@ -123,7 +134,7 @@ def _check_sensitivity_source_hashes(a: argparse.Namespace, manifest: dict) -> t
     if not isinstance(recorded, dict):
         return checked, ["Invalid sensitivity input_sources provenance: expected object"]
     for scale in SCALES:
-        for t in TIMES:
+        for t in _times(a):
             entry = recorded.get(f"{scale}:{t}")
             if entry is None:
                 continue
@@ -226,19 +237,20 @@ def _inspect_legacy_sensitivity_inputs(a: argparse.Namespace, missing: list[str]
 
 
 def inspect_inputs(a: argparse.Namespace) -> dict:
+    bind_experiment(a)
     missing: list[str] = []
     for organ in (() if a.stage == "natural" else a.organs):
-        for t in TIMES:
+        for t in _times(a):
             for scale in SCALES:
                 sample = f"{STEMS[scale]}_{organ}_{t}"
                 paths = [
-                    a.data_root / scale / organ / f"{sample}.h5ad",
+                    organ_h5ad_dir(a.data_root / scale, organ, f"{sample}.h5ad"),
                     a.grn_root / scale / sample / "grn_edges.csv",
                     a.cci_root / scale / f"{sample}_CCI_total.npz",
                     a.cci_root / scale / f"{sample}_index.tsv",
                 ]
                 if scale != "spot":
-                    paths.append(a.data_root / scale / organ / f"{sample}_spot_domain_map.csv")
+                    paths.append(organ_h5ad_dir(a.data_root / scale, organ, f"{sample}_spot_domain_map.csv"))
                 for path in paths:
                     if not path.is_file():
                         missing.append(str(path))
@@ -247,8 +259,9 @@ def inspect_inputs(a: argparse.Namespace) -> dict:
     natural = None
     if not a.skip_render and a.stage != "optimal":
         cfg = NaturalAnalysisConfig(data_root=a.data_root, output_root=a.output_root / "natural_analysis",
-                                    grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha)
-        natural = inspect_organ_inputs(cfg, requested_organs(a.organs, include_heart_figure=True),
+                                    grn_root=a.grn_root, cci_root=a.cci_root, alpha=a.alpha, organ=a.organs[0], experiment=a.experiment,
+                                    pairs=a.experiment.pairs if a.experiment else NaturalAnalysisConfig.__dataclass_fields__["pairs"].default)
+        natural = inspect_organ_inputs(cfg, requested_organs(a.organs, include_heart_figure=True, experiment=a.experiment),
                                        figure_pair=a.figure_pair, resume=a.resume)
         missing.extend(natural["missing_inputs"])
         missing.extend(natural["issues"])
@@ -274,6 +287,7 @@ def inspect_inputs(a: argparse.Namespace) -> dict:
 
 
 def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> list[dict]:
+    bind_experiment(a)
     graph = graph_configuration("formal_two_stage", local_graph_mode=a.local_graph_mode,
                                  knn_k=a.knn_k, local_dims=a.local_dims)
     jobs: list[dict] = []
@@ -284,7 +298,7 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
                            "--data-root", str(a.data_root), "--grn-root", str(a.grn_root),
                            "--cci-root", str(a.cci_root),
                            "--output-root", str(a.output_root / "natural_analysis"), "--alpha", "0.20",
-                           "--organs", *requested_organs(a.organs, include_heart_figure=True)]
+                           "--organs", *requested_organs(a.organs, include_heart_figure=True, experiment=a.experiment)]
         if a.resume:
             natural_command.append("--resume")
         jobs.append({"stage": "natural_fixed_alpha", "command": natural_command})
@@ -301,8 +315,8 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
                 "--grn-root", str(a.grn_root),
                 "--developmental-root", str(a.developmental_root),
                 "--out-root", str(run_root / organ),
-                "--organ", organ, "--time-points", *TIMES,
-                "--pairs", *PAIRS, "--scales", *SCALES,
+                "--organ", organ, "--time-points", *_times(a),
+                "--pairs", *_pairs(a), "--scales", *SCALES,
                 "--k-by-scale", *K_BY_SCALE, "--seeds", str(a.seed),
             ]
             if a.resume:
@@ -318,7 +332,7 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
                 "--knn-k", str(graph["knn_k"]), "--local-dims", str(graph["local_dims"]),
                 "--epochs", str(a.epochs), "--device", a.device,
             ])
-            jobs.append({"stage": "train_" + method + "_" + organ, "method": method, "organ": organ, "expected_runs": 9, "command": command})
+            jobs.append({"stage": "train_" + method + "_" + organ, "method": method, "organ": organ, "expected_runs": len(SCALES) * len(_pairs(a)), "command": command})
     if not a.skip_render:
         jobs.append({
             "stage": "formal_core_collect_and_plot",
@@ -335,11 +349,15 @@ def make_commands(a: argparse.Namespace, native_builder: list[str] | None) -> li
                         "--figure-pair", a.figure_pair,
                         "--figure-organ", "heart" if "heart" in a.organs else a.organs[0]],
         })
+    if a.experiment_config:
+        for job in jobs:
+            if job["stage"] in ("natural_fixed_alpha", "formal_core_collect_and_plot"):
+                job["command"].extend(["--experiment-config", str(a.experiment_config.resolve())])
     return jobs
 
 
 def audit_finished_method(output_root: Path, method: str, organ: str = "heart", *,
-                          local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2) -> list[dict]:
+                          local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2, experiment=None) -> list[dict]:
     """Require 9 trained-PIJ verified, provenance-matched runs BEFORE rendering.
 
     Evaluates the existing project formal_core_analysis audit.  This is deliberately
@@ -350,10 +368,10 @@ def audit_finished_method(output_root: Path, method: str, organ: str = "heart", 
 
     rows = []
     for scale, k in (("spot", 40), ("seurat_k150", 40), ("seurat_k40", 10)):
-        for source, target in (("11.5", "12.5"), ("12.5", "13.5"), ("11.5", "13.5")):
+        for source, target in (experiment.pairs if experiment else (("11.5", "12.5"), ("12.5", "13.5"), ("11.5", "13.5"))):
             run_dir = output_root / "optimal_runs" / organ / method / scale / f"K{k}" / f"{source}_to_{target}"
             try:
-                item = inspect_optimal_run(run_dir)
+                item = inspect_optimal_run(run_dir, experiment=experiment)
                 validate_graph_configuration(item, graph, context=run_dir)
             except Exception as exc:
                 raise RuntimeError(f"Trained-PIJ verification failed for {run_dir}: {exc}") from exc
@@ -368,6 +386,7 @@ def audit_finished_method(output_root: Path, method: str, organ: str = "heart", 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_argparser().parse_args(argv)
+    bind_experiment(a)
     graph = graph_configuration("formal_two_stage", local_graph_mode=a.local_graph_mode,
                                  knn_k=a.knn_k, local_dims=a.local_dims)
     if len(a.organs) != len(set(a.organs)):
@@ -382,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--epochs must be >= 1")
     if abs(a.alpha - 0.20) > 1e-12:
         raise SystemExit("The frozen formal protocol requires --alpha 0.20")
+    guard_output_profile(a.output_root, a.experiment)
     report = inspect_inputs(a)
     jobs = make_commands(a, report["native_maturity_builder_command"])
     plan = {
@@ -389,8 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": 4,
         "output_root": str(a.output_root),
         "optimal_runs_root": str(a.output_root / "optimal_runs") if a.stage != "natural" else None,
-        "training_conditions": 0 if a.stage == "natural" else expected_conditions(SCALES, PAIRS, a.organs),
-        "methods": [] if a.stage == "natural" else list(METHODS), "organs": a.organs, "stage": a.stage, "scales": list(SCALES), "pairs": list(PAIRS),
+        "training_conditions": 0 if a.stage == "natural" else expected_conditions(SCALES, _pairs(a), a.organs),
+        "methods": [] if a.stage == "natural" else list(METHODS), "organs": a.organs, "stage": a.stage, "scales": list(SCALES), "pairs": list(_pairs(a)), "experiment": a.experiment.metadata() if a.experiment else None,
         "grn_feature": "legacy_nmf", "cci_feature": "laplacian_hks",
         "transition": "KL+OT", "alpha_cci": 0.20,
         **graph,
@@ -405,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.dry_run or report["missing_input_count"]:
         print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
         return 0 if not report["missing_input_count"] else 2
+    guard_output_profile(a.output_root, a.experiment, write=True)
     a.output_root.mkdir(parents=True, exist_ok=True)
     audit = a.output_root / ("formal_full_pipeline_execution.json" if a.stage == "all"
                              else f"formal_{a.stage}_pipeline_execution.json")
@@ -422,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
             return int(result.returncode)
         if job["stage"].startswith("train_"):
             try:
-                job["trained_audit"] = audit_finished_method(a.output_root, job["method"], job["organ"], **graph)
+                job["trained_audit"] = audit_finished_method(a.output_root, job["method"], job["organ"], experiment=a.experiment, **graph)
             except Exception as exc:
                 job["trained_audit_error"] = str(exc)
                 plan["status"] = "failed"

@@ -100,11 +100,12 @@ def _inspect_natural_inputs(sensitivity_root: Path, data_root: Path, optimal_roo
 
 
 def _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
-                                  alpha, figure_pair, skip_figures, organs):
+                                  alpha, figure_pair, skip_figures, organs, experiment=None):
     cfg = NaturalAnalysisConfig(data_root=Path(data_root),
                                 output_root=Path(natural_root) if natural_root else Path(data_root) / "unused_natural_preflight",
-                                grn_root=grn_root, cci_root=cci_root, alpha=alpha)
-    natural_organs = requested_organs(organs, include_heart_figure=not skip_figures)
+                                grn_root=grn_root, cci_root=cci_root, alpha=alpha, organ=organs[0],
+                                experiment=experiment, pairs=experiment.pairs if experiment else NaturalAnalysisConfig.__dataclass_fields__["pairs"].default)
+    natural_organs = requested_organs(organs, include_heart_figure=not skip_figures, experiment=experiment)
     source = inspect_organ_inputs(cfg, natural_organs, figure_pair=None if skip_figures else figure_pair)
     issues = list(source["issues"]) + list(source["missing_inputs"])
     measured = source["measurements_ready"]
@@ -114,9 +115,9 @@ def _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
             "natural_measurements_ready": measured,
             "natural_computation_pending": not measured,
             "missing_ei_conditions": [] if measured else [f"{organ}/{pair}/{layer}" for organ in natural_organs
-                                                          for pair in PAIRS for layer in SCALES],
+                                                          for pair in (experiment.pair_labels if experiment else PAIRS) for layer in SCALES],
             "missing_natural_direct_js": [] if measured else [f"{organ}/{pair}/{hierarchy}" for organ in natural_organs
-                                                               for pair in PAIRS for hierarchy in (
+                                                               for pair in (experiment.pair_labels if experiment else PAIRS) for hierarchy in (
                 "spot->seurat_k150", "spot->seurat_k40", "seurat_k150->seurat_k40")],
             "missing_spatial_maps": [], "ready_for_execution": not issues,
             "ready_for_publication_candidate": measured and not issues,
@@ -129,15 +130,14 @@ def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
                    figure_pair, skip_figures, stage="all", *, organs=None,
                    figure_organ="heart", figure_input_scale="spot",
                    local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2,
-                   natural_root=None, grn_root=None, cci_root=None):
+                   natural_root=None, grn_root=None, cci_root=None, experiment=None):
     """Audit natural assets independently from the selected formal organ matrix."""
     from .methods import ORGANS
+    from mignet_ce.io.experiment_spec import validate_scopes
     from .tables import OPTIMAL_TABLES, build_optimal_report_grid
     graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
                                  knn_k=knn_k, local_dims=local_dims)
-    organs = tuple(ORGANS if organs is None else organs)
-    if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
-        raise ValueError("Select unique supported organs")
+    organs = validate_scopes((experiment.organs if experiment else ORGANS) if organs is None else organs, experiment)
     if stage not in {"all", "natural", "optimal"}:
         raise ValueError(f"Unknown formal core stage: {stage}")
     if stage != "optimal":
@@ -147,27 +147,27 @@ def inspect_inputs(sensitivity_root, data_root, optimal_root, alpha, grn_method,
             report["ready_for_execution"] = report["ready_for_publication_candidate"]
         else:
             report = _inspect_fixed_natural_inputs(data_root, natural_root, grn_root, cci_root,
-                                                   alpha, figure_pair, skip_figures, organs)
+                                                   alpha, figure_pair, skip_figures, organs, experiment)
     else:
         report = {"pipeline":"formal_core_analysis", "issues":[], "cautions":[],
                   "missing_ei_conditions":[], "missing_natural_direct_js":[],
                   "missing_spatial_maps":[], "ready_for_publication_candidate":True,
                   "ready_for_incomplete_preview":True, "ready_for_execution":True}
     report.update(stage=stage, organs=list(organs), methods=list(METHODS),
-                  expected_optimal_runs=0 if stage == "natural" else expected_conditions(SCALES, PAIRS, organs),
+                  expected_optimal_runs=0 if stage == "natural" else expected_conditions(SCALES, experiment.pair_labels if experiment else PAIRS, organs),
                   does_not_train_optimal_models=True)
     report.update(graph)
     if stage == "natural":
         return report
-    runs, rejected = collect_optimal_runs(optimal_root, **graph) if optimal_root else (None, ["No optimal run root supplied"])
+    runs, rejected = collect_optimal_runs(optimal_root, experiment=experiment, **graph) if optimal_root else (None, ["No optimal run root supplied"])
     selected = runs.loc[runs.organ.isin(organs)] if runs is not None and not runs.empty else None
     valid = set() if selected is None else set(zip(selected.organ, selected.input_scale, selected.time_pair))
-    missing = [f"{organ}/{scale}/{pair}" for organ in organs for scale in SCALES for pair in PAIRS
+    missing = [f"{organ}/{scale}/{pair}" for organ in organs for scale in SCALES for pair in (experiment.pair_labels if experiment else PAIRS)
                if (organ, scale, pair) not in valid]
     if selected is not None and not missing:
         try:
             for metrics in OPTIMAL_TABLES.values():
-                build_optimal_report_grid(selected, metrics, organs=organs, **graph)
+                build_optimal_report_grid(selected, metrics, organs=organs, experiment=experiment, **graph)
         except ValueError as exc:
             report["issues"].append(str(exc))
     if not skip_figures:

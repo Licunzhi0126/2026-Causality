@@ -320,3 +320,79 @@ python -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
 上述 sensitivity-root 和 developmental-root 必须指向服务器真实已有结果；完整预检要求自然层级敏感性结果已覆盖 K10 和 K150→K40 direct JS。运行时先将同一条命令加 --dry-run 可检查输入且不写文件。
 
 </details>
+# Species profiles: Zebrafish 10/12/18 and Salamandrid 44/54/57
+
+`--experiment-config` is supported by the full pipeline, natural analysis,
+collector and preview. No argument retains the existing mouse behavior. New
+profiles live in `configs/datasets/`. Profiles define scope IDs, forward time
+pairs and human-readable stage labels. They do not change Formal two-stage,
+all_features/KNN=30, alpha=.20, CCI Laplacian-HKS, GRN legacy_nmf, or the metric
+definitions. Flat H5AD/map layouts are supported by all current readers, including
+native developmental feature aggregation and figures. Ambiguous flat+nested
+duplicates fail rather than silently selecting one.
+
+Finish the species data factory and curated LR/TF bundle first (see
+`data_factory/README.md`). The three selected stages are fitted together by the
+existing factory_proxy developmental builder; salamandrid does not require
+juvenile, adult or metamorphosed expression samples. The last stage is relatively
+late within the selected experiment, not an absolute adult maturity reference.
+
+```bash
+cd "/home/jovyan/work/2026 Causality"
+python -B -u -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --stage all \
+  --data-root /home/jovyan/public/datasets/zebrafish_hpf \
+  --grn-root /home/jovyan/public/datasets/zebrafish_hpf/grn \
+  --cci-root /home/jovyan/public/datasets/zebrafish_hpf/cci \
+  --developmental-root /home/jovyan/public/datasets/zebrafish_hpf/developmental_features \
+  --output-root output/formal_core_analysis/zebrafish_hpf_10_12_18_v1 \
+  --maturity-mode existing --epochs 1500 --device cuda --resume --dry-run
+
+python -B -u -m mignet_ce.downstream.formal_core_analysis.run_pipeline \
+  --experiment-config configs/datasets/salamandrid_44_54_57.json \
+  --stage all \
+  --data-root /home/jovyan/public/datasets/salamandrid \
+  --grn-root /home/jovyan/public/datasets/salamandrid/grn \
+  --cci-root /home/jovyan/public/datasets/salamandrid/cci \
+  --developmental-root /home/jovyan/public/datasets/salamandrid/developmental_features \
+  --output-root output/formal_core_analysis/salamandrid_44_54_57_v1 \
+  --maturity-mode existing --epochs 1500 --device cuda --resume --dry-run
+```
+
+After all inputs pass, remove `--dry-run` to run the actual training. Each profile
+requires nine conditions (three scales by three pairs), 18 across the two
+datasets. Spot/K150/K40 optimal K stays 40/40/10. No input Seurat K10 is required.
+
+Under each output-root:
+
+- `experiment_profile.json`: immutable profile binding; mismatched or unbound
+  nonempty output roots are rejected before training or backup.
+- `natural_analysis/<scope>/`: nine layer EI rows, nine hierarchy rows and
+  profile-aware input/result-hash manifests.
+- `optimal_runs/<scope>/formal_two_stage/<scale>/K<k>/<t>_to_<tp>/`: native
+  checkpoints and PIJ/assignment arrays.
+- `tables/table_natural_js_cq_deltaei.*`, `table_optimal_deltaei_cq.*`,
+  `table_optimal_js_hardk_keffhard.*`: each has three rows and three pair groups;
+  CSV/PNG/PDF. Trained metrics are verified from persisted arrays.
+- `figures/figure1_natural.*`, `figure2_optimal_NO_ROI_ENLARGE.*`: PNG/PDF with
+  actual scope and stage labels, using 12→18 or 54→57 by default.
+- `audit/`, `formal_full_pipeline_execution.json`, `output_manifest.json`.
+
+The individual natural/optimal stages and the collector accept the same profile.
+Do not mix profiles or input versions in a shared output-root. New graph/model
+configurations still require their existing strict protocol checks.
+
+```bash
+# Layout preview only: placeholders, no scientific CSVs or model training.
+python -B -m mignet_ce.downstream.formal_core_analysis.preview \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --output-root output/preview_zebrafish_hpf
+```
+
+Tests in `test_species_data_factory.py` and `test_formal_core_dataset_profiles.py`
+cover count/coordinate preservation, flat-path ambiguity, reference mapping,
+custom LR/counts preprocessing, both profile command plans, natural measurements,
+checkpoint collection and all three tables/two figures. Synthetic fixtures are
+not species scientific results. Real local preparation/readiness is recorded in
+`output/species_validation/input_readiness_20261119.json`.

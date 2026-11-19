@@ -586,3 +586,153 @@ python ../scripts/run_mignet_vertical.py \
   --export-graphs \
   --export-feature-diagnostics
 ```
+# Zebrafish / Salamandrid profiles (2026-11-19)
+
+The new species entry points run from the **repository root**, using the same
+Python environment as MIGNet. Upload the repository (including `configs/`,
+`mignet_ce/`, and `reference/COMMOT`) to the server. These entry points are not
+standalone copies of the old fixed mouse wrappers.
+
+| Profile | Data root on server | Scope | Selected stages |
+|---|---|---|---|
+| `configs/datasets/zebrafish_hpf_10_12_18.json` | `/home/jovyan/public/datasets/zebrafish_hpf` | `section` (one measured whole section per stage) | 10, 12, 18 hpf |
+| `configs/datasets/salamandrid_44_54_57.json` | `/home/jovyan/public/datasets/salamandrid` | `telencephalon` | 44, 54, 57 |
+
+New H5ADs and maps are **flat**: `spot/spot_section_10.h5ad`,
+`seurat_k150/seurat150_section_10.h5ad`,
+`seurat_k40/seurat_section_10.h5ad`, with maps and member-spot H5ADs beside them.
+Salamandrid uses `telencephalon` in the same filenames. Original inputs remain
+unchanged. Counts are read from `layers/counts`; canonical salamandrid genes use
+AMEX IDs. Coordinates are copied without rescaling or cross-species registration.
+
+## 1. Validate and create Spot inputs
+
+```bash
+cd "/home/jovyan/work/2026 Causality"
+python -B data_factory/scripts/prepare_species_inputs.py \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --data-root /home/jovyan/public/datasets/zebrafish_hpf --dry-run
+python -B data_factory/scripts/run_species_factory.py \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --data-root /home/jovyan/public/datasets/zebrafish_hpf --steps inputs --resume
+
+python -B data_factory/scripts/run_species_factory.py \
+  --experiment-config configs/datasets/salamandrid_44_54_57.json \
+  --data-root /home/jovyan/public/datasets/salamandrid --steps inputs --resume
+```
+
+`--resume` checks profile, raw SHA256 and output SHA256. Unverified or partial
+outputs are refused. Generated journals live in `manifests/`.
+
+## 2. Prepare curated references before networks
+
+Reference files are **required inputs**, not invented from gene display labels.
+Zebrafish LR defaults to the bundled CellChat zebrafish CSV. Supply a curated
+zebrafish TF list (one gene ID per line). Salamandrid requires native AMEX LR/TF
+tables, or a curated mapping from the reference species to AMEX IDs.
+
+```bash
+# The following sources were obtained and hashed locally on 2026-11-19.
+# Upload reference_sources/ and references/ beside the data before server use.
+python -B data_factory/scripts/prepare_species_references.py \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --data-root /home/jovyan/public/datasets/zebrafish_hpf \
+  --tf-source /home/jovyan/public/datasets/zebrafish_hpf/reference_sources/zebrafish_tf_symbols.txt --resume
+
+python -B data_factory/scripts/prepare_species_references.py \
+  --experiment-config configs/datasets/salamandrid_44_54_57.json \
+  --data-root /home/jovyan/public/datasets/salamandrid \
+  --lr-source reference/COMMOT/commot/preprocessing/_data/LRdatabase/CellPhoneDB_v4.0/CellPhoneDBv4.0.human.csv \
+  --tf-source /home/jovyan/public/datasets/salamandrid/reference_sources/human_tf_symbols_Lambert_v1.01.txt \
+  --artista-annotation /home/jovyan/public/datasets/salamandrid/reference_sources/Summary_Gene_Annotaion_0707.tsv --resume
+```
+
+LR TSV schema: `ligand`, `receptor`, `pathway`. Ortholog TSV schema:
+`source_gene`, `target_gene`, `relationship`, `evidence`. The initial mapping
+protocol accepts bijective `one_to_one` records with nonempty evidence, or
+explicit `author_annotation_unique` records, and requires complete mappings of
+every complex subunit. If inputs already use AMEX IDs,
+omit `--ortholog-map`. Unmapped relations are excluded; a missing reference never
+falls back to mouse priors or all genes as regulators.
+
+The ARTISTA mode reads the authors' actual `Axolotl_ID`, `hs_ID`, `hs_gene`
+columns, requires explicit human Ensembl IDs, and excludes ALL ambiguous
+associations across the full table before selecting experimental stages. It does
+not parse `[hs]` fragments or free-form descriptions. The current table supplies
+11,018 unique associations, mapping 392 deduplicated human LR records and 1,053
+human TF candidates to AMEX IDs. These are **transferred human priors supported
+by author annotation**, not experimentally demonstrated axolotl interactions or
+verified phylogenetic one-to-one orthologs. Provenance and exclusions are saved
+in `reference_manifest.json` and `gene_mapping.tsv`. Missing CellPhoneDB pathway
+annotations are explicitly categorized as `Unannotated`.
+
+Reference provenance:
+
+- Zebrafish: AnimalTFDB3 table archived by the study authors at
+  https://github.com/crickbabs/ZebrafishDevelopingHindbrainAtlas/blob/1e1a74548a15f0aae7b664d417de649de3ba5aca/data/Danio_rerio_TF.txt
+- ARTISTA annotation and TF/CCI methodology:
+  https://github.com/BGI-DEV-REG/ARTISTA/tree/v1.1.0
+  (source tree `6c9545428a8fd81ae90859accfabe70fb325bc98`).
+- Human TFs: Lambert et al., official v1.01 list,
+  https://humantfs.ccbr.utoronto.ca/download.php
+
+Original downloads, immutable URLs and SHA256 are retained under each dataset's
+`reference_sources/`. The `references/` bundles contain the actual matched priors.
+When relocating a prepared bundle to the server, copy it intact and let the
+factory validate its profile and output hashes. Its original local source paths
+are provenance; it does not need to re-download/re-prepare that bundle.
+
+The tool prints 1%/2%/5% expression coverage. The zebrafish profile starts with a
+**pilot 1%** cutoff, salamandrid with 5%; distance threshold is 200 in each
+dataset's existing coordinate units. These settings require biological/network
+QC, especially coordinate-unit interpretation and weak early-stage LR support.
+Do not select settings by trained DeltaEI/CQ. GRN strict mode requires nonzero curated TF matches **after** HVG selection.
+The old 100-TF threshold triggered an all-gene fallback; species strict mode
+instead retains the actual curated TF subset and reports a warning below 100.
+It does not expand the regulator set with arbitrary genes. A completed bundle
+contains `lr_pairs.tsv`, `tf_list.txt`, `lr_tf_coverage.csv`, and
+`reference_manifest.json`, with hashes and profile identity.
+
+`--dry-run` writes nothing and can report missing references. Actual preparation
+also writes nothing if required references are incomplete. Use `--resume` for a
+matching complete bundle, or `--output-root` for a new version. Pass that new
+directory to the factory with `--reference-root`.
+
+## 3. Build Seurat, CCI, GRN and developmental features
+
+The R environment needs Seurat, zellkonverter and SingleCellExperiment. The
+factory checks availability before starting. Python needs the existing project
+dependencies, Scanpy, scikit-misc and COMMOT/POT. `--rscript` can name an absolute
+Rscript executable when it is absent from PATH.
+
+```bash
+python -B data_factory/scripts/run_species_factory.py \
+  --experiment-config configs/datasets/zebrafish_hpf_10_12_18.json \
+  --data-root /home/jovyan/public/datasets/zebrafish_hpf \
+  --workers 4 --grn-threads 8 --resume --dry-run
+
+# After preflight succeeds, omit --dry-run. For salamandrid, replace BOTH
+# the profile and data-root with the corresponding row in the table above.
+```
+
+Steps default to `inputs domains cci grn developmental`; `--steps` can run an
+explicit subset. Every layer-stage job has input/output hashes in
+`manifests/species_factory_execution.json`. Resume verifies complete jobs and
+refuses existing unaudited partial files. R exceptions and missing outputs are
+not treated as success: exact K, member maps, per-domain count sums, network
+axes, and finite values are validated. Domain developmental features are the
+existing means over member Spot features, using only the three selected stages.
+
+Each dataset produces nine layer-stage inputs and six domain maps. CCI/GRN and
+developmental filenames retain the established sample stems, so Formal Core
+uses the same mathematical implementation as mouse. These scripts do not run
+the 18 formal training conditions; see the Formal Core README below.
+
+## Current local validation boundary
+
+Six real count-based Spot inputs and both completed reference bundles were
+generated on 2026-11-19 with original raw file hashes preserved. The earlier
+`manifests/species_reference_preflight.json` is the initial missing-reference
+audit; the completed `references/reference_manifest.json` supersedes that status.
+No species Seurat/CCI/GRN or scientific
+training results are claimed until those dependencies and references are ready.

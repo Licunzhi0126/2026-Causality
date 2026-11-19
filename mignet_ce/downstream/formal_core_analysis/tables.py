@@ -10,6 +10,7 @@ import re
 import pandas as pd
 import numpy as np
 from .methods import METHODS, LEGACY_METHODS, ORGANS
+from mignet_ce.io.experiment_spec import validate_scopes
 from mignet_ce.coarse_frontends.method_specs import (
     RETIRED_COARSE_METHODS, FORMAL_TWO_STAGE_PROTOCOL, validate_formal_protocol,
 )
@@ -39,10 +40,10 @@ NATURAL_HIERARCHIES = LEGACY_NATURAL_HIERARCHIES[:3]
 NATURAL_METRICS = ("closure_JS_direct_bits", "CQ", "delta_EI_direct_bits")
 
 
-def build_natural_report_grid(frame: pd.DataFrame, *, organs=ORGANS) -> pd.DataFrame:
+def build_natural_report_grid(frame: pd.DataFrame, *, organs=ORGANS, experiment=None) -> pd.DataFrame:
     """One organ/hierarchy row; numeric JS, CQ and Delta EI for each time pair."""
     from .natural_analysis import requested_organs
-    organs = requested_organs(organs)
+    organs = requested_organs(organs, experiment=experiment)
     required = {"organ", "hierarchy", "time_pair", "mapping_method", *NATURAL_METRICS}
     if not required <= set(frame):
         raise ValueError(f"Missing natural report fields: {sorted(required - set(frame))}")
@@ -50,7 +51,7 @@ def build_natural_report_grid(frame: pd.DataFrame, *, organs=ORGANS) -> pd.DataF
     for organ in organs:
         for hierarchy in NATURAL_HIERARCHIES:
             row = {"Organ": organ, "Hierarchy": hierarchy}
-            for pair in PAIRS:
+            for pair in (experiment.pair_labels if experiment else PAIRS):
                 hit = frame.loc[frame.organ.eq(organ) & frame.hierarchy.eq(hierarchy) & frame.time_pair.eq(pair)]
                 if len(hit) != 1:
                     raise ValueError(f"{'Missing' if hit.empty else 'Duplicate'} natural condition: {organ}/{hierarchy}/{pair}")
@@ -69,11 +70,9 @@ def build_natural_report_grid(frame: pd.DataFrame, *, organs=ORGANS) -> pd.DataF
 
 
 def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, organs=ORGANS,
-                              local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2) -> pd.DataFrame:
-    """Organ × input scale rows, with one measured set of metrics per time pair."""
-    organs = tuple(organs)
-    if not organs or len(set(organs)) != len(organs) or not set(organs) <= set(ORGANS):
-        raise ValueError("Select unique supported organs")
+                              local_graph_mode=FORMAL_LOCAL_GRAPH_MODE, knn_k=30, local_dims=2, experiment=None) -> pd.DataFrame:
+    """Organ 脳 input scale rows, with one measured set of metrics per time pair."""
+    organs = validate_scopes(organs, experiment)
     expected_graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
                                          knn_k=knn_k, local_dims=local_dims)
     required = {"method", "organ", "input_scale", "time_pair", "loss_protocol", *metrics, *GRAPH_CONFIG_FIELDS}
@@ -83,7 +82,7 @@ def build_optimal_report_grid(frame: pd.DataFrame, metrics: tuple[str, ...], *, 
     for organ in organs:
         for scale in SCALES:
             row = {"Organ": organ, "Input scale": scale}
-            for pair in PAIRS:
+            for pair in (experiment.pair_labels if experiment else PAIRS):
                 hit = frame.loc[frame.method.eq("formal_two_stage") & frame.organ.eq(organ)
                                  & frame.input_scale.eq(scale) & frame.time_pair.eq(pair)]
                 if len(hit) != 1:
@@ -192,7 +191,7 @@ def selected_candidate_sensitivity(root: Path, alpha: float, grn_method: str, tr
         select_cci = f.cci_feature.eq("laplacian_hks") if "cci_feature" in f.columns else True
         s = f.loc[f.grn_feature.eq(grn_method) & select_cci & f.transition.eq(transition) & np.isclose(f.alpha, alpha)].copy()
         if s.empty:
-            raise ValueError(f"No actual computed {grn_method}, α={alpha}, {transition} measurements")
+            raise ValueError(f"No actual computed {grn_method}, 伪={alpha}, {transition} measurements")
         return s
     return select(ei), select(cq), manifest
 
@@ -213,7 +212,7 @@ def _infer_run_descriptors(run: Path, summary: dict, config: dict) -> dict:
             "organ": merged.get("organ")}
 
 
-def inspect_optimal_run(run_dir: Path) -> dict:
+def inspect_optimal_run(run_dir: Path, *, experiment=None) -> dict:
     p = Path(run_dir)
     if not (p / "summary.json").is_file():
         raise FileNotFoundError(f"Missing summary: {p}")
@@ -251,26 +250,26 @@ def inspect_optimal_run(run_dir: Path) -> dict:
         desc["input_scale"] = next((scale for scale in SCALES if f"/{scale}/" in str(input_t).replace("\\", "/")), None)
     if desc["time_pair"] is None and input_t and input_tp:
         # Exact time points taken from paths recorded by the completed source loader.
-        match_t = re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
-        match_tp = re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
+        match_t = re.search(r"_(?:[A-Za-z]+)_(\d+(?:\.\d+)?)\.h5ad$", str(input_t))
+        match_tp = re.search(r"_(?:[A-Za-z]+)_(\d+(?:\.\d+)?)\.h5ad$", str(input_tp))
         if match_t and match_tp:
             desc["time_pair"] = f"{match_t.group(1)}->{match_tp.group(1)}"
-    recorded_times = [re.search(r"_(?:heart|lung|brain)_(\d+(?:\.\d+)?)\.h5ad$", str(path))
+    recorded_times = [re.search(r"_(?:[A-Za-z]+)_(\d+(?:\.\d+)?)\.h5ad$", str(path))
                       for path in (input_t, input_tp)]
     if all(recorded_times) and desc["time_pair"] != "->".join(match.group(1) for match in recorded_times):
         raise ValueError(f"Conflicting source time pair in saved metadata: {p}")
-    if desc["input_scale"] not in SCALES or desc["time_pair"] not in PAIRS:
+    if desc["input_scale"] not in SCALES or desc["time_pair"] not in (experiment.pair_labels if experiment else PAIRS):
         raise ValueError(f"Could not verify source input scale/time pair from saved manifest: {p}")
     source_organs = []
     for saved_input in (input_t, input_tp):
-        match = re.search(r"_(heart|lung|brain)_\d+(?:\.\d+)?\.h5ad$", str(saved_input))
+        match = re.search(r"_([A-Za-z]+)_\d+(?:\.\d+)?\.h5ad$", str(saved_input))
         if match:
             source_organs.append(match.group(1))
     identities = set(source_organs + ([desc["organ"]] if desc["organ"] else []))
     if len(identities) > 1:
         raise ValueError(f"Conflicting organ identities in saved inputs: {p}")
     desc["organ"] = next(iter(identities), None)
-    if desc["method"] == "formal_two_stage" and desc["organ"] not in ORGANS:
+    if desc["method"] == "formal_two_stage" and desc["organ"] not in (experiment.organs if experiment else ORGANS):
         raise ValueError(f"Cannot verify organ identity from saved metadata: {p}")
     cci = provenance.get("cci_feature_method")
     alpha = provenance.get("alpha_cci")
@@ -393,7 +392,7 @@ def inspect_optimal_run(run_dir: Path) -> dict:
 
 
 def collect_optimal_runs(root: Path, *, local_graph_mode=FORMAL_LOCAL_GRAPH_MODE,
-                         knn_k=30, local_dims=2) -> tuple[pd.DataFrame, list[str]]:
+                         knn_k=30, local_dims=2, experiment=None) -> tuple[pd.DataFrame, list[str]]:
     expected_graph = graph_configuration("formal_two_stage", local_graph_mode=local_graph_mode,
                                          knn_k=knn_k, local_dims=local_dims)
     root = Path(root)
@@ -415,7 +414,7 @@ def collect_optimal_runs(root: Path, *, local_graph_mode=FORMAL_LOCAL_GRAPH_MODE
             # Historical retired results remain on disk but do not enter active tables.
             if _json(run / "summary.json").get("method") not in METHODS:
                 continue
-            row = inspect_optimal_run(run)
+            row = inspect_optimal_run(run, experiment=experiment)
             validate_graph_configuration(row, expected_graph, context=run)
             good.append(row)
         except (ValueError, FileNotFoundError) as exc:
