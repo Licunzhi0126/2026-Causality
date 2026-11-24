@@ -4,3 +4,4 @@ paper/
 output/
 __pycache__/
 *.py[cod]
+/code.zip
