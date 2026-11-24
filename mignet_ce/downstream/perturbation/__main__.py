@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from mignet_ce.downstream.analysis.io import (
@@ -45,13 +46,30 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--maturity-root", type=Path, help="Directory containing formal source.csv and target.csv maturity inputs.")
     parser.add_argument("--pair", action="append", dest="pairs")
-    parser.add_argument("--strength", type=float, nargs="+", dest="strengths", help="One or more perturbation strengths, for example: --strength 0.2 0.4 0.6 0.8")
+    parser.add_argument("--strength", type=float, nargs="+", dest="strengths", help="Selected-edge fractions (default: nine strengths 0.1 through 0.9); override with --strength 0.2 0.4")
     parser.add_argument("--mirror-fraction", type=float, default=1.0, help="Per-selected-edge mirror amplitude alpha in (0, 1], default: 1.0.")
     parser.add_argument("--region-node-fraction", type=float, default=0.40, help="Fixed topology-region node fraction in (0, 1], default: 0.40.")
     parser.add_argument("--region-edge-fraction", type=float, default=0.40, help="Fixed topology-region edge fraction in (0, 1], default: 0.40.")
     parser.add_argument("--topology-only", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true", help="Archive failed conditions and retry in their original paths.")
     parser.add_argument("--k", type=int, default=40); parser.add_argument("--device", default="cpu", choices=("cpu", "cuda", "auto"))
+    parser.add_argument("--formal-config", type=Path, help="JSON object with frontend_options and training_options matching the formal run.")
+    parser.add_argument("--method", choices=["formal_two_stage"], default="formal_two_stage",
+                        help="Perturbation trainer (default: formal_two_stage).")
+    parser.add_argument("--local-graph-mode", choices=["legacy_features", "coords", "all_features"],
+                        default="all_features", help="KNN construction mode (default: all_features).")
     args = parser.parse_args(argv)
+    formal_options = json.loads(args.formal_config.read_text(encoding="utf-8")) if args.formal_config else {}
+    if not isinstance(formal_options, dict) or set(formal_options) - {"frontend_options", "training_options"}:
+        parser.error("--formal-config accepts frontend_options and training_options only.")
+    for key in ("frontend_options", "training_options"):
+        if key in formal_options and not isinstance(formal_options[key], dict):
+            parser.error(f"--formal-config {key} must be an object.")
+    training_options = dict(formal_options.get("training_options", {}))
+    if "local_graph_mode" in training_options and training_options["local_graph_mode"] != args.local_graph_mode:
+        parser.error("Conflicting local_graph_mode between CLI and --formal-config.")
+    training_options["local_graph_mode"] = args.local_graph_mode
+    formal_options["training_options"] = training_options
     if not args.topology_only and args.maturity_root is None:
         parser.error("--maturity-root is required unless --topology-only is used.")
     try:
@@ -59,7 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as error:
         parser.error(str(error))
     time_pair = f"{args.organ}_{args.layer}_{args.source_time}_to_{args.target_time}"
-    run_experiment(time_pair=time_pair, source_sample=source_sample, target_sample=target_sample, baseline_inputs=inputs, output_root=args.output_root, config=PerturbationConfig(k=args.k, device=args.device, mirror_fraction=args.mirror_fraction, region_node_fraction=args.region_node_fraction, region_edge_fraction=args.region_edge_fraction), supplied_maturity_root=args.maturity_root, pair_ids=args.pairs or PAIR_IDS, strengths=args.strengths, evaluate=not args.topology_only)
+    run_experiment(time_pair=time_pair, source_sample=source_sample, target_sample=target_sample, baseline_inputs=inputs, output_root=args.output_root, config=PerturbationConfig(method=args.method, local_graph_mode=args.local_graph_mode, k=args.k, device=args.device, mirror_fraction=args.mirror_fraction, region_node_fraction=args.region_node_fraction, region_edge_fraction=args.region_edge_fraction, **formal_options), supplied_maturity_root=args.maturity_root, pair_ids=args.pairs or PAIR_IDS, strengths=args.strengths, evaluate=not args.topology_only, retry_failed=args.retry_failed)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import networkx as nx
 import numpy as np
 
 from .grn_io import GRNGraph
-from .motif_index import MotifIndex, build_motif_index
+from .motif_index import HIGHER_ORDER_TEMPLATES, MotifIndex, build_motif_index
 
 EPS = 1e-12
 
@@ -28,6 +28,12 @@ class TopologyMetrics:
     feedforward_loop: float = 0.0
     feedback_cycle: float = 0.0
 
+    four_node_feedback_cycle: float = 0.0
+    convergent_motif: float = 0.0
+    cascade_motif: float = 0.0
+    feedback_with_shortcut: float = 0.0
+    divergent_motif: float = 0.0
+
     def as_dict(self) -> dict[str, float | int]:
         return asdict(self)
 
@@ -42,6 +48,8 @@ TARGET_METRIC = {
     "P7_feedforward_loop": "feedforward_loop",
     "P8_feedback_cycle": "feedback_cycle",
 }
+TARGET_METRIC.update({pair: pair.split("_", 1)[1] for pair in HIGHER_ORDER_TEMPLATES})
+MOTIF_METRIC_NAMES = tuple(TARGET_METRIC[pair] for pair in tuple(TARGET_METRIC)[5:])
 
 
 def _geometric_mean(*weights: float) -> float:
@@ -49,7 +57,7 @@ def _geometric_mean(*weights: float) -> float:
 
 
 def compute_motif_metrics(graph: GRNGraph, *, baseline_scale: float | None = None, index: MotifIndex | None = None) -> dict[str, float]:
-    """Compute T6/T7/T8 with one externally fixed normalization scale."""
+    """Compute T6 through T13 with one externally fixed normalization scale."""
     if np.any(graph.adjacency < 0.0):
         raise ValueError("Weighted motif metrics require non-negative GRN weights.")
     positive = graph.adjacency[graph.adjacency > 0.0]
@@ -61,7 +69,11 @@ def compute_motif_metrics(graph: GRNGraph, *, baseline_scale: float | None = Non
     t6 = sum(_geometric_mean(max(weights[i, j], weights[j, i]), max(weights[j, k], weights[k, j]), max(weights[i, k], weights[k, i])) for i, j, k in index.triangles)
     t7 = sum(_geometric_mean(weights[a, b], weights[a, c], weights[b, c]) for a, b, c in index.feedforward_loops)
     t8 = sum(_geometric_mean(weights[a, b], weights[b, c], weights[c, a]) for a, b, c in index.feedback_cycles)
-    return {"triangle_intensity": float(t6), "feedforward_loop": float(t7), "feedback_cycle": float(t8), "baseline_weight_scale": scale}
+    extra = {TARGET_METRIC[pair_id]: float(sum(
+        _geometric_mean(*(weights[nodes[a], nodes[b]] for a, b in template))
+        for nodes in index.occurrences(pair_id)))
+        for pair_id, template in HIGHER_ORDER_TEMPLATES.items()}
+    return {**extra, "triangle_intensity": float(t6), "feedforward_loop": float(t7), "feedback_cycle": float(t8), "baseline_weight_scale": scale}
 
 
 def _gini(values: np.ndarray) -> float:
@@ -102,8 +114,8 @@ def compute_topology_metrics(graph: GRNGraph, communities: Mapping[str, int] | N
     assortativity = nx.degree_pearson_correlation_coefficient(directed, x="out", y="in", weight=None) if directed.number_of_edges() > 1 else 0.0
     assortativity = float(assortativity) if np.isfinite(assortativity) else 0.0
     reciprocity = nx.reciprocity(directed)
-    motifs = compute_motif_metrics(graph, baseline_scale=baseline_scale, index=motif_index) if np.all(graph.adjacency >= 0.0) else {"triangle_intensity": float("nan"), "feedforward_loop": float("nan"), "feedback_cycle": float("nan")}
-    return TopologyMetrics(_gini(degrees), degree_cv, centralization, modularity, clustering, assortativity, float(reciprocity or 0.0), graph.edge_count, len(graph.nodes), **{key: motifs[key] for key in ("triangle_intensity", "feedforward_loop", "feedback_cycle")})
+    motifs = compute_motif_metrics(graph, baseline_scale=baseline_scale, index=motif_index) if np.all(graph.adjacency >= 0.0) else {name: float("nan") for name in MOTIF_METRIC_NAMES}
+    return TopologyMetrics(_gini(degrees), degree_cv, centralization, modularity, clustering, assortativity, float(reciprocity or 0.0), graph.edge_count, len(graph.nodes), **{key: motifs[key] for key in MOTIF_METRIC_NAMES})
 
 
 def metric_value(metrics: TopologyMetrics, pair_id: str) -> float:

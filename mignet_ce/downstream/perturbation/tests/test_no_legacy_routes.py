@@ -18,6 +18,7 @@ def test_production_sources_do_not_restore_legacy_routes() -> None:
         "build_state_" + "macro_pij_builder",
         "build_existing_" + "ng_macro_callback",
         "run_prepared_" + "condition",
+        "analysis.grn_" + "perturbation",
     )
     assert not any(route in source for route in legacy_routes)
 
@@ -29,7 +30,10 @@ def test_search_based_perturbation_modules_are_absent() -> None:
 
 def test_optimal_bridge_uses_direct_state_formal_global_training() -> None:
     source = (PERTURBATION_ROOT / "optimal_bridge.py").read_text(encoding="utf-8")
-    assert "maturity_cci_grn_two_stage" in source
+    assert "formal_two_stage" in source
+    assert "FORMAL_TWO_STAGE_PROTOCOL" in source
+    assert "WYTTwoStageDeltaEIConfig" not in source
+    assert "lambda_dev=0.05" not in source
     assert "downstream." + "application" not in source
     assert "run_local_" + "pair_analysis" not in source
     assert "prepare_direct_state_two_stage" in source

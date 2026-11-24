@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import json
+import pytest
 
 from mignet_ce.downstream.perturbation.config import PerturbationConfig
 from mignet_ce.downstream.perturbation import runner
@@ -39,3 +40,33 @@ def test_motif_pairs_use_the_same_mirror_path(tmp_path: Path) -> None:
         manifest = json.loads((root / "t1_t2" / pair_id / "strength_0.5" / "positive" / "topology" / "perturbation_manifest.json").read_text(encoding="utf-8"))
         assert manifest["operation"]["mirror_fraction"] == 1.0
         assert "transfer_total" not in manifest["operation"]
+
+
+def test_retry_archives_only_failed_condition(tmp_path):
+    failed = tmp_path / "negative"
+    completed = tmp_path / "positive"
+    baseline = tmp_path / "baseline"
+    for root, status in ((failed, "DIRECT_STATE_FAILED"), (completed, "COMPLETED"), (baseline, "COMPLETED")):
+        runner.write_json(root / "result.json", {"training_status": status})
+        (root / "artifact.txt").write_text(status, encoding="utf-8")
+    with pytest.raises(FileExistsError, match="DIRECT_STATE_FAILED"):
+        runner._prepare_condition_directory(failed, retry_failed=False)
+    assert runner._prepare_condition_directory(completed, retry_failed=True)["training_status"] == "COMPLETED"
+    assert runner._prepare_condition_directory(failed, retry_failed=True) is None
+    assert not failed.exists()
+    archived, = tmp_path.glob("negative.failed-*")
+    assert (archived / "artifact.txt").read_text(encoding="utf-8") == "DIRECT_STATE_FAILED"
+    for root in (completed, baseline):
+        assert (root / "artifact.txt").read_text(encoding="utf-8") == "COMPLETED"
+
+
+def test_retry_keeps_all_training_artifacts_even_if_result_reports_failure(tmp_path):
+    root = tmp_path / "positive"
+    training = root / "training"
+    training.mkdir(parents=True)
+    for name in runner.REQUIRED_OUTPUTS:
+        (training / name).touch()
+    runner.write_json(root / "result.json", {"training_status": "DIRECT_STATE_FAILED"})
+    with pytest.raises(FileExistsError, match="all training outputs"):
+        runner._prepare_condition_directory(root, retry_failed=True)
+    assert all((training / name).is_file() for name in runner.REQUIRED_OUTPUTS)

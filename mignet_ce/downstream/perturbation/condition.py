@@ -8,7 +8,10 @@ import hashlib
 PAIR_IDS = (
     "P1_degree_heterogeneity", "P2_modularity", "P3_clustering", "P4_assortativity", "P5_reciprocity",
     "P6_triangle_intensity", "P7_feedforward_loop", "P8_feedback_cycle",
+    "P9_four_node_feedback_cycle", "P10_convergent_motif", "P11_cascade_motif",
+    "P12_feedback_with_shortcut", "P13_divergent_motif",
 )
+MOTIF_IDS = frozenset(PAIR_IDS[5:])
 DIRECTIONS = ("positive", "negative")
 
 

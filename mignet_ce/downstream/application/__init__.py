@@ -1,2 +1,1 @@
-"""Application adapters for preparing the six GSE267904 spatial samples."""
-
+"""Optimal CG on externally preprocessed data."""

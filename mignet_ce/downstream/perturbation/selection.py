@@ -7,7 +7,7 @@ from typing import Mapping
 
 import numpy as np
 
-from .condition import PAIR_IDS, derived_seed
+from .condition import MOTIF_IDS, PAIR_IDS, derived_seed
 from .config import PerturbationConfig
 from .grn_io import GRNGraph
 from .motif_index import MotifIndex, build_motif_index, motif_edge_participation
@@ -86,7 +86,7 @@ def _node_scores(graph: GRNGraph, pair_id: str, communities: Mapping[str, int], 
             scores[i] += 1
             scores[j] += 1
         return scores, {edge: 1.0 for edge in reciprocal}, reciprocal
-    if pair_id in {"P6_triangle_intensity", "P7_feedforward_loop", "P8_feedback_cycle"}:
+    if pair_id in MOTIF_IDS:
         edge_scores = motif_edge_participation(motif_index or build_motif_index(graph), pair_id)
         scores = np.zeros(len(graph.nodes), dtype=float)
         for (i, j), score in edge_scores.items():
