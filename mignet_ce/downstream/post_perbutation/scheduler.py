@@ -269,6 +269,12 @@ def worker_loop(device: str) -> None:
                 print(f"condition={job['id']} gpu={job['device']} visible={os.getenv('CUDA_VISIBLE_DEVICES')} pid={os.getpid()}")
                 try:
                     started = time.perf_counter()
+                    if device.startswith("cuda"):
+                        import torch
+
+                        # The first job can reset allocator peaks before creating a CUDA tensor.
+                        if not torch.cuda.is_initialized():
+                            torch.cuda.init()
                     if job["family"] == "existence":
                         from .symmetry_existence_pipeline import calculate_batch
                         output = calculate_batch(Path(job["baseline"]), tuple(map(Path, job["seurat"])),

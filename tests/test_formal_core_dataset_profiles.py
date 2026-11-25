@@ -81,3 +81,35 @@ def test_orchestrator_propagates_profile_and_nine_conditions(tmp_path, profile):
         if job["stage"] in ("natural_fixed_alpha", "formal_core_collect_and_plot"):
             assert "--experiment-config" in job["command"]
     assert not (tmp_path / "out").exists()
+
+
+def test_regeneration_profile_propagates_four_pairs_and_collects_twelve_runs(tmp_path, monkeypatch):
+    profile = ROOT / "configs/datasets/zebrafish_regenerate.json"
+    spec = load_experiment(profile)
+    assert spec.time_points == ("0", "0.25", "0.5", "1", "3", "7", "14")
+    assert spec.pair_labels == ("0->0.25", "0.5->1", "1->3", "7->14")
+
+    args = run_pipeline.build_argparser().parse_args([
+        "--experiment-config", str(profile), "--data-root", str(tmp_path),
+        "--grn-root", str(tmp_path / "grn"), "--cci-root", str(tmp_path / "cci"),
+        "--developmental-root", str(tmp_path / "dev"), "--output-root", str(tmp_path / "out"),
+        "--maturity-mode", "existing",
+    ])
+    jobs = run_pipeline.make_commands(args, None)
+    train = next(job for job in jobs if job["stage"] == "train_formal_two_stage_heart")
+    command = train["command"]
+    assert train["expected_runs"] == 12
+    assert command[command.index("--pairs") + 1:command.index("--scales")] == [
+        "0:0.25", "0.5:1", "1:3", "7:14",
+    ]
+    for job in jobs:
+        if job["stage"] in ("natural_fixed_alpha", "formal_core_collect_and_plot"):
+            assert job["command"][job["command"].index("--experiment-config") + 1] == str(profile)
+    assert not (tmp_path / "out").exists()
+
+    monkeypatch.setattr("test_formal_core_analysis.PAIRS", spec.pair_labels)
+    _write_synthetic_checkpoints(tmp_path / "runs", organs=spec.organs)
+    runs, rejected = collect_optimal_runs(tmp_path / "runs", experiment=spec)
+    assert not rejected
+    assert len(runs) == 12
+    assert set(runs["time_pair"]) == set(spec.pair_labels)

@@ -1,0 +1,32 @@
+{
+  "dataset_id": "zebrafish_regenerate",
+  "species": "zebrafish",
+  "organs": ["heart"],
+  "time_points": ["0", "0.25", "0.5", "1", "3", "7", "14"],
+  "pairs": [["0", "0.25"], ["0.5", "1"], ["1", "3"], ["7", "14"]],
+  "organ_labels": {
+    "heart": "Zebrafish heart"
+  },
+  "stage_labels": {
+    "0": "Uninjured",
+    "0.25": "6 hpa",
+    "0.5": "12 hpa",
+    "1": "1 dpa",
+    "3": "3 dpa",
+    "7": "7 dpa",
+    "14": "14 dpa"
+  },
+  "raw_files": {
+    "0": "h5ad/selected/T1_C2_S4.h5ad",
+    "0.25": "h5ad/selected/T2_C2_S4.h5ad",
+    "0.5": "h5ad/selected/T3_C1_S5.h5ad",
+    "1": "h5ad/selected/T4_C3_S6.h5ad",
+    "3": "h5ad/selected/T5_C3_S3.h5ad",
+    "7": "h5ad/selected/T6_C1_S2.h5ad",
+    "14": "h5ad/selected/T7_C2_S1.h5ad"
+  },
+  "gene_column": "Gene",
+  "output_layout": "flat",
+  "min_cell_pct": 0.01,
+  "distance_threshold": 200
+}

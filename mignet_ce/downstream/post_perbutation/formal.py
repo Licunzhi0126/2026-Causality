@@ -255,7 +255,10 @@ def run_training(job: dict, device: str, worker_cache: dict) -> dict:
                            provenance={**original.provenance, "post_perbutation": {"condition": job["id"], **job["audit"]}})
     prepared.validate()
     out = directory / "training"
-    config = WYTFormalTwoStageConfig(k=settings.k, out_dir=out, device=device, seed=settings.train_seed, epochs=settings.epochs)
+    # The worker sees one GPU through CUDA_VISIBLE_DEVICES. The formal trainer expects an unindexed device.
+    trainer_device = "cuda" if device == "cuda:0" else device
+    config = WYTFormalTwoStageConfig(k=settings.k, out_dir=out, device=trainer_device,
+                                    seed=settings.train_seed, epochs=settings.epochs)
     train_deltaei(prepared, config)
     metrics = checkpoint_metrics(out)
     p, _, source, target = read_matrices(out)
