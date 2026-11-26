@@ -1,12 +1,13 @@
 """Immutable experiment controls; network seeds never become training seeds."""
 from dataclasses import dataclass
+from ..formal_protocol import FORMAL_SEED
 
 
 @dataclass(frozen=True)
 class RandomNetworkConfig:
     n_random: int = 100
-    base_seed: int = 42
-    train_seed: int = 20260930
+    base_seed: int = FORMAL_SEED
+    train_seed: int = FORMAL_SEED
     k: int = 40
     device: str = 'cpu'
     max_retries: int = 0

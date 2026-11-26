@@ -9,8 +9,8 @@ Existing perturbation implementations and factory files are not changed.
 `formal_two_stage.prepare` delegates to `maturity_cci_grn_two_stage.prepare`, then
 `complete_combined_coarse_maturity_cci_grn.prepare`:
 
-- `_common.load_spot_pair` loads both CCI NPZs and their index TSVs. CCI is consumed
-  as directed adjacency (directed shared NMF); the loader does not symmetrize it.
+- `_common.load_spot_pair` loads both CCI NPZs and their index TSVs. It keeps
+  directed CCI adjacency. The Formal frontend uses `laplacian_hks` features.
 - `complete_combined.prepare_complete_stage` reads each H5AD and its GRN CSV.
   `prepare_grn_inputs` uses absolute GRN weights, expression-overlapping genes and
   the fixed per-regulator top-k. The randomized CSV retains the original signed
@@ -58,18 +58,24 @@ bound the scope of numerical reproducibility.
 
 Use an absolute path for the factory. Full training requires a maturity directory
 containing `source.csv` and `target.csv`. The real baseline and randomized runs
-share the default frontend and training settings and the supplied `--train-seed`.
-Outputs must be outside input directories.
+share Formal Core settings `all_features`, KNN 30, CCI alpha 0.20, GRN
+`legacy_nmf`, and training seed 42. The random network streams use master seed
+42 and the repeat index. Outputs must be outside input directories.
 
 ```powershell
-python -m mignet_ce.downstream.randnetwork --data-root <FACTORY> --organ heart --layer spot --source-time 11.5 --target-time 12.5 --output-root <OUTPUT> --n-random 3 --base-seed 42 --train-seed 20260930 --randomize-only
-python -m mignet_ce.downstream.randnetwork --data-root <FACTORY> --organ heart --layer spot --source-time 11.5 --target-time 12.5 --maturity-root <MATURITY_PAIR> --output-root <TRAIN_OUTPUT> --n-random 100 --base-seed 42 --train-seed 20260930 --k 40 --device cuda --resume
+python -m mignet_ce.downstream.randnetwork --data-root <FACTORY> --organ heart --layer spot --source-time 11.5 --target-time 12.5 --output-root <OUTPUT> --n-random 3 --randomize-only --devices cpu
+python -m mignet_ce.downstream.randnetwork --data-root <FACTORY> --organ heart --layer spot --source-time 11.5 --target-time 12.5 --maturity-root <MATURITY_PAIR> --output-root <TRAIN_OUTPUT> --n-random 100 --k 40 --devices cuda:0 cuda:1 --workers-per-gpu 3 --gpu-budget-gib 18 --cpu-workers 16 --resume
 python -m pytest mignet_ce/downstream/randnetwork/tests -q
 ```
 
 Randomize-only and full training use separate output roots because their locked
 configurations differ. Repeat for 12.5→13.5 and 13.5→14.5 using the corresponding
 maturity pair.
+
+The scheduler uses CPU processes to stage the frontend and one visible card per
+training process. The per-card project memory budget is independent of the
+observed total card usage. The scheduler checks both before dispatch. Progress
+and measured peaks are recorded in `progress.json` and `gpu_usage.json`.
 
 Resume validates input/config/source/software hashes and completed artifact hashes.
 An unchanged failed repeat retries its original seed. `--max-retries` controls

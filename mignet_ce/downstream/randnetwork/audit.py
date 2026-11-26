@@ -1,8 +1,8 @@
 """Atomic provenance and invariant checks."""
 import hashlib
 import json
-import os
 from pathlib import Path
+from ..post_perbutation.config import replace_output
 
 
 def digest(value):
@@ -31,7 +31,7 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True, default=str, allow_nan=False), encoding='utf-8')
-    os.replace(temporary, path)
+    replace_output(temporary, path)
 
 
 def input_record(inputs):

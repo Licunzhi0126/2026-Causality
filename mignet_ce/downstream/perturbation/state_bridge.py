@@ -1,7 +1,7 @@
 """Build T1/T2 condition-specific GRN spot states with existing project primitives."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -31,6 +31,7 @@ class PerturbedGRNStates:
     pair_data: object
     stage_t: object
     stage_tp_baseline: object
+    grn_enhancer: object | None = None
 
 
 def describe_array(values):
@@ -136,7 +137,7 @@ def prepare_fixed_source_stages(request, pair_data, baseline_graph, perturbed_gr
 
 
 def load_baseline_spot_pij(baseline_spot_pij, units_t, units_tp, diagnostics):
-    propagation = np.load(baseline_spot_pij, allow_pickle=False)
+    propagation = np.load(baseline_spot_pij, mmap_mode="r", allow_pickle=False)
     diagnostics["spot_pij"] = describe_array(propagation)
     expected = (len(units_t), len(units_tp))
     if propagation.shape != expected:
@@ -160,13 +161,13 @@ def load_baseline_spot_pij(baseline_spot_pij, units_t, units_tp, diagnostics):
 
 def build_propagated_grn_states(*, baseline_inputs, perturbed_grn_t, baseline_spot_pij,
                                 frontend_options=None, baseline_graph=None, perturbed_graph=None,
-                                diagnostics=None):
+                                diagnostics=None, baseline_assets=None):
     if diagnostics is None:
         diagnostics = {}
     diagnostics["stage"] = "COORDINATES"
     request = make_request(baseline_inputs, frontend_options)
-    if request.grn_feature_method != "legacy":
-        raise NotImplementedError("Propagation currently requires legacy GRN features.")
+    if request.grn_feature_method not in {"legacy", "legacy_nmf"}:
+        raise ValueError("Propagation supports legacy and legacy_nmf GRN features")
     if baseline_graph is None:
         baseline_graph = read_grn(request.grn_t)
     if perturbed_graph is None:
@@ -175,7 +176,26 @@ def build_propagated_grn_states(*, baseline_inputs, perturbed_grn_t, baseline_sp
         raise ValueError("GRN coordinate mismatch: ordered graph nodes.")
     pair_data = load_spot_pair(request)
     stage_t, stage_t_star = prepare_fixed_source_stages(request, pair_data, baseline_graph, perturbed_graph)
-    stage_tp = prepare_stage(request, pair_data, "tp")
+    stage_tp = baseline_assets[1] if baseline_assets is not None else prepare_stage(request, pair_data, "tp")
+    enhancer = None
+    if request.grn_feature_method == "legacy_nmf":
+        from mignet_ce.grn_representation import GRNFeatureConfig, GRNPairEnhancer
+
+        if baseline_assets is None:
+            standard_source = prepare_stage(request, pair_data, "t")
+            enhancer = GRNPairEnhancer.fit(standard_source, stage_tp, GRNFeatureConfig(
+                method=request.grn_feature_method, residual_lambda=request.grn_residual_lambda))
+        else:
+            standard_source, _, enhancer, _, _ = baseline_assets
+            if enhancer is None or enhancer.config.method != request.grn_feature_method:
+                raise ValueError("Baseline has an incompatible GRN basis")
+        # Keep the Formal basis and scale. The fixed intervention graph can
+        # include genes filtered out of both standard baseline stages.
+        lookup = dict(zip(standard_source.grn_genes, zip(*enhancer.basis_t)))
+        lookup.update(zip(stage_tp.grn_genes, zip(*enhancer.basis_tp)))
+        zero = tuple(np.zeros(basis.shape[1], dtype=basis.dtype) for basis in enhancer.basis_t)
+        source_factors = [lookup.get(gene, zero) for gene in stage_t.grn_genes]
+        enhancer = replace(enhancer, basis_t=tuple(np.stack(values) for values in zip(*source_factors)))
     for name, stage in (("t_baseline", stage_t), ("t_perturbed", stage_t_star), ("tp_baseline", stage_tp)):
         diagnostics[name] = {**describe_genes(stage.grn_genes, stage.grn_adjacency),
                              "spot_count": len(stage.units), "g_raw": describe_array(stage.g_raw)}
@@ -186,17 +206,23 @@ def build_propagated_grn_states(*, baseline_inputs, perturbed_grn_t, baseline_sp
         raise ValueError("T1/T2 GRN projection dimensions differ.")
     diagnostics["grn_coordinates_verified"] = True
     diagnostics["stage"] = "PROPAGATION"
-    delta_raw_t = stage_t_star.g_raw.astype(np.float64) - stage_t.g_raw
+    def features(stage, label):
+        return stage.g_raw if enhancer is None else enhancer.feature_numpy(stage.expression_grn, stage, label)
+
+    baseline_t = features(stage_t, "t")
+    baseline_tp = features(stage_tp, "tp")
+    perturbed_t = features(stage_t_star, "t")
+    delta_raw_t = perturbed_t.astype(np.float64) - baseline_t
     propagation = load_baseline_spot_pij(baseline_spot_pij, stage_t.units, stage_tp.units, diagnostics)
     delta_raw_tp = propagate_delta(delta_raw_t, propagation)
-    g_raw_tp = stage_tp.g_raw + delta_raw_tp
+    g_raw_tp = baseline_tp + delta_raw_tp
     if (not np.isfinite(g_raw_tp).all()
             or not np.isfinite(g_raw_tp.astype(np.float32)).all()
             or not np.isfinite(delta_raw_tp.astype(np.float32)).all()):
         raise ValueError("Propagated T2 state is non-finite in trainer precision.")
     return PerturbedGRNStates(
         spot_ids_t=tuple(stage_t.units), spot_ids_tp=tuple(stage_tp.units),
-        g_raw_t_baseline=stage_t.g_raw, g_raw_tp_baseline=stage_tp.g_raw,
-        g_raw_t_perturbed=stage_t_star.g_raw, g_raw_tp_perturbed=g_raw_tp,
+        g_raw_t_baseline=baseline_t, g_raw_tp_baseline=baseline_tp,
+        g_raw_t_perturbed=perturbed_t, g_raw_tp_perturbed=g_raw_tp,
         delta_g_raw_t=delta_raw_t, delta_g_raw_tp=delta_raw_tp,
-        pair_data=pair_data, stage_t=stage_t_star, stage_tp_baseline=stage_tp)
+        pair_data=pair_data, stage_t=stage_t_star, stage_tp_baseline=stage_tp, grn_enhancer=enhancer)

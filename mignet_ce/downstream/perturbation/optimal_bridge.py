@@ -13,6 +13,7 @@ from .reporting import collect_summary, write_json
 from .validation import validate_training_run
 from .direct_state_bridge import prepare_direct_state_two_stage
 from .formal_macro_adapter import PERTURBATION_MACRO_SCHEMA
+from ..formal_protocol import reset_seed
 
 
 REQUIRED_OUTPUTS = ("summary.json", "S_t.npy", "S_tp.npy", "PIJ_micro_train.npy", "PIJ_macro_train.npy", "assignments_t.csv", "assignments_tp.csv", "best_ei.pt", "best_joint.pt")
@@ -75,23 +76,47 @@ def validate_cached_training(output_root: Path, *, k: int, device: str, frontend
 
 def run_direct_state_condition(*, baseline_inputs: dict[str, Path], maturity_t: Path, maturity_tp: Path, output_root: Path, spot_ids_t: list[str], spot_ids_tp: list[str], k: int, device: str, frontend_options=None, training_options=None, states=None, diagnostics=None) -> dict[str, object]:
     """Run one formal two-stage training with direct, precomputed GRN states."""
+    prepared, config = prepare_condition(baseline_inputs=baseline_inputs, maturity_t=maturity_t, maturity_tp=maturity_tp,
+        output_root=output_root, spot_ids_t=spot_ids_t, spot_ids_tp=spot_ids_tp, k=k, device=device,
+        frontend_options=frontend_options, training_options=training_options, states=states)
+    if diagnostics is not None:
+        diagnostics["stage"] = "TRAIN"
+    return finish_condition(prepared, config, frontend_options, training_options, baseline=states is None)
+
+
+def prepare_condition(*, baseline_inputs, maturity_t, maturity_tp, output_root, spot_ids_t, spot_ids_tp,
+                      k, device, frontend_options=None, training_options=None, states=None):
     training = Path(output_root) / "training"
     if training.exists() or (Path(output_root) / "perturbation_provenance.json").exists():
         validate_cached_training(Path(output_root), k=k, device=device, frontend_options=frontend_options, training_options=training_options)
         raise FileExistsError(f"Training already exists at {training}; use a new --output-root.")
     config = formal_training_config(k=k, training=training, device=device, training_options=training_options)
-    validate_training_run(inputs=baseline_inputs, maturity_t=maturity_t, maturity_tp=maturity_tp, spot_ids_t=spot_ids_t, spot_ids_tp=spot_ids_tp, k=k, out_dir=training, device=device)
+    reset_seed(config.seed)
+    options = frontend_options or {}
+    validate_training_run(inputs=baseline_inputs, maturity_t=maturity_t, maturity_tp=maturity_tp, spot_ids_t=spot_ids_t, spot_ids_tp=spot_ids_tp, k=k, out_dir=training, device=device,
+                          **{key: options[key] for key in ("maturity_id_column", "maturity_column") if key in options})
     prepared = prepare_direct_state_two_stage(
         baseline_inputs=baseline_inputs, maturity_t=maturity_t, maturity_tp=maturity_tp,
         frontend_options=frontend_options, states=states,
     )
+    return prepared, config
+
+
+def finish_condition(prepared, config, frontend_options, training_options, *, baseline=False):
     from wyt_deltaei_coarse_grain import train_deltaei
-    if diagnostics is not None:
-        diagnostics["stage"] = "TRAIN"
+    from ..experiment_scheduler import dump_transfer
+
+    training = config.out_dir
+    output_root = training.parent
+    reset_seed(config.seed)
     result = train_deltaei(prepared, config)
     missing = [name for name in REQUIRED_OUTPUTS if not (training / name).is_file()]
     if missing:
         raise FileNotFoundError(f"Direct-state trainer did not produce required outputs: {missing}")
+    if baseline:
+        assets = getattr(getattr(prepared, "macro_pij_builder", None), "formal_assets", None)
+        if assets is not None:
+            dump_transfer(output_root / "formal_assets.pkl", assets)
     write_json(Path(output_root) / "perturbation_provenance.json", {
         "pipeline": "formal_two_stage", "method": "formal_two_stage",
         "loss_protocol": FORMAL_TWO_STAGE_PROTOCOL, "local_graph_mode": config.local_graph_mode,
@@ -100,7 +125,7 @@ def run_direct_state_condition(*, baseline_inputs: dict[str, Path], maturity_t: 
         "global_training_runs": 1, "grn_state_mode": "direct_state",
         "macro_grn_mode": "pool_expression_plus_propagated_residual",
         "perturbation_macro_schema": PERTURBATION_MACRO_SCHEMA, "frontend_options": frontend_options or {},
-        "formal_training_config_source": "explicit_overrides" if training_options is not None else "shared_defaults_cli_unverified", "k": k, "device": device,
+        "formal_training_config_source": "explicit_overrides" if training_options is not None else "shared_defaults_cli_unverified", "k": config.k, "device": config.device,
     })
     return {"training": {"mode": "direct_state", "best_epoch": result.best_epoch}, "summary": collect_summary(training), "training_root": str(training)}
 

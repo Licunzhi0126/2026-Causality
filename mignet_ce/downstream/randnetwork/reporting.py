@@ -23,12 +23,17 @@ def report(root, baseline, repeats, expected, time_pair):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    for row, filename in zip(stats, ('null_delta_ei.png', 'null_cq.png')):
-        fig, ax = plt.subplots()
-        ax.hist([r[row['metric']] for r in repeats], bins=15)
-        ax.axvline(row['real'], color='red', label=f"Real; p={row['p_one_sided']:.6g}")
-        ax.set(xlabel=row['metric'], ylabel='Random-network count', title=time_pair)
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(root / filename, dpi=150)
-        plt.close(fig)
+    labels = (('null_delta_ei', r'$\Delta EI$ (bits)'), ('null_cq', 'Closure quality (CQ)'))
+    with plt.rc_context({'font.family': 'DejaVu Sans', 'font.size': 9, 'pdf.fonttype': 42,
+                         'axes.spines.top': False, 'axes.spines.right': False}):
+        for row, (name, xlabel) in zip(stats, labels, strict=True):
+            fig, ax = plt.subplots(figsize=(4.4, 3.2))
+            ax.set_axisbelow(True)
+            ax.grid(axis='y', color='#C8DAD8', linewidth=0.55)
+            ax.hist([r[row['metric']] for r in repeats], bins=15, color='#1F8E8C', edgecolor='white', linewidth=0.6)
+            ax.axvline(row['real'], color='#D67874', linewidth=1.6, label=f"Real network, p={row['p_one_sided']:.3g}")
+            ax.set(xlabel=xlabel, ylabel='Random-network count', title=time_pair)
+            ax.legend(frameon=False)
+            for extension in ('png', 'pdf'):
+                fig.savefig(root / f'{name}.{extension}', dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close(fig)

@@ -1,5 +1,5 @@
 """Frozen baseline, predetermined repeats, atomic completion and same-seed retry."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 from time import perf_counter
@@ -8,8 +8,11 @@ import platform
 import importlib.metadata
 from .audit import digest, input_record, write_json, file_hash
 from .materialize import materialize
-from .formal_bridge import run_training, resolve_configs
+from .formal_bridge import run_training, resolve_configs, prepare_training, finish_training
 from .reporting import report
+from ..experiment_scheduler import Job, Training, load_prepared, run_jobs, save_prepared
+from ..formal_protocol import FORMAL_SEED, resolve_options
+from ..post_perbutation.scheduler import run_lock
 
 
 def reusable(path, fingerprint, resume):
@@ -29,8 +32,7 @@ def reusable(path, fingerprint, resume):
 
 
 def run_experiment(inputs, output_root, time_pair, controls, options, maturity_root=None,
-                   randomize_only=False, resume=False, fail_fast=False, trainer=None):
-    trainer = trainer or run_training
+                   randomize_only=False, resume=False, fail_fast=False, trainer=None, execution=None):
     root = Path(output_root).resolve() / time_pair
     # Never write inside a factory or maturity input directory.
     protected = [Path(path).resolve().parent for path in inputs.values()]
@@ -38,10 +40,56 @@ def run_experiment(inputs, output_root, time_pair, controls, options, maturity_r
         protected.append(Path(maturity_root).resolve())
     if any(root == path or path in root.parents for path in protected):
         raise ValueError('Output overlaps an input directory')
+    root.mkdir(parents=True, exist_ok=True)
+    with run_lock(root):
+        return _run_locked(inputs, root, time_pair, controls, options, maturity_root, randomize_only,
+                           resume, fail_fast, trainer, execution)
+
+
+def _jobs_for(label, idx, root, inputs, controls, options, maturity_root, randomize_only):
+    return Job(label, _prepare_job, (idx, root / label, inputs, controls, options, maturity_root, randomize_only))
+
+
+def _prepare_job(staging, idx, destination, inputs, controls, options, maturity_root, randomize_only):
+    start = perf_counter()
+    patched, audits = (inputs, {}) if idx is None else materialize(inputs, destination / 'graphs', controls.base_seed, idx)
+    attempt = destination / f'attempt_{len(list(destination.glob("attempt_*"))):03d}'
+    attempt.mkdir(parents=True, exist_ok=False)
+    if randomize_only:
+        return _completed({}, attempt, patched, audits, start)
+    request, config, prepared = prepare_training(patched, maturity_root, controls, options, attempt)
+    cache = staging / 'prepared.pkl'
+    save_prepared(cache, prepared)
+    return Training(_train_job, (request, config, cache, attempt, patched, audits, start), (config.out_dir,))
+
+
+def _train_job(device, request, config, cache, attempt, patched, audits, start):
+    summary = finish_training(request, replace(config, device=device), load_prepared(cache), attempt)
+    return _completed(summary, attempt, patched, audits, start)
+
+
+def _completed(summary, attempt, patched, audits, start):
+    artifacts = {str(p.resolve()): file_hash(p) for p in attempt.rglob('*') if p.is_file()}
+    artifacts.update({str(Path(patched[key]).resolve()): audits[key]['sha256'] for key in audits})
+    return {**summary, 'graph_audit': audits, 'elapsed_seconds': perf_counter() - start, 'artifacts': artifacts}
+
+
+def _input_stats(inputs):
+    return {key: (state.st_size, state.st_mtime_ns, state.st_ctime_ns)
+            for key, state in ((key, Path(path).stat()) for key, path in inputs.items())}
+
+
+def _run_locked(inputs, root, time_pair, controls, options, maturity_root, randomize_only,
+                resume, fail_fast, trainer, execution):
+    if controls.train_seed != FORMAL_SEED or controls.base_seed != FORMAL_SEED:
+        raise ValueError(f'Formal Core requires training and network master seed {FORMAL_SEED}')
+    if not randomize_only:
+        resolve_options(options.get('frontend_options'), options.get('training_options'), strict=True)
     frozen = dict(inputs)
     if maturity_root is not None:
         frozen.update(maturity_t=Path(maturity_root) / 'source.csv', maturity_tp=Path(maturity_root) / 'target.csv')
     initial = input_record(frozen)
+    initial_stats = _input_stats(frozen)
     resolved = {}
     if not randomize_only:
         if maturity_root is None:
@@ -66,10 +114,54 @@ def run_experiment(inputs, output_root, time_pair, controls, options, maturity_r
         write_json(lock_path, locked)
     baseline, repeats, failures = None, [], []
     jobs = ([] if randomize_only else [('baseline', None)]) + [(f'repeats/seed_{i:03d}', i) for i in range(controls.n_random)]
+    staged = {}
+    if execution is not None and trainer is None:
+        if randomize_only:
+            execution = replace(execution, devices=('cpu',))
+        groups = ([jobs[:1], jobs[1:]] if not randomize_only else [jobs])
+        for group in groups:
+            if not group:
+                continue
+            pending = [(label, idx) for label, idx in group
+                       if reusable(root / label / 'result.json', fingerprint, resume) is None]
+            group_name = 'P0' if group[0][1] is None else 'Random networks'
+            cached = len(group) - len(pending)
+            for _ in range(controls.max_retries + 1):
+                def save_result(index, outcome):
+                    label, idx = pending[index]
+                    if _input_stats(frozen) != initial_stats:
+                        raise ValueError('Frozen input changed during experiment')
+                    record = {**outcome, 'status': 'FAILED' if 'error' in outcome else 'COMPLETED',
+                              'fingerprint': fingerprint, 'repeat_idx': idx,
+                              'network_seed': None if idx is None else [controls.base_seed, idx],
+                              'training_config_hash': digest(resolved.get('training', {}))}
+                    write_json(root / label / 'result.json', record)
+                    if record['status'] == 'FAILED':
+                        attempt_root = root / label
+                        write_json(attempt_root / f'failure_{len(list(attempt_root.glob("failure_*"))):03d}.json', record)
+                    elif idx is None:
+                        write_json(root / label / 'summary.json', outcome)
+                    staged[label] = record
+                outcomes = run_jobs(root, group_name,
+                    [_jobs_for(label, idx, root, inputs, controls, options, maturity_root, randomize_only)
+                     for label, idx in pending], execution, cached=cached, fail_fast=fail_fast, on_result=save_result)
+                for index, outcome in enumerate(outcomes):
+                    if pending[index][0] not in staged:
+                        save_result(index, outcome)
+                pending = [(label, idx) for label, idx in pending if staged[label]['status'] == 'FAILED']
+                cached = len(group) - len(pending)
+                if not pending:
+                    break
+            if group_name == 'P0' and pending:
+                write_json(root / 'run_manifest.json', {'status': 'INCOMPLETE', 'failures': ['baseline']})
+                raise RuntimeError(f'Failed baseline; see {root / "baseline" / "result.json"}')
+            if input_record(frozen) != initial:
+                raise ValueError('Frozen input changed during experiment')
+    trainer = trainer or run_training
     for label, idx in jobs:
         destination = root / label
         result_path = destination / 'result.json'
-        record = reusable(result_path, fingerprint, resume)
+        record = staged[label] if label in staged else reusable(result_path, fingerprint, resume)
         if record is None:
             for attempt in range(controls.max_retries + 1):
                 start = perf_counter()
@@ -83,12 +175,10 @@ def run_experiment(inputs, output_root, time_pair, controls, options, maturity_r
                     summary = {} if randomize_only else trainer(patched, maturity_root, controls, options, attempt_root)
                     if input_record(frozen) != initial:
                         raise ValueError('Trainer modified frozen input')
-                    artifacts = {str(p.resolve()): file_hash(p) for p in attempt_root.rglob('*') if p.is_file()}
-                    artifacts.update({str(Path(patched[key]).resolve()): audits[key]['sha256'] for key in audits})
                     record = {'status': 'COMPLETED', 'fingerprint': fingerprint, 'repeat_idx': idx,
                               'network_seed': None if idx is None else [controls.base_seed, idx],
-                              'graph_audit': audits, 'training_config_hash': digest(resolved.get('training', {})),
-                              'elapsed_seconds': perf_counter() - start, 'artifacts': artifacts, **summary}
+                              'training_config_hash': digest(resolved.get('training', {})),
+                              **_completed(summary, attempt_root, patched, audits, start)}
                     write_json(result_path, record)
                     if idx is None:
                         write_json(destination / 'summary.json', summary)
@@ -98,12 +188,12 @@ def run_experiment(inputs, output_root, time_pair, controls, options, maturity_r
                               'network_seed': None if idx is None else [controls.base_seed, idx], 'traceback': traceback.format_exc()}
                     write_json(destination / f'failure_{len(list(destination.glob("failure_*"))):03d}.json', record)
                     write_json(result_path, record)
-            if record['status'] != 'COMPLETED':
-                failures.append(label)
-                write_json(root / 'run_manifest.json', {'status': 'INCOMPLETE', 'failures': failures})
-                if fail_fast or idx is None:
-                    raise RuntimeError(f'Failed {label}; see {result_path}')
-                continue
+        if record['status'] != 'COMPLETED':
+            failures.append(label)
+            write_json(root / 'run_manifest.json', {'status': 'INCOMPLETE', 'failures': failures})
+            if fail_fast or idx is None:
+                raise RuntimeError(f'Failed {label}; see {result_path}')
+            continue
         if idx is None:
             baseline = record
         else:

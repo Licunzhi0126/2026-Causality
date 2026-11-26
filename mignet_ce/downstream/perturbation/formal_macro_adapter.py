@@ -47,7 +47,14 @@ def make_projector():
 
 
 def build_direct_state_macro_pij_builder(stage_t, stage_tp, *, delta_g_raw_tp=None,
-                                         alpha_cci=CANONICAL_ALPHA_CCI, feature_method="legacy"):
+                                         alpha_cci=CANONICAL_ALPHA_CCI, feature_method="legacy", grn_enhancer=None):
+    if feature_method == "legacy_nmf":
+        from wyt_deltaei_coarse_grain.complete_combined import build_macro_pij_builder
+        if grn_enhancer is None:
+            raise ValueError("legacy_nmf requires the fitted baseline GRN basis")
+        return build_macro_pij_builder(stage_t, stage_tp, grn_enhancer=grn_enhancer,
+                                       alpha_cci=alpha_cci,
+                                       target_residual_block="DG_TP" if delta_g_raw_tp is not None else None)
     if feature_method != "legacy":
         raise NotImplementedError("Propagated GRN residuals currently require legacy GRN features.")
     if delta_g_raw_tp is None:

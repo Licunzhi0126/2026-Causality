@@ -26,7 +26,8 @@ def validate_maturity(path: Path, spot_ids: list[str], *, id_column: str = MATUR
 
 def validate_training_run(*, inputs: dict[str, Path], maturity_t: Path, maturity_tp: Path,
                           spot_ids_t: list[str], spot_ids_tp: list[str], k: int,
-                          out_dir: Path, device: str) -> None:
+                          out_dir: Path, device: str, maturity_id_column: str = MATURITY_ID_COLUMN,
+                          maturity_column: str = MATURITY_VALUE_COLUMN) -> None:
     missing = {name: str(path) for name, path in inputs.items() if not Path(path).is_file()}
     if missing:
         raise FileNotFoundError(f"Perturbation training inputs are missing: {missing}")
@@ -36,8 +37,8 @@ def validate_training_run(*, inputs: dict[str, Path], maturity_t: Path, maturity
         raise ValueError(f"Unsupported device: {device}")
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Runner output directory must be empty: {out_dir}")
-    validate_maturity(maturity_t, spot_ids_t)
-    validate_maturity(maturity_tp, spot_ids_tp)
+    validate_maturity(maturity_t, spot_ids_t, id_column=maturity_id_column, maturity_column=maturity_column)
+    validate_maturity(maturity_tp, spot_ids_tp, id_column=maturity_id_column, maturity_column=maturity_column)
 
 
 def validate_graph(graph: GRNGraph, baseline: GRNGraph | None = None, *, preserve_degrees: bool = False, preserve_indegree: bool = False) -> None:

@@ -1,7 +1,9 @@
 """Configuration for direct, mirrored GRN weight perturbations."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+
+from ..formal_protocol import FORMAL_SEED, resolve_options
 
 
 @dataclass(frozen=True)
@@ -10,7 +12,7 @@ class PerturbationConfig:
     mirror_fraction: float = 1.0
     region_node_fraction: float = 0.40
     region_edge_fraction: float = 0.40
-    random_seed: int = 20260930
+    random_seed: int = FORMAL_SEED
     mirror_tolerance: float = 1e-10
     k: int = 40
     device: str = "cpu"
@@ -18,6 +20,12 @@ class PerturbationConfig:
     local_graph_mode: str = "all_features"
     frontend_options: dict = field(default_factory=dict)
     training_options: dict = field(default_factory=dict)
+
+    def formal(self):
+        if self.random_seed != FORMAL_SEED:
+            raise ValueError(f"Formal Core requires perturbation seed {FORMAL_SEED}")
+        frontend, training = resolve_options(self.frontend_options, self.training_options, strict=True)
+        return replace(self, frontend_options=frontend, training_options=training)
 
     def __post_init__(self) -> None:
         if self.method != "formal_two_stage":

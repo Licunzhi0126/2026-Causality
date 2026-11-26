@@ -1,11 +1,10 @@
 """Fresh standard formal frontend and training, never direct-state propagation."""
 from dataclasses import asdict
-import os
 import platform
-import random
 from pathlib import Path
 import numpy as np
 from .audit import digest, write_json, array_hash
+from ..formal_protocol import maturity_columns, reset_seed, resolve_options
 
 
 def resolve_configs(inputs, maturity_root, controls, options, training):
@@ -18,35 +17,32 @@ def resolve_configs(inputs, maturity_root, controls, options, training):
         raise ValueError('Formal config must not override input/output paths, k or device')
     if train.get('stage1_source') is not None or train.get('stage1_only', False):
         raise ValueError('Every repeat requires both stages from scratch; stage1_source/stage1_only forbidden')
-    for settings in (frontend, train):
-        if 'seed' in settings and settings['seed'] != controls.train_seed:
-            raise ValueError('Formal seed conflicts with fixed train-seed')
-        settings['seed'] = controls.train_seed
+    frontend, train = resolve_options(frontend, train, seed=controls.train_seed)
+    maturity = tuple(Path(maturity_root) / name for name in ('source.csv', 'target.csv'))
+    for key, value in maturity_columns(maturity).items():
+        frontend.setdefault(key, value)
     request = CoarseFrontendRequest(
         **{key: value for key, value in inputs.items() if not key.startswith('index_')},
         cci_index_t=inputs['index_t'], cci_index_tp=inputs['index_tp'],
-        maturity_t=Path(maturity_root) / 'source.csv', maturity_tp=Path(maturity_root) / 'target.csv', **frontend)
+        maturity_t=maturity[0], maturity_tp=maturity[1], **frontend)
     config = WYTFormalTwoStageConfig(k=controls.k, device=controls.device, out_dir=Path(training), **train)
     request.validate()
     return request, config
 
 
-def run_training(inputs, maturity_root, controls, options, root):
-    import torch
+def prepare_training(inputs, maturity_root, controls, options, root):
     from mignet_ce.coarse_frontends.formal_two_stage import prepare
+    request, config = resolve_configs(inputs, maturity_root, controls, options, Path(root) / 'training')
+    reset_seed(config.seed)
+    return request, config, prepare(request)
+
+
+def finish_training(request, config, prepared, root):
+    import torch
     from wyt_deltaei_coarse_grain import train_deltaei
     from mignet_ce.downstream.perturbation.reporting import collect_summary
-    request, config = resolve_configs(inputs, maturity_root, controls, options, Path(root) / 'training')
-    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-    random.seed(controls.train_seed)
-    np.random.seed(controls.train_seed)
-    torch.manual_seed(controls.train_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(controls.train_seed)
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    prepared = prepare(request)
+
+    reset_seed(config.seed)
     record = asdict(config)
     record.pop('out_dir')
     write_json(Path(root) / 'frontend_audit.json', {
@@ -67,3 +63,7 @@ def run_training(inputs, maturity_root, controls, options, root):
     if not checkpoint.is_file():
         raise ValueError('Formal best_joint checkpoint missing')
     return {**summary, 'best_checkpoint': str(checkpoint), 'best_epoch': result.best_epoch}
+
+
+def run_training(inputs, maturity_root, controls, options, root):
+    return finish_training(*prepare_training(inputs, maturity_root, controls, options, root), root)

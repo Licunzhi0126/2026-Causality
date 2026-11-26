@@ -87,7 +87,7 @@ def _node_scores(graph: GRNGraph, pair_id: str, communities: Mapping[str, int], 
             scores[j] += 1
         return scores, {edge: 1.0 for edge in reciprocal}, reciprocal
     if pair_id in MOTIF_IDS:
-        edge_scores = motif_edge_participation(motif_index or build_motif_index(graph), pair_id)
+        edge_scores = motif_edge_participation(motif_index or build_motif_index(graph), pair_id, len(graph.nodes))
         scores = np.zeros(len(graph.nodes), dtype=float)
         for (i, j), score in edge_scores.items():
             scores[i] += score

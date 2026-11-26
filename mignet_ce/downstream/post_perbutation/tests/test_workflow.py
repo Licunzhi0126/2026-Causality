@@ -113,6 +113,32 @@ def test_two_launchers_share_card_admission_and_solo_retry(monkeypatch, tmp_path
             left.release(slot)
 
 
+def test_owned_budget_allows_18_gib_with_5_gib_from_others(monkeypatch, tmp_path):
+    from mignet_ce.downstream.post_perbutation import scheduler
+
+    used = 5 * GIB
+    monkeypatch.setattr(scheduler.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(scheduler, "_nvidia_memory", lambda: {"GPU-A": ("0", CardMemory(used, 24 * GIB, {}))})
+    devices = {"cuda:0": {"uuid": "GPU-A", "visible_device": "0"}}
+    admission = GpuAdmission(devices, 18, 3, 3, owned_budget=True)
+    admission.estimated["cuda:0", "training"] = 6 * GIB
+    slots = [Slot(str(i), "cuda:0", "0", tmp_path / "log") for i in range(4)]
+    work = Work(Task("cci", "positive", 10, "P1"), tmp_path, {})
+    try:
+        assert admission.admit(slots[0], work)
+        assert admission.admit(slots[1], work)
+        used = 6 * GIB
+        admission.refresh(force=True)
+        assert not admission.admit(slots[2], work)
+        used = 5 * GIB
+        admission.refresh(force=True)
+        assert admission.admit(slots[2], work)
+        assert not admission.admit(slots[3], work)
+    finally:
+        for slot in slots:
+            admission.release(slot)
+
+
 def test_cpu_cli_trains_and_resumes_both_experiment_families(tmp_path):
     pytest.importorskip("torch")
     _factory(tmp_path)

@@ -8,7 +8,7 @@ import networkx as nx
 import numpy as np
 
 from .grn_io import GRNGraph
-from .motif_index import HIGHER_ORDER_TEMPLATES, MotifIndex, build_motif_index
+from .motif_index import HIGHER_ORDER_TEMPLATES, MotifIndex, build_motif_index, compact_chunks
 
 EPS = 1e-12
 
@@ -56,6 +56,19 @@ def _geometric_mean(*weights: float) -> float:
     return float(np.prod(weights) ** (1.0 / len(weights))) if all(weight > 0.0 for weight in weights) else 0.0
 
 
+def _weighted_sum(weights, values, edges, undirected=False):
+    total = 0.0
+    for chunk in compact_chunks(values):
+        product = np.ones(len(chunk), dtype=float)
+        for a, b in edges:
+            edge_weights = weights[chunk[:, a], chunk[:, b]]
+            if undirected:
+                edge_weights = np.maximum(edge_weights, weights[chunk[:, b], chunk[:, a]])
+            product *= edge_weights
+        total += float(np.power(product, 1.0 / len(edges)).sum(dtype=np.float64))
+    return total
+
+
 def compute_motif_metrics(graph: GRNGraph, *, baseline_scale: float | None = None, index: MotifIndex | None = None) -> dict[str, float]:
     """Compute T6 through T13 with one externally fixed normalization scale."""
     if np.any(graph.adjacency < 0.0):
@@ -66,6 +79,15 @@ def compute_motif_metrics(graph: GRNGraph, *, baseline_scale: float | None = Non
         scale = 1.0
     weights = graph.adjacency / scale
     index = index or build_motif_index(graph)
+    if isinstance(index.triangles, np.ndarray):
+        return {
+            "triangle_intensity": _weighted_sum(weights, index.triangles, ((0, 1), (1, 2), (2, 0)), undirected=True),
+            "feedforward_loop": _weighted_sum(weights, index.feedforward_loops, ((0, 1), (0, 2), (1, 2))),
+            "feedback_cycle": _weighted_sum(weights, index.feedback_cycles, ((0, 1), (1, 2), (2, 0))),
+            **{TARGET_METRIC[key]: _weighted_sum(weights, index.occurrences(key), template)
+               for key, template in HIGHER_ORDER_TEMPLATES.items()},
+            "baseline_weight_scale": scale,
+        }
     t6 = sum(_geometric_mean(max(weights[i, j], weights[j, i]), max(weights[j, k], weights[k, j]), max(weights[i, k], weights[k, i])) for i, j, k in index.triangles)
     t7 = sum(_geometric_mean(weights[a, b], weights[a, c], weights[b, c]) for a, b, c in index.feedforward_loops)
     t8 = sum(_geometric_mean(weights[a, b], weights[b, c], weights[c, a]) for a, b, c in index.feedback_cycles)

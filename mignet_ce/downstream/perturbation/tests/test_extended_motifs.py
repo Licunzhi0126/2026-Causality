@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mignet_ce.downstream.perturbation.condition import PAIR_IDS
+from mignet_ce.downstream.perturbation.condition import MOTIF_IDS, PAIR_IDS
 from mignet_ce.downstream.perturbation.config import PerturbationConfig
 from mignet_ce.downstream.perturbation.grn_io import GRNGraph
 from mignet_ce.downstream.perturbation.mirror_perturbation import apply_mirrored_weight_perturbation
@@ -68,6 +68,23 @@ def test_sparse_matches_against_directed_edge_set_oracle(pair, template):
     assert set(actual) == expected
     counts = {edge: sum(edge in occurrence for occurrence in expected) for occurrence in expected for edge in occurrence}
     assert motif_edge_participation(index, pair) == counts
+
+
+def test_shared_index_matches_reference_after_edge_removal(tmp_path):
+    rng = np.random.default_rng(42)
+    adjacency = rng.random((7, 7))
+    adjacency[adjacency < 0.28] = 0
+    np.fill_diagonal(adjacency, 0)
+    graph = GRNGraph(tuple('abcdefg'), adjacency)
+    reference = build_motif_index(graph)
+    shared = build_motif_index(graph, tmp_path / 'index', workers=2)
+    for pair in MOTIF_IDS:
+        assert motif_edge_participation(shared, pair, len(graph.nodes)) == motif_edge_participation(reference, pair)
+    for pair in HIGHER_ORDER_TEMPLATES:
+        assert set(map(tuple, shared.occurrences(pair))) == set(reference.occurrences(pair))
+    edges = tuple(zip(*np.nonzero(adjacency), strict=True))[::4]
+    _, perturbed, _ = apply_mirrored_weight_perturbation(graph, selected_edges=edges, mirror_fraction=1)
+    assert compute_motif_metrics(perturbed, index=shared) == pytest.approx(compute_motif_metrics(perturbed, index=reference))
 
 
 def test_defaults_and_all_conditions_reporting(tmp_path):

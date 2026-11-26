@@ -35,3 +35,18 @@ def test_repeat_37_same_seed_and_skip_completed(pair, tmp_path):
     graph.write_text('tampered', encoding='utf-8')
     with pytest.raises(ValueError, match='artifact mismatch'):
         run_experiment(inputs, tmp_path / 'out', 'pair', controls, {}, maturity, resume=True, trainer=trainer)
+
+
+def test_parallel_randomization_is_reused_with_the_same_seed_streams(pair, tmp_path):
+    from ...experiment_scheduler import Execution
+
+    inputs, _ = pair
+    controls = RandomNetworkConfig(n_random=3, k=2)
+    options = dict(randomize_only=True, execution=Execution(cpu_workers=2))
+    root = run_experiment(inputs, tmp_path / 'out', 'pair', controls, {}, **options)
+    paths = sorted(root.glob('repeats/seed_*/result.json'))
+    first = [(path.stat().st_mtime_ns, json.loads(path.read_text(encoding='utf-8'))) for path in paths]
+    assert [row['network_seed'] for _, row in first] == [[42, 0], [42, 1], [42, 2]]
+    run_experiment(inputs, tmp_path / 'out', 'pair', controls, {}, resume=True, **options)
+    assert [path.stat().st_mtime_ns for path in paths] == [stamp for stamp, _ in first]
+    assert json.loads((root / 'progress.json').read_text(encoding='utf-8'))['Random networks']['reused'] == 3

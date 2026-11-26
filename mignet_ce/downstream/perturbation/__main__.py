@@ -16,6 +16,8 @@ from mignet_ce.downstream.analysis.io import (
 from .config import PerturbationConfig
 from .runner import run_experiment
 from .condition import PAIR_IDS
+from ..experiment_scheduler import add_execution_arguments, execution_from_args
+from ..formal_protocol import FORMAL_ALPHA, FORMAL_KNN_K, FORMAL_SEED
 
 
 def _factory_inputs(*, data_root: Path, organ: str, layer: str, source_time: str, target_time: str) -> tuple[str, str, dict[str, Path]]:
@@ -58,6 +60,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="Perturbation trainer (default: formal_two_stage).")
     parser.add_argument("--local-graph-mode", choices=["legacy_features", "coords", "all_features"],
                         default="all_features", help="KNN construction mode (default: all_features).")
+    parser.add_argument("--knn-k", type=int, choices=(FORMAL_KNN_K,), default=FORMAL_KNN_K)
+    parser.add_argument("--alpha", type=float, choices=(FORMAL_ALPHA,), default=FORMAL_ALPHA)
+    parser.add_argument("--train-seed", type=int, choices=(FORMAL_SEED,), default=FORMAL_SEED)
+    parser.add_argument("--epochs", type=int, help="Number of Formal training epochs (default: 1500)")
+    add_execution_arguments(parser)
     args = parser.parse_args(argv)
     formal_options = json.loads(args.formal_config.read_text(encoding="utf-8")) if args.formal_config else {}
     if not isinstance(formal_options, dict) or set(formal_options) - {"frontend_options", "training_options"}:
@@ -69,15 +76,29 @@ def main(argv: list[str] | None = None) -> None:
     if "local_graph_mode" in training_options and training_options["local_graph_mode"] != args.local_graph_mode:
         parser.error("Conflicting local_graph_mode between CLI and --formal-config.")
     training_options["local_graph_mode"] = args.local_graph_mode
+    if args.epochs is not None:
+        if args.epochs < 1 or training_options.get("epochs", args.epochs) != args.epochs:
+            parser.error("--epochs must be positive and agree with --formal-config.")
+        training_options["epochs"] = args.epochs
     formal_options["training_options"] = training_options
     if not args.topology_only and args.maturity_root is None:
         parser.error("--maturity-root is required unless --topology-only is used.")
     try:
+        execution = execution_from_args(args)
+        if execution:
+            args.device = "cpu" if execution.devices == ("cpu",) else "cuda"
+        config = PerturbationConfig(method=args.method, local_graph_mode=args.local_graph_mode, k=args.k,
+            device=args.device, mirror_fraction=args.mirror_fraction, region_node_fraction=args.region_node_fraction,
+            region_edge_fraction=args.region_edge_fraction, random_seed=args.train_seed, **formal_options)
+        if not args.topology_only:
+            config = config.formal()
         source_sample, target_sample, inputs = _factory_inputs(data_root=args.data_root, organ=args.organ, layer=args.layer, source_time=args.source_time, target_time=args.target_time)
     except ValueError as error:
         parser.error(str(error))
     time_pair = f"{args.organ}_{args.layer}_{args.source_time}_to_{args.target_time}"
-    run_experiment(time_pair=time_pair, source_sample=source_sample, target_sample=target_sample, baseline_inputs=inputs, output_root=args.output_root, config=PerturbationConfig(method=args.method, local_graph_mode=args.local_graph_mode, k=args.k, device=args.device, mirror_fraction=args.mirror_fraction, region_node_fraction=args.region_node_fraction, region_edge_fraction=args.region_edge_fraction, **formal_options), supplied_maturity_root=args.maturity_root, pair_ids=args.pairs or PAIR_IDS, strengths=args.strengths, evaluate=not args.topology_only, retry_failed=args.retry_failed)
+    run_experiment(time_pair=time_pair, source_sample=source_sample, target_sample=target_sample, baseline_inputs=inputs,
+        output_root=args.output_root, config=config, supplied_maturity_root=args.maturity_root, pair_ids=args.pairs or PAIR_IDS,
+        strengths=args.strengths, evaluate=not args.topology_only, retry_failed=args.retry_failed, execution=execution)
 
 
 if __name__ == "__main__":

@@ -101,7 +101,21 @@ def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    replace_output(temporary, path)
+
+
+def replace_output(source: Path, target: Path) -> None:
+    """Publish completed files, allowing brief Windows reader or sync locks."""
+    from time import sleep
+
+    for attempt in range(8):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as error:
+            if os.name != "nt" or getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 7:
+                raise
+            sleep(0.05 * (attempt + 1))
 
 
 def file_digest(path: Path) -> str:

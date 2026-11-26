@@ -83,8 +83,9 @@ def _nvidia_memory():
 class GpuAdmission:
     """One card-wide admission lock and OS-backed leases for all launchers of this user."""
 
-    def __init__(self, devices: dict, budget_gib: float, initial: int, maximum: int):
+    def __init__(self, devices: dict, budget_gib: float, initial: int, maximum: int, *, owned_budget=False):
         self.target = int(budget_gib * GIB)
+        self.owned_budget = owned_budget
         self.margin = GIB
         self.initial, self.maximum = initial, maximum
         self.limit = {device: initial for device in devices}
@@ -147,15 +148,23 @@ class GpuAdmission:
             with _file_lock(folder / "admit.lock"):
                 active = self._active(folder)
                 cap = min([self.maximum, *(item.get("maximum", self.maximum) for item in active)])
-                target = min([self.target, *(item.get("target", self.target) for item in active)])
                 if (work.retry and active) or any(item["solo"] for item in active) or len(active) >= cap:
                     return False
                 memory = self._memory(device)
+                card_target = memory.total if self.owned_budget else self.target
+                target = min([card_target, *(item.get("target", card_target) for item in active)])
                 predicted = memory.used + sum(max(0, item["peak"] - memory.per_pid.get(item["pid"], 0)) for item in active)
                 pid = slot.process.pid if slot.process and slot.process.poll() is None else None
                 peak = self.estimate(device, work.task.family)
                 if predicted + max(0, peak - memory.per_pid.get(pid, 0)) > target - self.margin:
                     return False
+                ownership_limits = [item["owned_target"] for item in active if "owned_target" in item]
+                if self.owned_budget:
+                    ownership_limits.append(self.target)
+                if ownership_limits:
+                    owned = sum(max(item["peak"], memory.per_pid.get(item["pid"], 0)) for item in active)
+                    if owned + max(peak, memory.per_pid.get(pid, 0)) > min(ownership_limits):
+                        return False
                 lease = ExitStack()
                 try:
                     for index in range(self.maximum):
@@ -165,8 +174,9 @@ class GpuAdmission:
                         except LockBusy:
                             continue
                         state = path.with_suffix(".json")
+                        budget = {"owned_target": self.target} if self.owned_budget else {"target": self.target}
                         write_json(state, {"pid": pid, "peak": peak, "solo": work.retry,
-                                           "target": self.target, "maximum": self.maximum})
+                                           **budget, "maximum": self.maximum})
                         slot.lease = lease
                         slot.lease_record = state
                         slot.peak = memory.per_pid.get(pid, 0)
@@ -254,7 +264,7 @@ def gpu_probe() -> None:
                       "uuid": str(getattr(properties, "uuid", ""))}))
 
 
-def worker_loop(device: str) -> None:
+def worker_loop(device: str, handler=None) -> None:
     from .formal import run_training
 
     cache = {}
@@ -275,7 +285,9 @@ def worker_loop(device: str) -> None:
                         # The first job can reset allocator peaks before creating a CUDA tensor.
                         if not torch.cuda.is_initialized():
                             torch.cuda.init()
-                    if job["family"] == "existence":
+                    if handler is not None:
+                        output = handler(job, device)
+                    elif job["family"] == "existence":
                         from .symmetry_existence_pipeline import calculate_batch
                         output = calculate_batch(Path(job["baseline"]), tuple(map(Path, job["seurat"])),
                                                  Settings(**job["settings"]), job["jobs"], device=device, cache=cache)
@@ -331,6 +343,7 @@ class Slot:
     lease: ExitStack | None = None
     lease_record: Path | None = None
     peak: int = 0
+    worker_module: str = MODULE
 
     def start(self) -> None:
         if self.process is not None and self.process.poll() is None:
@@ -341,7 +354,7 @@ class Slot:
         with self.log.open("a", encoding="utf-8") as handle:
             local_device = "cpu" if self.device == "cpu" else "cuda:0"
             self.process = subprocess.Popen(
-                [sys.executable, "-u", "-m", MODULE, "_worker", local_device],
+                [sys.executable, "-B", "-u", "-m", self.worker_module, "_worker", local_device],
                 env=env, stdin=subprocess.PIPE, stdout=handle, stderr=subprocess.STDOUT, text=True,
                 encoding="utf-8",
             )

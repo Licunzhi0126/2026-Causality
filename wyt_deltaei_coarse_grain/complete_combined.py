@@ -94,6 +94,7 @@ def build_macro_pij_builder(
     *,
     grn_enhancer=None,
     alpha_cci: float = CANONICAL_ALPHA_CCI,
+    target_residual_block: str | None = None,
 ):
     """Build the differentiable macro PIJ callback used by the trainer."""
     cache: dict[tuple[str, str], torch.Tensor] = {}
@@ -161,10 +162,14 @@ def build_macro_pij_builder(
             inputs.feature_blocks_t["N"],
             inputs.feature_blocks_tp["N"],
         )
-        g_t, g_tp = _pairwise_zscore_torch(
-            project(inputs.feature_blocks_t["X"], stage_t, "t"),
-            project(inputs.feature_blocks_tp["X"], stage_tp, "tp"),
-        )
+        source = project(inputs.feature_blocks_t["X"], stage_t, "t")
+        target = project(inputs.feature_blocks_tp["X"], stage_tp, "tp")
+        if target_residual_block is not None:
+            residual = inputs.feature_blocks_tp[target_residual_block]
+            if residual.shape != target.shape:
+                raise ValueError("Pooled GRN residual must match target GRN feature coordinates")
+            target = target + residual
+        g_t, g_tp = _pairwise_zscore_torch(source, target)
         return canonical_ng_pij_torch(
             n_t,
             n_tp,
@@ -176,6 +181,7 @@ def build_macro_pij_builder(
             temperature=CANONICAL_TEMPERATURE,
         )
 
+    build.formal_assets = (stage_t, stage_tp, grn_enhancer, alpha_cci, target_residual_block)
     return build
 
 
@@ -593,6 +599,7 @@ def prepare_complete_pair(
     cci_laplacian_components: int = 5,
     cci_laplacian_normalized: bool = True,
     alpha_cci: float = CANONICAL_ALPHA_CCI,
+    grn_spot_features: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> CompleteCombinedPair:
     from mignet_ce.representations.wyt_network80 import joint_fixed_pca
 
@@ -602,7 +609,9 @@ def prepare_complete_pair(
         cci_laplacian_components=cci_laplacian_components,
         cci_laplacian_normalized=cci_laplacian_normalized,
     )
-    if grn_enhancer is None:
+    if grn_spot_features is not None:
+        g_t_raw, g_tp_raw = grn_spot_features
+    elif grn_enhancer is None:
         g_t_raw, g_tp_raw = stage_t.g_raw, stage_tp.g_raw
     else:
         g_t_raw = grn_enhancer.feature_numpy(stage_t.expression_grn, stage_t, "t")
